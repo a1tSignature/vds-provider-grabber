@@ -1,5 +1,6 @@
 package org.a1tsign.vds
 
+import com.zaxxer.hikari.HikariDataSource
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -18,11 +19,16 @@ import org.a1tsign.vds.config.AppConfig
 import org.a1tsign.vds.config.ConfigurationException
 import org.a1tsign.vds.config.loadConfig
 import org.a1tsign.vds.config.nowUtc
+import org.a1tsign.vds.db.buildDataSource
+import org.a1tsign.vds.db.runMigrations
+import org.flywaydb.core.api.FlywayException
+import org.jetbrains.exposed.v1.jdbc.Database
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import javax.sql.DataSource
 import kotlin.system.exitProcess
 
 // Shared between module() (incremented/decremented around every request) and shutdownGracefully()
@@ -54,13 +60,27 @@ fun main() {
         exitProcess(1)
     }
 
+    // Database plumbing runs before the HTTP server binds: a pool that cannot migrate must never
+    // serve traffic. buildDataSource/runMigrations read every tunable from config.db — nothing
+    // here is hardcoded. A migration failure gets the same fail-fast treatment as a config
+    // error: one clear ERROR line (never the exception's stack trace into a running server) and
+    // a non-zero exit, not a half-migrated process left serving requests.
+    val dataSource = buildDataSource(config.db)
+    try {
+        runMigrations(dataSource)
+    } catch (e: FlywayException) {
+        logger.error("Database migration failed: ${e.message}")
+        exitProcess(1)
+    }
+    Database.connect(dataSource)
+
     val clock = Clock.systemUTC()
-    val server = embeddedServer(CIO, port = config.http.port) { module(config, clock) }
-    Runtime.getRuntime().addShutdownHook(Thread { shutdownGracefully(server, clock) })
+    val server = embeddedServer(CIO, port = config.http.port) { module(config, clock, dataSource) }
+    Runtime.getRuntime().addShutdownHook(Thread { shutdownGracefully(server, clock, dataSource) })
     server.start(wait = true)
 }
 
-fun Application.module(config: AppConfig, clock: Clock) {
+fun Application.module(config: AppConfig, clock: Clock, dataSource: DataSource) {
     install(CallLogging) {
         level = Level.INFO
     }
@@ -89,7 +109,7 @@ fun Application.module(config: AppConfig, clock: Clock) {
         }
     }
     routing {
-        opsRoutes()
+        opsRoutes(dataSource)
     }
 }
 
@@ -120,12 +140,15 @@ private const val SHUTDOWN_POLL_INTERVAL_MILLIS = 50L
  * exactly the behaviour this function exists to avoid) — new connections can still arrive during
  * the drain window. They are rejected with `503` at the very first pipeline phase, before running
  * any route handler, instead of being served or counted, so they do not extend the drain.
+ *
+ * The Hikari pool is closed last, after `server.stop()`, once nothing can issue a new query.
  */
-private fun shutdownGracefully(server: EmbeddedServer<*, *>, clock: Clock) {
+private fun shutdownGracefully(server: EmbeddedServer<*, *>, clock: Clock, dataSource: HikariDataSource) {
     shuttingDown.set(true)
     val deadline = clock.nowUtc().plusMillis(SHUTDOWN_DRAIN_CAP_MILLIS)
     while (activeRequests.get() > 0 && clock.nowUtc().isBefore(deadline)) {
         Thread.sleep(SHUTDOWN_POLL_INTERVAL_MILLIS)
     }
     server.stop(gracePeriodMillis = 0, timeoutMillis = 1_000)
+    dataSource.close()
 }

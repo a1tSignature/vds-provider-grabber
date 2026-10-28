@@ -79,8 +79,8 @@ object PostgresSupport {
                     statement.execute("TRUNCATE $tableList RESTART IDENTITY CASCADE")
                 }
             }
+            reseedAfterTruncate(connection)
         }
-        reseedAfterTruncate()
     }
 
     private fun discoverTruncatableTables(connection: Connection): List<String> {
@@ -102,13 +102,23 @@ object PostgresSupport {
     }
 
     /**
-     * Restores rows a repeatable seed migration would have inserted and that the truncate above
-     * just removed. No migration seeds anything yet (the schema is empty), so this is currently a
-     * no-op; a later task adding a repeatable seed migration (e.g. role lookup rows) re-runs only
-     * that seed step here instead of this function growing a hardcoded INSERT list.
+     * Restores rows a migration seeds that the truncate above just removed. `V1__core_schema.sql`
+     * seeds the three `role` lookup rows (`ADMIN`/`EDITOR`/`VIEWER`) directly — not via a
+     * repeatable migration, since the task that added them explicitly rules those out — so
+     * `TRUNCATE ... CASCADE` wipes them on the very first [resetDatabase] call and Flyway never
+     * re-applies an already-migrated version to bring them back. Re-insert exactly what `V1` seeds.
      */
-    private fun reseedAfterTruncate() {
-        // Intentionally empty until a migration seeds rows — see kdoc above.
+    private fun reseedAfterTruncate(connection: Connection) {
+        connection.createStatement().use { statement ->
+            statement.execute(
+                """
+                INSERT INTO role (code, description) VALUES
+                    ('ADMIN', 'Full access: manage providers, tariffs, prices and other users'),
+                    ('EDITOR', 'Can create and edit providers, tariffs and prices'),
+                    ('VIEWER', 'Read-only access to the catalog')
+                """.trimIndent(),
+            )
+        }
     }
 }
 

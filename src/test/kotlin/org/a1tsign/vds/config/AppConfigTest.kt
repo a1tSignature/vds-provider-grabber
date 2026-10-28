@@ -1,0 +1,378 @@
+package org.a1tsign.vds.config
+
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+class AppConfigTest {
+    /** Every variable set to a deliberately non-default, valid value. */
+    private fun fullValidEnv(): Map<String, String> = mapOf(
+        "VDS_DB_URL" to "jdbc:postgresql://localhost:5432/vds",
+        "VDS_DB_USER" to "vds",
+        "VDS_DB_PASSWORD" to "db-secret",
+        "VDS_DB_POOL_MAX" to "10",
+        "VDS_DB_POOL_MIN_IDLE" to "2",
+        "VDS_DB_CONNECTION_TIMEOUT_MS" to "7000",
+        "VDS_DB_LEAK_DETECTION_MS" to "15000",
+        "VDS_HTTP_PORT" to "9090",
+        "VDS_JWT_SECRET" to "0".repeat(32),
+        "VDS_JWT_TTL_HOURS" to "48",
+        "VDS_FX_API_URL" to "https://fx.example.com/latest",
+        "VDS_FX_API_KEY" to "fx-api-key",
+        "VDS_FX_REFRESH_HOURS" to "6",
+        "VDS_BOOTSTRAP_ADMIN_USERNAME" to "admin",
+        "VDS_BOOTSTRAP_ADMIN_PASSWORD" to "change-me-please",
+        "VDS_CORS_ALLOWED_ORIGINS" to "https://a.example, https://b.example",
+    )
+
+    /** The minimal set of variables that have no default: required and nothing else. */
+    private fun minimalRequiredEnv(): Map<String, String> = mapOf(
+        "VDS_DB_URL" to "jdbc:postgresql://localhost:5432/vds",
+        "VDS_DB_USER" to "vds",
+        "VDS_DB_PASSWORD" to "db-secret",
+        "VDS_JWT_SECRET" to "0".repeat(32),
+    )
+
+    @Test
+    fun `loads every field from a fully specified valid environment`() {
+        val config = loadConfig(fullValidEnv())
+
+        assertEquals("jdbc:postgresql://localhost:5432/vds", config.db.url)
+        assertEquals("vds", config.db.user)
+        assertEquals("db-secret", config.db.password.reveal())
+        assertEquals(10, config.db.poolMax)
+        assertEquals(2, config.db.poolMinIdle)
+        assertEquals(7000L, config.db.connectionTimeoutMs)
+        assertEquals(15000L, config.db.leakDetectionMs)
+
+        assertEquals(9090, config.http.port)
+        assertEquals(listOf("https://a.example", "https://b.example"), config.http.corsAllowedOrigins)
+
+        assertEquals("0".repeat(32), config.jwt.secret.reveal())
+        assertEquals(48L, config.jwt.ttlHours)
+
+        assertEquals("https://fx.example.com/latest", config.fx.apiUrl)
+        assertEquals("fx-api-key", config.fx.apiKey?.reveal())
+        assertEquals(6L, config.fx.refreshHours)
+
+        assertEquals("admin", config.bootstrapAdmin?.username)
+        assertEquals("change-me-please", config.bootstrapAdmin?.password?.reveal())
+    }
+
+    @Test
+    fun `applies documented defaults when optional variables are absent`() {
+        val config = loadConfig(minimalRequiredEnv())
+
+        assertEquals(5, config.db.poolMax)
+        assertEquals(1, config.db.poolMinIdle)
+        assertEquals(5000L, config.db.connectionTimeoutMs)
+        assertEquals(30000L, config.db.leakDetectionMs)
+
+        assertEquals(8080, config.http.port)
+        assertEquals(emptyList(), config.http.corsAllowedOrigins)
+
+        assertEquals(24L, config.jwt.ttlHours)
+
+        assertEquals("https://open.er-api.com/v6/latest/USD", config.fx.apiUrl)
+        assertNull(config.fx.apiKey)
+        assertEquals(12L, config.fx.refreshHours)
+
+        assertNull(config.bootstrapAdmin)
+    }
+
+    @Test
+    fun `missing VDS_DB_URL fails fast naming the variable`() {
+        val env = minimalRequiredEnv() - "VDS_DB_URL"
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals("Invalid configuration: VDS_DB_URL is required", exception.message)
+    }
+
+    @Test
+    fun `blank VDS_DB_PASSWORD is treated as missing`() {
+        val env = minimalRequiredEnv() + ("VDS_DB_PASSWORD" to "")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals("Invalid configuration: VDS_DB_PASSWORD is required", exception.message)
+    }
+
+    @Test
+    fun `VDS_JWT_SECRET of 31 characters fails`() {
+        val env = minimalRequiredEnv() + ("VDS_JWT_SECRET" to "0".repeat(31))
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals("Invalid configuration: VDS_JWT_SECRET must be at least 32 characters", exception.message)
+    }
+
+    @Test
+    fun `VDS_JWT_SECRET of exactly 32 characters succeeds`() {
+        val env = minimalRequiredEnv() + ("VDS_JWT_SECRET" to "0".repeat(32))
+
+        val config = loadConfig(env)
+
+        assertEquals(32, config.jwt.secret.reveal().length)
+    }
+
+    @Test
+    fun `several violations at once are all named on one line`() {
+        val env = minimalRequiredEnv() - "VDS_DB_URL" + ("VDS_JWT_SECRET" to "short")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_DB_URL is required; VDS_JWT_SECRET must be at least 32 characters",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `VDS_BOOTSTRAP_ADMIN_PASSWORD of 11 characters fails`() {
+        val env = minimalRequiredEnv() +
+            ("VDS_BOOTSTRAP_ADMIN_USERNAME" to "admin") +
+            ("VDS_BOOTSTRAP_ADMIN_PASSWORD" to "a".repeat(11))
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_BOOTSTRAP_ADMIN_PASSWORD must be at least 12 characters",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `VDS_BOOTSTRAP_ADMIN_PASSWORD of 73 UTF-8 bytes fails`() {
+        val password = "a".repeat(73)
+        assertEquals(73, password.toByteArray(Charsets.UTF_8).size)
+        val env = minimalRequiredEnv() +
+            ("VDS_BOOTSTRAP_ADMIN_USERNAME" to "admin") +
+            ("VDS_BOOTSTRAP_ADMIN_PASSWORD" to password)
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_BOOTSTRAP_ADMIN_PASSWORD must be at most 72 bytes in UTF-8",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `a valid 12-character bootstrap admin password succeeds`() {
+        val env = minimalRequiredEnv() +
+            ("VDS_BOOTSTRAP_ADMIN_USERNAME" to "admin") +
+            ("VDS_BOOTSTRAP_ADMIN_PASSWORD" to "123456789012")
+
+        val config = loadConfig(env)
+
+        assertEquals("admin", config.bootstrapAdmin?.username)
+        assertEquals("123456789012", config.bootstrapAdmin?.password?.reveal())
+    }
+
+    @Test
+    fun `bootstrap admin username without a password fails`() {
+        val env = minimalRequiredEnv() + ("VDS_BOOTSTRAP_ADMIN_USERNAME" to "admin")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_BOOTSTRAP_ADMIN_PASSWORD is required when VDS_BOOTSTRAP_ADMIN_USERNAME is set",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `bootstrap admin password without a username fails`() {
+        val env = minimalRequiredEnv() + ("VDS_BOOTSTRAP_ADMIN_PASSWORD" to "123456789012")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_BOOTSTRAP_ADMIN_USERNAME is required when VDS_BOOTSTRAP_ADMIN_PASSWORD is set",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `non-numeric VDS_HTTP_PORT fails`() {
+        val env = minimalRequiredEnv() + ("VDS_HTTP_PORT" to "not-a-number")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_HTTP_PORT must be an integer between 1 and 65535",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `out-of-range VDS_HTTP_PORT fails`() {
+        val env = minimalRequiredEnv() + ("VDS_HTTP_PORT" to "70000")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_HTTP_PORT must be an integer between 1 and 65535",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `VDS_HTTP_PORT of zero fails as out of range`() {
+        val env = minimalRequiredEnv() + ("VDS_HTTP_PORT" to "0")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_HTTP_PORT must be an integer between 1 and 65535",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `toString of the loaded config never reveals the password or the jwt secret`() {
+        val config = loadConfig(fullValidEnv())
+
+        val rendered = config.toString()
+
+        assertFalse(rendered.contains("db-secret"))
+        assertFalse(rendered.contains("0".repeat(32)))
+        assertFalse(rendered.contains("fx-api-key"))
+        assertFalse(rendered.contains("change-me-please"))
+        assertTrue(rendered.contains("***"))
+    }
+
+    @Test
+    fun `non-positive VDS_DB_POOL_MAX fails`() {
+        val env = minimalRequiredEnv() + ("VDS_DB_POOL_MAX" to "0")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_DB_POOL_MAX must be a positive integer",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `negative VDS_DB_POOL_MIN_IDLE fails`() {
+        val env = minimalRequiredEnv() + ("VDS_DB_POOL_MIN_IDLE" to "-1")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_DB_POOL_MIN_IDLE must be zero or greater",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `zero VDS_DB_POOL_MIN_IDLE succeeds`() {
+        val env = minimalRequiredEnv() + ("VDS_DB_POOL_MIN_IDLE" to "0")
+
+        val config = loadConfig(env)
+
+        assertEquals(0, config.db.poolMinIdle)
+    }
+
+    @Test
+    fun `non-positive VDS_DB_CONNECTION_TIMEOUT_MS fails`() {
+        val env = minimalRequiredEnv() + ("VDS_DB_CONNECTION_TIMEOUT_MS" to "0")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_DB_CONNECTION_TIMEOUT_MS must be a positive integer",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `negative VDS_DB_LEAK_DETECTION_MS fails`() {
+        val env = minimalRequiredEnv() + ("VDS_DB_LEAK_DETECTION_MS" to "-5")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_DB_LEAK_DETECTION_MS must be zero or greater",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `zero VDS_DB_LEAK_DETECTION_MS succeeds`() {
+        val env = minimalRequiredEnv() + ("VDS_DB_LEAK_DETECTION_MS" to "0")
+
+        val config = loadConfig(env)
+
+        assertEquals(0L, config.db.leakDetectionMs)
+    }
+
+    @Test
+    fun `non-positive VDS_JWT_TTL_HOURS fails`() {
+        val env = minimalRequiredEnv() + ("VDS_JWT_TTL_HOURS" to "-1")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_JWT_TTL_HOURS must be a positive integer",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `non-absolute VDS_FX_API_URL fails`() {
+        val env = minimalRequiredEnv() + ("VDS_FX_API_URL" to "not-a-url")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_FX_API_URL must be an absolute http or https URL",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `non-http VDS_FX_API_URL fails`() {
+        val env = minimalRequiredEnv() + ("VDS_FX_API_URL" to "ftp://example.com/latest")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_FX_API_URL must be an absolute http or https URL",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `non-positive VDS_FX_REFRESH_HOURS fails`() {
+        val env = minimalRequiredEnv() + ("VDS_FX_REFRESH_HOURS" to "0")
+
+        val exception = assertFailsWith<ConfigurationException> { loadConfig(env) }
+
+        assertEquals(
+            "Invalid configuration: VDS_FX_REFRESH_HOURS must be a positive integer",
+            exception.message,
+        )
+    }
+
+    @Test
+    fun `VDS_CORS_ALLOWED_ORIGINS defaults to an empty list when absent`() {
+        val config = loadConfig(minimalRequiredEnv())
+
+        assertEquals(emptyList(), config.http.corsAllowedOrigins)
+    }
+
+    @Test
+    fun `VDS_CORS_ALLOWED_ORIGINS parses a trimmed comma-separated list`() {
+        val env = minimalRequiredEnv() + ("VDS_CORS_ALLOWED_ORIGINS" to " https://a.example ,https://b.example")
+
+        val config = loadConfig(env)
+
+        assertEquals(listOf("https://a.example", "https://b.example"), config.http.corsAllowedOrigins)
+    }
+}

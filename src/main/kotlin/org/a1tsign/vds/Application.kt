@@ -14,15 +14,24 @@ import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.response.respond
 import io.ktor.server.routing.routing
 import org.a1tsign.vds.api.routes.opsRoutes
+import org.a1tsign.vds.config.AppConfig
+import org.a1tsign.vds.config.ConfigurationException
+import org.a1tsign.vds.config.loadConfig
+import org.a1tsign.vds.config.nowUtc
+import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
-import java.util.concurrent.atomic.AtomicInteger
+import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.system.exitProcess
 
 // Shared between module() (incremented/decremented around every request) and shutdownGracefully()
 // (polled during shutdown) — see the shutdown-drain comment below for why a plain atomic counter
 // is used instead of relying on EmbeddedServer.stop()'s own grace period.
 private val activeRequests = AtomicInteger(0)
 private val shuttingDown = AtomicBoolean(false)
+
+private val logger = LoggerFactory.getLogger("org.a1tsign.vds.Application")
 
 fun main() {
     // EmbeddedServer.start() unconditionally registers its OWN internal JVM shutdown hook
@@ -34,13 +43,24 @@ fun main() {
     // before server.start() so our hook below is the only thing that ever calls server.stop().
     System.setProperty("io.ktor.server.engine.ShutdownHook", "false")
 
-    val port = System.getenv("VDS_HTTP_PORT")?.toInt() ?: 8080
-    val server = embeddedServer(CIO, port = port) { module() }
-    Runtime.getRuntime().addShutdownHook(Thread { shutdownGracefully(server) })
+    // Config is loaded, and validated, before anything else — including before the HTTP server
+    // binds a port. A misconfiguration must fail fast with one clear log line, not start
+    // half-broken (nobody is watching this box). No stack trace: the message already names every
+    // offending variable, and ConfigurationException.message is logged as-is.
+    val config = try {
+        loadConfig()
+    } catch (e: ConfigurationException) {
+        logger.error(e.message)
+        exitProcess(1)
+    }
+
+    val clock = Clock.systemUTC()
+    val server = embeddedServer(CIO, port = config.http.port) { module(config, clock) }
+    Runtime.getRuntime().addShutdownHook(Thread { shutdownGracefully(server, clock) })
     server.start(wait = true)
 }
 
-fun Application.module() {
+fun Application.module(config: AppConfig, clock: Clock) {
     install(CallLogging) {
         level = Level.INFO
     }
@@ -101,10 +121,10 @@ private const val SHUTDOWN_POLL_INTERVAL_MILLIS = 50L
  * the drain window. They are rejected with `503` at the very first pipeline phase, before running
  * any route handler, instead of being served or counted, so they do not extend the drain.
  */
-private fun shutdownGracefully(server: EmbeddedServer<*, *>) {
+private fun shutdownGracefully(server: EmbeddedServer<*, *>, clock: Clock) {
     shuttingDown.set(true)
-    val deadline = System.currentTimeMillis() + SHUTDOWN_DRAIN_CAP_MILLIS
-    while (activeRequests.get() > 0 && System.currentTimeMillis() < deadline) {
+    val deadline = clock.nowUtc().plusMillis(SHUTDOWN_DRAIN_CAP_MILLIS)
+    while (activeRequests.get() > 0 && clock.nowUtc().isBefore(deadline)) {
         Thread.sleep(SHUTDOWN_POLL_INTERVAL_MILLIS)
     }
     server.stop(gracePeriodMillis = 0, timeoutMillis = 1_000)

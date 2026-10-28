@@ -1,6 +1,7 @@
 package org.a1tsign.vds
 
 import com.zaxxer.hikari.HikariDataSource
+import com.zaxxer.hikari.pool.HikariPool.PoolInitializationException
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -65,7 +66,17 @@ fun main() {
     // here is hardcoded. A migration failure gets the same fail-fast treatment as a config
     // error: one clear ERROR line (never the exception's stack trace into a running server) and
     // a non-zero exit, not a half-migrated process left serving requests.
-    val dataSource = buildDataSource(config.db)
+    //
+    // HikariDataSource(HikariConfig) eagerly initializes the pool and throws
+    // PoolInitializationException (a RuntimeException) if the database is unreachable at boot —
+    // caught here with the same fail-fast pattern as ConfigurationException/FlywayException below,
+    // instead of letting it propagate as an uncaught stack-trace dump.
+    val dataSource = try {
+        buildDataSource(config.db)
+    } catch (e: PoolInitializationException) {
+        logger.error("Database pool initialization failed: ${e.cause?.message ?: e.message}")
+        exitProcess(1)
+    }
     try {
         runMigrations(dataSource)
     } catch (e: FlywayException) {

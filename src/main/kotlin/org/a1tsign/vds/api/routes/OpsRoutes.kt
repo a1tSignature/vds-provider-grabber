@@ -24,6 +24,11 @@ private data class VersionResponse(val version: String, val buildTimestamp: Stri
 
 private val READY_TIMEOUT = 2.seconds
 
+// Bounds the JDBC query phase itself (`statement.queryTimeout`, in whole seconds per the JDBC
+// API), independent of READY_TIMEOUT which bounds the coroutine/connection-acquisition phase —
+// see the KDoc below for why both are needed.
+private const val READY_QUERY_TIMEOUT_SECONDS = 1
+
 /**
  * Operational endpoints. `GET /health` never touches the database (process liveness only);
  * `GET /health/ready` does, and must never hang: acquiring a pool connection plus running the
@@ -44,6 +49,15 @@ private val READY_TIMEOUT = 2.seconds
  * `SynchronousQueue.poll(timeout, unit)` under the hood) responds to that interrupt immediately,
  * so the whole check is actually bounded by [READY_TIMEOUT] end to end (verified empirically:
  * same scenario answers in ~2 s with this version).
+ *
+ * `runInterruptible`/`Thread.interrupt()` only covers the connection-*acquisition* half, though:
+ * once a connection is actually in hand, the `SELECT 1` runs over pgjdbc's plain blocking socket
+ * (`PGStream`), which does not respond to thread interruption at all. Against a PostgreSQL that
+ * accepts the TCP connection but never answers the query, that phase would hang forever even with
+ * the `runInterruptible` wrapper above, holding the borrowed Hikari connection hostage. So the
+ * query itself is given its own, independent bound via [READY_QUERY_TIMEOUT_SECONDS]
+ * (`statement.queryTimeout`), which pgjdbc enforces by cancelling the query on the wire — this is
+ * the one bound that actually reaches the blocking socket read.
  */
 fun Route.opsRoutes(dataSource: DataSource) {
     get("/health") {
@@ -56,6 +70,7 @@ fun Route.opsRoutes(dataSource: DataSource) {
                 try {
                     dataSource.connection.use { connection ->
                         connection.createStatement().use { statement ->
+                            statement.queryTimeout = READY_QUERY_TIMEOUT_SECONDS
                             statement.executeQuery("SELECT 1")
                         }
                     }

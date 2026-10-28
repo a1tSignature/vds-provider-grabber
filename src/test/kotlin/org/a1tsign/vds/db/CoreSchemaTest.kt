@@ -2,6 +2,7 @@ package org.a1tsign.vds.db
 
 import org.a1tsign.vds.support.AbstractDbTest
 import org.a1tsign.vds.support.PostgresSupport
+import org.postgresql.util.PSQLException
 import java.sql.Connection
 import java.sql.SQLException
 import java.time.OffsetDateTime
@@ -57,8 +58,21 @@ class CoreSchemaTest : AbstractDbTest() {
         return result
     }
 
-    private fun Connection.assertInsertFails(sql: String, vararg params: Any?) {
-        assertFailsWith<SQLException> { exec(sql, *params) }
+    /**
+     * Asserts the insert fails, and that it fails for the *specific* named constraint expected --
+     * not merely with *some* `SQLException`, which would also pass for a typo in the test's own
+     * SQL or the wrong constraint firing. `PSQLException.serverErrorMessage.constraint` names the
+     * constraint (or unique index, which Postgres reports the same way) that actually fired on the
+     * server.
+     */
+    private fun Connection.assertInsertFails(expectedConstraint: String, sql: String, vararg params: Any?) {
+        val exception = assertFailsWith<SQLException> { exec(sql, *params) }
+        val psqlException = exception as? PSQLException ?: exception.cause as? PSQLException
+        assertEquals(
+            expectedConstraint,
+            psqlException?.serverErrorMessage?.constraint,
+            "constraint expected to fire for: $sql",
+        )
     }
 
     private fun newProvider(connection: Connection, slug: String, status: String = "ACTIVE"): Long =
@@ -344,6 +358,7 @@ class CoreSchemaTest : AbstractDbTest() {
                 newProvider(connection, "provider-status-$status".lowercase(), status)
             }
             connection.assertInsertFails(
+                "ck_provider_status",
                 "INSERT INTO provider (slug, name, website_url, status) VALUES ('provider-status-bogus', 'x', 'https://x.example.com', 'BOGUS')",
             )
         }
@@ -362,6 +377,7 @@ class CoreSchemaTest : AbstractDbTest() {
             }
             val providerId = newProvider(connection, "legal-ds-invalid")
             connection.assertInsertFails(
+                "ck_provider_legal_info_data_source",
                 "INSERT INTO provider_legal_info (provider_id, data_source, confidence) VALUES (?, 'BOGUS', 'HIGH')",
                 providerId,
             )
@@ -381,6 +397,7 @@ class CoreSchemaTest : AbstractDbTest() {
             }
             val providerId = newProvider(connection, "legal-conf-invalid")
             connection.assertInsertFails(
+                "ck_provider_legal_info_confidence",
                 "INSERT INTO provider_legal_info (provider_id, data_source, confidence) VALUES (?, 'MANUAL', 'BOGUS')",
                 providerId,
             )
@@ -414,6 +431,7 @@ class CoreSchemaTest : AbstractDbTest() {
             assertEquals(allMethods, readBack)
 
             connection.assertInsertFails(
+                "ck_provider_payment_method_method",
                 "INSERT INTO provider_payment_method (provider_id, method) VALUES (?, 'BITCOIN_CASH')",
                 providerId,
             )
@@ -428,6 +446,7 @@ class CoreSchemaTest : AbstractDbTest() {
                 newTariff(connection, providerId, "disk-type-$index", diskType = diskType)
             }
             connection.assertInsertFails(
+                "ck_tariff_disk_type",
                 "INSERT INTO tariff (provider_id, name, vcpu_count, ram_mb, disk_gb, disk_type, virtualization) VALUES (?, 'bad-disk', 1, 512, 10, 'FLOPPY', 'KVM')",
                 providerId,
             )
@@ -442,6 +461,7 @@ class CoreSchemaTest : AbstractDbTest() {
                 newTariff(connection, providerId, "virt-type-$index", virtualization = virtualization)
             }
             connection.assertInsertFails(
+                "ck_tariff_virtualization",
                 "INSERT INTO tariff (provider_id, name, vcpu_count, ram_mb, disk_gb, disk_type, virtualization) VALUES (?, 'bad-virt', 1, 512, 10, 'SSD', 'VMWARE')",
                 providerId,
             )
@@ -472,6 +492,7 @@ class CoreSchemaTest : AbstractDbTest() {
             assertEquals(periods.toSet(), readBack)
 
             connection.assertInsertFails(
+                "ck_tariff_price_billing_period",
                 """
                 INSERT INTO tariff_price (tariff_id, billing_period, amount, currency, effective_from, data_source)
                 VALUES (?, 'WEEKLY', 10.0000, 'USD', ?, 'MANUAL')
@@ -500,6 +521,7 @@ class CoreSchemaTest : AbstractDbTest() {
                 )
             }
             connection.assertInsertFails(
+                "ck_tariff_price_data_source",
                 """
                 INSERT INTO tariff_price (tariff_id, billing_period, amount, currency, effective_from, data_source)
                 VALUES (?, 'QUARTERLY', 10.0000, 'USD', ?, 'IMPORT')
@@ -517,6 +539,7 @@ class CoreSchemaTest : AbstractDbTest() {
                 newUser(connection, "user-status-$index", status)
             }
             connection.assertInsertFails(
+                "ck_app_user_status",
                 "INSERT INTO app_user (username, password_hash, status) VALUES ('user-status-bogus', 'hash', 'BOGUS')",
             )
         }
@@ -541,6 +564,7 @@ class CoreSchemaTest : AbstractDbTest() {
 
             // A second *current* row for the same (tariff, billing_period) must be rejected.
             connection.assertInsertFails(
+                "uq_tariff_price_current",
                 """
                 INSERT INTO tariff_price (tariff_id, billing_period, amount, currency, effective_from, data_source)
                 VALUES (?, 'MONTHLY', 12.0000, 'USD', ?, 'MANUAL')
@@ -587,13 +611,21 @@ class CoreSchemaTest : AbstractDbTest() {
             val tariffA = newTariff(connection, providerA, "cross-provider-tariff-a")
             val locationB = newLocation(connection, providerB, "DE")
 
+            // provider_id = providerA matches tariffA's real provider (fk_tariff_location_tariff
+            // is satisfied), but locationB's real provider is providerB, not providerA -- only
+            // fk_tariff_location_location fires.
             connection.assertInsertFails(
+                "fk_tariff_location_location",
                 "INSERT INTO tariff_location (tariff_id, location_id, provider_id) VALUES (?, ?, ?)",
                 tariffA,
                 locationB,
                 providerA,
             )
+            // provider_id = providerB matches locationB's real provider (fk_tariff_location_location
+            // is satisfied), but tariffA's real provider is providerA, not providerB -- only
+            // fk_tariff_location_tariff fires.
             connection.assertInsertFails(
+                "fk_tariff_location_tariff",
                 "INSERT INTO tariff_location (tariff_id, location_id, provider_id) VALUES (?, ?, ?)",
                 tariffA,
                 locationB,
@@ -625,10 +657,12 @@ class CoreSchemaTest : AbstractDbTest() {
             val providerId = newProvider(connection, "half-coords")
 
             connection.assertInsertFails(
+                "ck_location_lat_lon_both_or_neither",
                 "INSERT INTO location (provider_id, country_code, latitude, longitude) VALUES (?, 'US', 40.0, NULL)",
                 providerId,
             )
             connection.assertInsertFails(
+                "ck_location_lat_lon_both_or_neither",
                 "INSERT INTO location (provider_id, country_code, latitude, longitude) VALUES (?, 'US', NULL, -73.0)",
                 providerId,
             )
@@ -742,6 +776,306 @@ class CoreSchemaTest : AbstractDbTest() {
         PostgresSupport.dataSource.connection.use { connection ->
             val codes = connection.stringSet("SELECT code FROM role")
             assertEquals(setOf("ADMIN", "EDITOR", "VIEWER"), codes)
+        }
+    }
+
+    // ---- 11. constraints that no test above actually pinned -------------------------------
+    // Each of these can be deleted from V1__core_schema.sql individually with the rest of this
+    // suite still green -- confirmed by temporarily removing each one and re-running the suite
+    // before writing the test below for it. assertInsertFails checks the *specific* constraint
+    // name that fired (see its KDoc), not just that some SQLException was thrown.
+
+    @Test
+    fun `provider slug must be unique`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            newProvider(connection, "dup-slug")
+            connection.assertInsertFails(
+                "uq_provider_slug",
+                "INSERT INTO provider (slug, name, website_url, status) VALUES ('dup-slug', 'Other Name', 'https://dup-slug-2.example.com', 'ACTIVE')",
+            )
+        }
+    }
+
+    @Test
+    fun `provider slug must match the lowercase alphanumeric-dash format`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            connection.assertInsertFails(
+                "ck_provider_slug_format",
+                "INSERT INTO provider (slug, name, website_url, status) VALUES ('Not A Valid Slug!', 'x', 'https://x.example.com', 'ACTIVE')",
+            )
+        }
+    }
+
+    @Test
+    fun `location country_code must be two uppercase letters`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val providerId = newProvider(connection, "bad-country-code")
+            connection.assertInsertFails(
+                "ck_location_country_code",
+                "INSERT INTO location (provider_id, country_code) VALUES (?, 'us')",
+                providerId,
+            )
+        }
+    }
+
+    @Test
+    fun `provider_legal_info registration_country must be two uppercase letters when present`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val providerId = newProvider(connection, "bad-registration-country")
+            connection.assertInsertFails(
+                "ck_provider_legal_info_registration_country",
+                """
+                INSERT INTO provider_legal_info (provider_id, registration_country, data_source, confidence)
+                VALUES (?, 'us', 'MANUAL', 'HIGH')
+                """.trimIndent(),
+                providerId,
+            )
+        }
+    }
+
+    @Test
+    fun `location latitude must be within -90 and 90`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val providerId = newProvider(connection, "bad-latitude")
+            connection.assertInsertFails(
+                "ck_location_latitude_range",
+                "INSERT INTO location (provider_id, country_code, latitude, longitude) VALUES (?, 'US', 100.0, 50.0)",
+                providerId,
+            )
+        }
+    }
+
+    @Test
+    fun `location longitude must be within -180 and 180`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val providerId = newProvider(connection, "bad-longitude")
+            connection.assertInsertFails(
+                "ck_location_longitude_range",
+                "INSERT INTO location (provider_id, country_code, latitude, longitude) VALUES (?, 'US', 10.0, 200.0)",
+                providerId,
+            )
+        }
+    }
+
+    @Test
+    fun `location provider_country_city_dc must be unique case-insensitively`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val providerId = newProvider(connection, "dup-location")
+            connection.exec(
+                "INSERT INTO location (provider_id, country_code, city, datacenter_name) VALUES (?, 'US', 'New York', 'DC1')",
+                providerId,
+            )
+            connection.assertInsertFails(
+                "uq_location_provider_country_city_dc",
+                "INSERT INTO location (provider_id, country_code, city, datacenter_name) VALUES (?, 'US', 'new york', 'dc1')",
+                providerId,
+            )
+        }
+    }
+
+    @Test
+    fun `tariff vcpu_count must be positive`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val providerId = newProvider(connection, "bad-vcpu")
+            connection.assertInsertFails(
+                "ck_tariff_vcpu_count_positive",
+                """
+                INSERT INTO tariff (provider_id, name, vcpu_count, ram_mb, disk_gb, disk_type, virtualization)
+                VALUES (?, 'bad-vcpu', 0, 512, 10, 'SSD', 'KVM')
+                """.trimIndent(),
+                providerId,
+            )
+        }
+    }
+
+    @Test
+    fun `tariff ram_mb must be positive`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val providerId = newProvider(connection, "bad-ram")
+            connection.assertInsertFails(
+                "ck_tariff_ram_mb_positive",
+                """
+                INSERT INTO tariff (provider_id, name, vcpu_count, ram_mb, disk_gb, disk_type, virtualization)
+                VALUES (?, 'bad-ram', 1, 0, 10, 'SSD', 'KVM')
+                """.trimIndent(),
+                providerId,
+            )
+        }
+    }
+
+    @Test
+    fun `tariff disk_gb must be positive`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val providerId = newProvider(connection, "bad-disk-gb")
+            connection.assertInsertFails(
+                "ck_tariff_disk_gb_positive",
+                """
+                INSERT INTO tariff (provider_id, name, vcpu_count, ram_mb, disk_gb, disk_type, virtualization)
+                VALUES (?, 'bad-disk-gb', 1, 512, 0, 'SSD', 'KVM')
+                """.trimIndent(),
+                providerId,
+            )
+        }
+    }
+
+    @Test
+    fun `tariff ipv4_count must be non-negative`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val providerId = newProvider(connection, "bad-ipv4")
+            connection.assertInsertFails(
+                "ck_tariff_ipv4_count_non_negative",
+                """
+                INSERT INTO tariff (provider_id, name, vcpu_count, ram_mb, disk_gb, disk_type, virtualization, ipv4_count)
+                VALUES (?, 'bad-ipv4', 1, 512, 10, 'SSD', 'KVM', -1)
+                """.trimIndent(),
+                providerId,
+            )
+        }
+    }
+
+    @Test
+    fun `tariff name must be unique per provider case-insensitively`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val providerId = newProvider(connection, "dup-tariff-name")
+            newTariff(connection, providerId, "Same Name")
+            connection.assertInsertFails(
+                "uq_tariff_provider_name",
+                """
+                INSERT INTO tariff (provider_id, name, vcpu_count, ram_mb, disk_gb, disk_type, virtualization)
+                VALUES (?, 'same name', 1, 512, 10, 'SSD', 'KVM')
+                """.trimIndent(),
+                providerId,
+            )
+        }
+    }
+
+    @Test
+    fun `tariff external_id must be unique per provider when present`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val providerId = newProvider(connection, "dup-tariff-external-id")
+            connection.exec(
+                """
+                INSERT INTO tariff (provider_id, name, external_id, vcpu_count, ram_mb, disk_gb, disk_type, virtualization)
+                VALUES (?, 'tariff-a', 'EXT-1', 1, 512, 10, 'SSD', 'KVM')
+                """.trimIndent(),
+                providerId,
+            )
+            connection.assertInsertFails(
+                "uq_tariff_provider_external_id",
+                """
+                INSERT INTO tariff (provider_id, name, external_id, vcpu_count, ram_mb, disk_gb, disk_type, virtualization)
+                VALUES (?, 'tariff-b', 'EXT-1', 1, 512, 10, 'SSD', 'KVM')
+                """.trimIndent(),
+                providerId,
+            )
+        }
+    }
+
+    @Test
+    fun `tariff_price amount must be non-negative`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val providerId = newProvider(connection, "bad-price-amount")
+            val tariffId = newTariff(connection, providerId, "bad-price-amount-tariff")
+            connection.assertInsertFails(
+                "ck_tariff_price_amount_non_negative",
+                """
+                INSERT INTO tariff_price (tariff_id, billing_period, amount, currency, effective_from, data_source)
+                VALUES (?, 'MONTHLY', -1.0000, 'USD', ?, 'MANUAL')
+                """.trimIndent(),
+                tariffId,
+                now,
+            )
+        }
+    }
+
+    @Test
+    fun `tariff_price currency must be three uppercase letters`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val providerId = newProvider(connection, "bad-price-currency")
+            val tariffId = newTariff(connection, providerId, "bad-price-currency-tariff")
+            connection.assertInsertFails(
+                "ck_tariff_price_currency",
+                """
+                INSERT INTO tariff_price (tariff_id, billing_period, amount, currency, effective_from, data_source)
+                VALUES (?, 'MONTHLY', 10.0000, 'usd', ?, 'MANUAL')
+                """.trimIndent(),
+                tariffId,
+                now,
+            )
+        }
+    }
+
+    @Test
+    fun `tariff_price effective_to must be after effective_from`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val providerId = newProvider(connection, "bad-price-effective")
+            val tariffId = newTariff(connection, providerId, "bad-price-effective-tariff")
+            connection.assertInsertFails(
+                "ck_tariff_price_effective_to_after_from",
+                """
+                INSERT INTO tariff_price (tariff_id, billing_period, amount, currency, effective_from, effective_to, data_source)
+                VALUES (?, 'MONTHLY', 10.0000, 'USD', ?, ?, 'MANUAL')
+                """.trimIndent(),
+                tariffId,
+                now,
+                now.minusDays(1),
+            )
+        }
+    }
+
+    @Test
+    fun `app_user username must be unique`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            newUser(connection, "dup-user")
+            connection.assertInsertFails(
+                "uq_app_user_username",
+                "INSERT INTO app_user (username, password_hash, status) VALUES ('dup-user', 'hash2', 'ACTIVE')",
+            )
+        }
+    }
+
+    // ---- 12. currency_rate -- zero rows were ever inserted here before this fix -----------
+
+    private fun newCurrencyRate(
+        connection: Connection,
+        currency: String = "USD",
+        source: String = "test-source",
+        sourceRateAt: OffsetDateTime = now,
+    ): Long =
+        connection.insertId(
+            "INSERT INTO currency_rate (currency, rate_to_usd, source_rate_at, fetched_at, source) VALUES (?, 1.000000000000, ?, ?, ?) RETURNING id",
+            currency,
+            sourceRateAt,
+            now,
+            source,
+        )
+
+    @Test
+    fun `currency_rate accepts a valid row and rejects an invalid currency, a non-positive rate, and a duplicate currency-source-timestamp`() {
+        PostgresSupport.dataSource.connection.use { connection ->
+            val id = newCurrencyRate(connection, currency = "EUR", source = "ecb")
+            assertEquals(1L, connection.scalarLong("SELECT count(*) FROM currency_rate WHERE id = ?", id))
+
+            connection.assertInsertFails(
+                "ck_currency_rate_currency",
+                "INSERT INTO currency_rate (currency, rate_to_usd, source_rate_at, fetched_at, source) VALUES ('eur', 1.0, ?, ?, 'ecb-2')",
+                now,
+                now,
+            )
+            connection.assertInsertFails(
+                "ck_currency_rate_rate_to_usd_positive",
+                "INSERT INTO currency_rate (currency, rate_to_usd, source_rate_at, fetched_at, source) VALUES ('GBP', 0, ?, ?, 'ecb-2')",
+                now,
+                now,
+            )
+            // Same (currency, source, source_rate_at) as the row inserted above -- a different
+            // rate_to_usd does not exempt it from the unique constraint.
+            connection.assertInsertFails(
+                "uq_currency_rate_currency_source_rate_at",
+                "INSERT INTO currency_rate (currency, rate_to_usd, source_rate_at, fetched_at, source) VALUES ('EUR', 1.1, ?, ?, 'ecb')",
+                now,
+                now,
+            )
         }
     }
 }

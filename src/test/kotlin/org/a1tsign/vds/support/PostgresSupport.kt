@@ -54,18 +54,21 @@ object PostgresSupport {
     val password: String get() = container.password
 
     /**
-     * Truncates every table the schema currently has, then re-applies any seed rows a migration
-     * is relying on.
+     * Truncates every table the schema currently has, except tables excluded below.
      *
      * Table list is **discovered** from `information_schema.tables` (schema `public`, excluding
-     * `flyway_schema_history`) instead of hardcoded, because there is no schema yet — task 4
-     * writes the first migration — and every later task that adds a table would otherwise have
-     * to remember to edit this harness function too. Discovery makes that an automatic, "it just
-     * works" property of the harness instead of a manual checklist item for 15 remaining tasks.
-     * The trade-off: a table a test deliberately wants to survive resets (there is none planned
-     * in this schema) would need an explicit exclusion added here later — acceptable, since the
-     * one case this project does have (the `role`/seed rows the migration will insert) is handled
-     * by re-seeding below rather than by skipping truncation.
+     * `flyway_schema_history` and `role`) instead of hardcoded, because there is no schema yet —
+     * task 4 writes the first migration — and every later task that adds a table would otherwise
+     * have to remember to edit this harness function too. Discovery makes that an automatic, "it
+     * just works" property of the harness instead of a manual checklist item for 15 remaining
+     * tasks. `role` is excluded rather than truncated-and-reseeded: `V1__core_schema.sql` seeds
+     * it directly (no `R__` repeatable migration, see that migration's comment), nothing writes
+     * to it at runtime, and no `ON DELETE CASCADE` reaches into it, so it is safe to leave
+     * untouched across resets -- this also means tests that assert on `role`'s contents (e.g.
+     * "the role table contains exactly ADMIN/EDITOR/VIEWER") are actually proving something about
+     * the migration's own seed, not about a hardcoded copy living in this harness. If a later
+     * migration seeds another reference table the same way, extend this exclusion list rather
+     * than reintroducing a hardcoded reseed.
      */
     fun resetDatabase() {
         // Touch both lazies to guarantee the container/migrations/Exposed connection exist
@@ -79,7 +82,6 @@ object PostgresSupport {
                     statement.execute("TRUNCATE $tableList RESTART IDENTITY CASCADE")
                 }
             }
-            reseedAfterTruncate(connection)
         }
     }
 
@@ -90,7 +92,7 @@ object PostgresSupport {
                 """
                 SELECT table_name FROM information_schema.tables
                 WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-                  AND table_name <> 'flyway_schema_history'
+                  AND table_name NOT IN ('flyway_schema_history', 'role')
                 """.trimIndent(),
             ).use { resultSet ->
                 while (resultSet.next()) {
@@ -99,26 +101,6 @@ object PostgresSupport {
             }
         }
         return tables
-    }
-
-    /**
-     * Restores rows a migration seeds that the truncate above just removed. `V1__core_schema.sql`
-     * seeds the three `role` lookup rows (`ADMIN`/`EDITOR`/`VIEWER`) directly — not via a
-     * repeatable migration, since the task that added them explicitly rules those out — so
-     * `TRUNCATE ... CASCADE` wipes them on the very first [resetDatabase] call and Flyway never
-     * re-applies an already-migrated version to bring them back. Re-insert exactly what `V1` seeds.
-     */
-    private fun reseedAfterTruncate(connection: Connection) {
-        connection.createStatement().use { statement ->
-            statement.execute(
-                """
-                INSERT INTO role (code, description) VALUES
-                    ('ADMIN', 'Full access: manage providers, tariffs, prices and other users'),
-                    ('EDITOR', 'Can create and edit providers, tariffs and prices'),
-                    ('VIEWER', 'Read-only access to the catalog')
-                """.trimIndent(),
-            )
-        }
     }
 }
 

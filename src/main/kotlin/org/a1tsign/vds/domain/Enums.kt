@@ -70,8 +70,15 @@ inline fun <reified E : Enum<E>> parseDbEnum(table: String, column: String, raw:
  * Explicit privilege ordering `ADMIN ⊃ EDITOR ⊃ VIEWER`, expressed once here so auth code checks
  * `role.includes(required)` instead of duplicating role sets at each call site. Every role
  * includes itself.
+ *
+ * Backed by a direct `ordinal` comparison on [Role]'s own declaration order
+ * (`ADMIN, EDITOR, VIEWER`, matching the required privilege order) rather than a separate
+ * `rolePrivilegeOrder` list searched with `indexOf`: `List.indexOf` returns `-1` for an element
+ * not in the list, which would make `includes()` fail *open* (`-1 <= anything` is `true`) for any
+ * future `Role` constant added to the enum without also being added to that list -- exactly the
+ * kind of "two lists expressing the same thing" duplication this helper exists to avoid. `ordinal`
+ * has no such failure mode: every enum constant has one by construction.
+ * `SchemaEnumParityTest` pins the enum's declaration order explicitly so a future reordering
+ * (which would silently change this method's meaning) fails loudly instead of silently.
  */
-private val rolePrivilegeOrder = listOf(Role.ADMIN, Role.EDITOR, Role.VIEWER)
-
-fun Role.includes(other: Role): Boolean =
-    rolePrivilegeOrder.indexOf(this) <= rolePrivilegeOrder.indexOf(other)
+fun Role.includes(other: Role): Boolean = this.ordinal <= other.ordinal

@@ -93,10 +93,12 @@ object TariffTable : Table("tariff") {
 
 /**
  * Many-to-many between [TariffTable] and [LocationTable]. The migration's two FKs are each
- * composite -- `(tariff_id, provider_id)` and `(location_id, provider_id)` -- which Exposed's
- * single-column `references(...)` cannot express; `provider_id` is kept here as a plain column
- * rather than attached to a half-true single-column reference. The real constraint lives in the
- * migration and is exercised against the database directly, not reconstructed in Kotlin.
+ * composite -- `(tariff_id, provider_id)` and `(location_id, provider_id)` -- which cannot be
+ * expressed via Exposed's single-column `references(...)` helper (Exposed 1.6.0's
+ * `Table.foreignKey(vararg Pair<Column<*>, Column<*>>, onDelete, name)` can express a composite
+ * FK directly, but is not used here); `provider_id` is kept here as a plain column rather than
+ * attached to a half-true single-column reference. The real constraint lives in the migration
+ * and is exercised against the database directly, not reconstructed in Kotlin.
  */
 object TariffLocationTable : Table("tariff_location") {
     val tariffId = long("tariff_id")

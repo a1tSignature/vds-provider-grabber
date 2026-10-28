@@ -340,4 +340,12 @@ class SchemaEnumParityTest : AbstractDbTest() {
         assertFalse(Role.VIEWER.includes(Role.EDITOR))
         Role.entries.forEach { role -> assertTrue(role.includes(role), "$role must include itself") }
     }
+
+    @Test
+    fun `Role declaration order is pinned to ADMIN EDITOR VIEWER`() {
+        // Role.includes() is implemented as a direct ordinal comparison (see its KDoc), so a
+        // future reordering of this enum would silently change what includes() means. Pinning
+        // the declaration order here makes that failure loud instead of silent.
+        assertEquals(listOf(Role.ADMIN, Role.EDITOR, Role.VIEWER), Role.entries)
+    }
 }

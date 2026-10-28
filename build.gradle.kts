@@ -76,5 +76,15 @@ tasks.processResources {
 
 tasks.shadowJar {
     mergeServiceFiles()
-    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    // Only the two paths shadow actually has a transformer for get an explicit INCLUDE, so every
+    // copy reaches that transformer instead of being silently dropped before it runs:
+    // *.kotlin_module (KotlinModuleMetadataTransformer) and META-INF/services/* (the
+    // ServiceFileTransformer registered by mergeServiceFiles() above, which merges the provider
+    // lists). Everything else keeps the task's default EXCLUDE, so a genuine class/resource
+    // conflict elsewhere still surfaces instead of silently picking one side.
+    eachFile {
+        if (name.endsWith(".kotlin_module") || path.startsWith("META-INF/services/")) {
+            duplicatesStrategy = DuplicatesStrategy.INCLUDE
+        }
+    }
 }

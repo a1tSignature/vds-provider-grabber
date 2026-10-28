@@ -35,7 +35,12 @@ fun Application.module() {
  * Stops accepting new requests, waits up to 10 s for in-flight requests to finish, then exits.
  * Later tasks (connection pool, FX scheduler) hook their own shutdown into this one named
  * function instead of adding more inline shutdown-hook lambdas.
+ *
+ * `gracePeriodMillis` is the *only* window in which in-flight requests may finish naturally
+ * (CIOApplicationEngine.stopSuspend); `timeoutMillis - gracePeriodMillis` is extra time for the
+ * subsequent *forceful* cancellation to propagate, not more graceful time — so it must stay
+ * small and `gracePeriodMillis` itself must be the full 10 s the task requires.
  */
 private fun shutdownGracefully(server: EmbeddedServer<*, *>) {
-    server.stop(gracePeriodMillis = 1_000, timeoutMillis = 10_000)
+    server.stop(gracePeriodMillis = 10_000, timeoutMillis = 11_000)
 }

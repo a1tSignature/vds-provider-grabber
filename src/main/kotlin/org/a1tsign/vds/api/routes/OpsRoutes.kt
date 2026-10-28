@@ -24,7 +24,9 @@ fun Route.opsRoutes() {
 
     get("/version") {
         val properties = Properties()
-        ClassLoader.getSystemClassLoader().getResourceAsStream("version.properties")?.use {
+        val classLoader = Thread.currentThread().contextClassLoader
+            ?: VersionResponse::class.java.classLoader
+        classLoader.getResourceAsStream("version.properties")?.use {
             properties.load(it)
         }
         call.respond(

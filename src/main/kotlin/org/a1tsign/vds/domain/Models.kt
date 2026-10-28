@@ -1,0 +1,114 @@
+package org.a1tsign.vds.domain
+
+import java.math.BigDecimal
+import java.time.Instant
+
+/**
+ * Framework-free row models for the core schema (`db/RowMappers.kt` builds these from a
+ * `ResultRow`). No Ktor/Exposed/serialization annotation belongs in this file -- timestamps are
+ * [Instant] (never `OffsetDateTime`, which is an Exposed/DB-boundary concern), money and
+ * coordinates are [BigDecimal], ids are [Long], and enum-like columns are the `domain.*` enums.
+ */
+data class Provider(
+    val id: Long,
+    val slug: String,
+    val name: String,
+    val websiteUrl: String,
+    val description: String?,
+    val status: ProviderStatus,
+    val createdAt: Instant,
+    val updatedAt: Instant,
+)
+
+/** 0..1 per [Provider]; `provider_legal_info.provider_id` is both PK and FK. */
+data class LegalInfo(
+    val providerId: Long,
+    val legalEntityName: String?,
+    val registrationCountry: String?,
+    val registrationNumber: String?,
+    val legalAddress: String?,
+    val dataSource: LegalDataSource,
+    val confidence: Confidence,
+    val sourceUrl: String?,
+    val verifiedAt: Instant?,
+    val updatedAt: Instant,
+)
+
+data class ProviderPaymentMethod(
+    val providerId: Long,
+    val method: PaymentMethod,
+    val note: String?,
+)
+
+data class Location(
+    val id: Long,
+    val providerId: Long,
+    val countryCode: String,
+    val region: String?,
+    val city: String?,
+    val datacenterName: String?,
+    val latitude: BigDecimal?,
+    val longitude: BigDecimal?,
+    val createdAt: Instant,
+    val updatedAt: Instant,
+)
+
+data class Tariff(
+    val id: Long,
+    val providerId: Long,
+    val externalId: String?,
+    val name: String,
+    val url: String?,
+    val vcpuCount: Short,
+    val cpuModel: String?,
+    val ramMb: Int,
+    val diskGb: Int,
+    val diskType: DiskType,
+    val bandwidthMbps: Int?,
+    val trafficLimitGb: Int?,
+    val ipv4Count: Short,
+    val ipv6Supported: Boolean?,
+    val virtualization: Virtualization,
+    val isActive: Boolean,
+    val inStock: Boolean,
+    val createdAt: Instant,
+    val updatedAt: Instant,
+)
+
+/** One row of the append-only price history (SCD type 2) for a [Tariff]. */
+data class TariffPrice(
+    val id: Long,
+    val tariffId: Long,
+    val billingPeriod: BillingPeriod,
+    val amount: BigDecimal,
+    val currency: String,
+    val amountUsd: BigDecimal?,
+    val usdRate: BigDecimal?,
+    val usdRateAt: Instant?,
+    val effectiveFrom: Instant,
+    val effectiveTo: Instant?,
+    val dataSource: PriceDataSource,
+    val recordedBy: Long?,
+    val createdAt: Instant,
+)
+
+data class CurrencyRate(
+    val id: Long,
+    val currency: String,
+    val rateToUsd: BigDecimal,
+    val sourceRateAt: Instant,
+    val fetchedAt: Instant,
+    val source: String,
+)
+
+data class AppUser(
+    val id: Long,
+    val username: String,
+    val email: String?,
+    val passwordHash: String,
+    val status: UserStatus,
+    val tokenVersion: Int,
+    val createdAt: Instant,
+    val updatedAt: Instant,
+    val lastLoginAt: Instant?,
+)

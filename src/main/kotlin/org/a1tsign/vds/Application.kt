@@ -12,7 +12,7 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respond
 import org.a1tsign.vds.api.installApiPlugins
 import org.a1tsign.vds.api.registerRoutes
-import org.a1tsign.vds.config.AppConfig
+import org.a1tsign.vds.auth.BootstrapAdmin
 import org.a1tsign.vds.config.ConfigurationException
 import org.a1tsign.vds.config.loadConfig
 import org.a1tsign.vds.config.nowUtc
@@ -24,7 +24,6 @@ import org.slf4j.LoggerFactory
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import javax.sql.DataSource
 import kotlin.system.exitProcess
 
 // Shared between module() (incremented/decremented around every request) and shutdownGracefully()
@@ -78,18 +77,19 @@ fun main() {
         logger.error("Database migration failed: ${e.message}")
         exitProcess(1)
     }
-    Database.connect(dataSource)
-
+    val database = Database.connect(dataSource)
     val clock = Clock.systemUTC()
-    val server = embeddedServer(CIO, port = config.http.port) { module(config, clock, dataSource) }
+    val components = buildComponents(config, dataSource, clock, database)
+    BootstrapAdmin(database, components.userRepository, components.passwordHasher).ensure(config.bootstrapAdmin, clock.nowUtc())
+    val server = embeddedServer(CIO, port = config.http.port) { module(components) }
     Runtime.getRuntime().addShutdownHook(Thread { shutdownGracefully(server, clock, dataSource) })
     server.start(wait = true)
 }
 
-fun Application.module(config: AppConfig, clock: Clock, dataSource: DataSource) {
+fun Application.module(components: AppComponents) {
     // The whole HTTP contract -- error envelope, shared Json, body-size limit, CORS, CallLogging --
     // lives in api/HttpPlugins.kt so tests install exactly what production does.
-    installApiPlugins(config.http, clock)
+    installApiPlugins(components.config.http, components.clock)
     // Tracks in-flight requests with a plain counter instead of trusting the CIO engine's own
     // stop(gracePeriodMillis, ...) to drain them (it does not — see shutdownGracefully). Phase
     // chosen is Monitoring, the same phase CallLogging installs into, so every request that gets
@@ -111,7 +111,7 @@ fun Application.module(config: AppConfig, clock: Clock, dataSource: DataSource) 
             activeRequests.decrementAndGet()
         }
     }
-    registerRoutes(AppComponents(dataSource))
+    registerRoutes(components)
 }
 
 private const val SHUTDOWN_DRAIN_CAP_MILLIS = 10_000L

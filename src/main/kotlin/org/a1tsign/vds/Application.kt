@@ -3,19 +3,15 @@ package org.a1tsign.vds
 import com.zaxxer.hikari.HikariDataSource
 import com.zaxxer.hikari.pool.HikariPool.PoolInitializationException
 import io.ktor.http.HttpStatusCode
-import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
-import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
-import io.ktor.server.plugins.calllogging.CallLogging
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.response.respond
-import io.ktor.server.routing.routing
-import org.a1tsign.vds.api.routes.opsRoutes
+import org.a1tsign.vds.api.installApiPlugins
+import org.a1tsign.vds.api.registerRoutes
 import org.a1tsign.vds.config.AppConfig
 import org.a1tsign.vds.config.ConfigurationException
 import org.a1tsign.vds.config.loadConfig
@@ -25,7 +21,6 @@ import org.a1tsign.vds.db.runMigrations
 import org.flywaydb.core.api.FlywayException
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.slf4j.LoggerFactory
-import org.slf4j.event.Level
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -92,12 +87,9 @@ fun main() {
 }
 
 fun Application.module(config: AppConfig, clock: Clock, dataSource: DataSource) {
-    install(CallLogging) {
-        level = Level.INFO
-    }
-    install(ContentNegotiation) {
-        json()
-    }
+    // The whole HTTP contract -- error envelope, shared Json, body-size limit, CORS, CallLogging --
+    // lives in api/HttpPlugins.kt so tests install exactly what production does.
+    installApiPlugins(config.http, clock)
     // Tracks in-flight requests with a plain counter instead of trusting the CIO engine's own
     // stop(gracePeriodMillis, ...) to drain them (it does not — see shutdownGracefully). Phase
     // chosen is Monitoring, the same phase CallLogging installs into, so every request that gets
@@ -119,9 +111,7 @@ fun Application.module(config: AppConfig, clock: Clock, dataSource: DataSource) 
             activeRequests.decrementAndGet()
         }
     }
-    routing {
-        opsRoutes(dataSource)
-    }
+    registerRoutes(AppComponents(dataSource))
 }
 
 private const val SHUTDOWN_DRAIN_CAP_MILLIS = 10_000L

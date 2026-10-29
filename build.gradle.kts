@@ -6,6 +6,7 @@ plugins {
     kotlin("plugin.serialization") version "2.3.10"
     application
     alias(libs.plugins.shadow)
+    alias(libs.plugins.pitest)
 }
 
 group = "org.a1tsign"
@@ -50,6 +51,15 @@ dependencies {
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.testcontainers.postgresql)
     testImplementation(libs.testcontainers.junit.jupiter)
+
+    pitest(libs.pitest.junit5.plugin)
+}
+
+pitest {
+    targetClasses.set(setOf("org.a1tsign.vds.*"))
+    targetTests.set(setOf("org.a1tsign.vds.*"))
+    outputFormats.set(setOf("HTML"))
+    timestampedReports.set(false)
 }
 
 kotlin {

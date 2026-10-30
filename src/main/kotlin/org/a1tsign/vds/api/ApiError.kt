@@ -68,6 +68,9 @@ class NotFoundException(message: String) : ApiException(HttpStatusCode.NotFound,
 
 class ConflictException(message: String) : ApiException(HttpStatusCode.Conflict, message)
 
+/** `502` -- an upstream dependency answered, but unusably. */
+class BadGatewayException(message: String) : ApiException(HttpStatusCode.BadGateway, message)
+
 /**
  * `413`. Ours, raised by the body-size limit plugin; Ktor's own
  * `io.ktor.server.plugins.PayloadTooLargeException` is mapped to the same envelope.

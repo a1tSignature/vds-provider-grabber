@@ -27,6 +27,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import java.time.Clock
+import org.a1tsign.vds.fx.CurrencyRateProvider
 
 fun testAppConfig(
     withBootstrapAdmin: Boolean = true,
@@ -53,24 +54,31 @@ fun testAppDb(
     clock: Clock,
     appConfig: AppConfig = testAppConfig(),
     passwordHasher: PasswordHasher = PasswordHasher(),
+    currencyRateProvider: CurrencyRateProvider? = null,
     authenticatedRoutes: Route.() -> Unit = {},
     block: suspend ApplicationTestBuilder.() -> Unit,
-) = testApplication {
-    environment { config = MapApplicationConfig() }
-    application {
-        val components = buildComponents(
-            appConfig,
-            PostgresSupport.dataSource,
-            clock,
-            PostgresSupport.database,
-            passwordHasher,
-        )
-        BootstrapAdmin(components.database, components.userRepository, passwordHasher)
-            .ensure(appConfig.bootstrapAdmin, clock.instant())
-        module(components)
-        routing { authenticate("bearer-jwt") { authenticatedRoutes() } }
+) {
+    var fxHttpClient: io.ktor.client.HttpClient? = null
+    testApplication {
+        environment { config = MapApplicationConfig() }
+        application {
+            val components = buildComponents(
+                appConfig,
+                PostgresSupport.dataSource,
+                clock,
+                PostgresSupport.database,
+                passwordHasher,
+                currencyRateProvider,
+            )
+            fxHttpClient = components.fxHttpClient
+            BootstrapAdmin(components.database, components.userRepository, passwordHasher)
+                .ensure(appConfig.bootstrapAdmin, clock.instant())
+            module(components)
+            routing { authenticate("bearer-jwt") { authenticatedRoutes() } }
+        }
+        block()
     }
-    block()
+    fxHttpClient?.close()
 }
 
 suspend fun ApplicationTestBuilder.loginForToken(username: String, password: String): String {

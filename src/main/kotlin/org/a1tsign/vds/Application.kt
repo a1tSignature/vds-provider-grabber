@@ -18,6 +18,7 @@ import org.a1tsign.vds.config.loadConfig
 import org.a1tsign.vds.config.nowUtc
 import org.a1tsign.vds.db.buildDataSource
 import org.a1tsign.vds.db.runMigrations
+import org.a1tsign.vds.fx.FxRefreshScheduler
 import org.flywaydb.core.api.FlywayException
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.slf4j.LoggerFactory
@@ -82,7 +83,8 @@ fun main() {
     val components = buildComponents(config, dataSource, clock, database)
     BootstrapAdmin(database, components.userRepository, components.passwordHasher).ensure(config.bootstrapAdmin, clock.nowUtc())
     val server = embeddedServer(CIO, port = config.http.port) { module(components) }
-    Runtime.getRuntime().addShutdownHook(Thread { shutdownGracefully(server, clock, dataSource) })
+    val fxScheduler = FxRefreshScheduler(components.fxRefreshService, config.fx.refreshHours)
+    Runtime.getRuntime().addShutdownHook(Thread { shutdownGracefully(server, clock, dataSource, fxScheduler, components.fxHttpClient) })
     server.start(wait = true)
 }
 
@@ -144,12 +146,20 @@ private const val SHUTDOWN_POLL_INTERVAL_MILLIS = 50L
  *
  * The Hikari pool is closed last, after `server.stop()`, once nothing can issue a new query.
  */
-private fun shutdownGracefully(server: EmbeddedServer<*, *>, clock: Clock, dataSource: HikariDataSource) {
+private fun shutdownGracefully(
+    server: EmbeddedServer<*, *>,
+    clock: Clock,
+    dataSource: HikariDataSource,
+    fxScheduler: FxRefreshScheduler,
+    fxHttpClient: io.ktor.client.HttpClient?,
+) {
     shuttingDown.set(true)
     val deadline = clock.nowUtc().plusMillis(SHUTDOWN_DRAIN_CAP_MILLIS)
     while (activeRequests.get() > 0 && clock.nowUtc().isBefore(deadline)) {
         Thread.sleep(SHUTDOWN_POLL_INTERVAL_MILLIS)
     }
+    fxScheduler.close()
+    fxHttpClient?.close()
     server.stop(gracePeriodMillis = 0, timeoutMillis = 1_000)
     dataSource.close()
 }

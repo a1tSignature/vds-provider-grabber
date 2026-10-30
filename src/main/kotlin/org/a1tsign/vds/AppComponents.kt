@@ -7,6 +7,17 @@ import org.a1tsign.vds.auth.JwtService
 import org.a1tsign.vds.auth.PasswordHasher
 import org.a1tsign.vds.auth.AuthService
 import org.a1tsign.vds.auth.LoginThrottle
+import org.a1tsign.vds.service.UserService
+import org.a1tsign.vds.db.ProviderRepository
+import org.a1tsign.vds.service.ProviderService
+import org.a1tsign.vds.db.LocationRepository
+import org.a1tsign.vds.service.LocationService
+import org.a1tsign.vds.db.CurrencyRateRepository
+import org.a1tsign.vds.fx.CurrencyConverter
+import org.a1tsign.vds.fx.CurrencyRateProvider
+import org.a1tsign.vds.fx.ErApiCurrencyRateProvider
+import org.a1tsign.vds.fx.FxRefreshService
+import io.ktor.client.HttpClient
 import org.jetbrains.exposed.v1.jdbc.Database
 import java.time.Clock
 
@@ -30,6 +41,20 @@ class AppComponents(val dataSource: DataSource) {
         private set
     lateinit var authService: AuthService
         private set
+    lateinit var userService: UserService
+        private set
+    lateinit var providerService: ProviderService
+        private set
+    lateinit var locationService: LocationService
+        private set
+    lateinit var currencyRateRepository: CurrencyRateRepository
+        private set
+    lateinit var currencyConverter: CurrencyConverter
+        private set
+    lateinit var fxRefreshService: FxRefreshService
+        private set
+    var fxHttpClient: HttpClient? = null
+        private set
 
     val isConfigured: Boolean get() = this::authService.isInitialized
 
@@ -41,6 +66,13 @@ class AppComponents(val dataSource: DataSource) {
         jwtService: JwtService,
         passwordHasher: PasswordHasher,
         authService: AuthService,
+        userService: UserService,
+        providerService: ProviderService,
+        locationService: LocationService,
+        currencyRateRepository: CurrencyRateRepository,
+        currencyConverter: CurrencyConverter,
+        fxRefreshService: FxRefreshService,
+        fxHttpClient: HttpClient?,
     ) {
         this.config = config
         this.database = database
@@ -49,6 +81,13 @@ class AppComponents(val dataSource: DataSource) {
         this.jwtService = jwtService
         this.passwordHasher = passwordHasher
         this.authService = authService
+        this.userService = userService
+        this.providerService = providerService
+        this.locationService = locationService
+        this.currencyRateRepository = currencyRateRepository
+        this.currencyConverter = currencyConverter
+        this.fxRefreshService = fxRefreshService
+        this.fxHttpClient = fxHttpClient
     }
 }
 
@@ -58,11 +97,21 @@ fun buildComponents(
     clock: Clock,
     database: Database,
     passwordHasher: PasswordHasher = PasswordHasher(),
+    currencyRateProvider: CurrencyRateProvider? = null,
 ): AppComponents {
     val repository = UserRepository()
     val jwt = JwtService(config.jwt, clock)
     val authService = AuthService(database, repository, jwt, passwordHasher, clock, LoginThrottle(clock))
+    val userService = UserService(database, repository, passwordHasher, clock)
+    val providerService = ProviderService(database, ProviderRepository(), clock)
+    val locationService = LocationService(database, LocationRepository(), ProviderRepository(), clock)
+    val currencyRateRepository = CurrencyRateRepository()
+    val fxProvider = currencyRateProvider ?: ErApiCurrencyRateProvider(config)
+    val currencyConverter = CurrencyConverter(currencyRateRepository)
+    val fxRefreshService = FxRefreshService(fxProvider, database, currencyRateRepository, currencyConverter, clock)
+    val fxClient = (fxProvider as? ErApiCurrencyRateProvider)?.client
     return AppComponents(dataSource).apply {
-        configure(config, database, clock, repository, jwt, passwordHasher, authService)
+        configure(config, database, clock, repository, jwt, passwordHasher, authService, userService, providerService, locationService,
+            currencyRateRepository, currencyConverter, fxRefreshService, fxClient)
     }
 }

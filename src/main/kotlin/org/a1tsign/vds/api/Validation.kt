@@ -54,6 +54,18 @@ class Validation {
             value
         }
 
+    fun <T> rejectDuplicates(field: String, values: List<T>): List<T>? =
+        if (values.size == values.toSet().size) values else {
+            reject(field, "must not contain duplicate values")
+            null
+        }
+
+    fun <E : Enum<E>> enumValue(field: String, value: String, values: Array<E>): E? =
+        values.firstOrNull { it.name == value } ?: run {
+            reject(field, "must be one of ${values.joinToString { it.name }}")
+            null
+        }
+
     fun validateSlug(field: String, value: String): String? =
         if (value.length > SLUG_MAX_LENGTH || !SLUG_PATTERN.matches(value)) {
             reject(field, "must match ${SLUG_PATTERN.pattern} and be at most $SLUG_MAX_LENGTH characters")
@@ -94,6 +106,30 @@ class Validation {
                 null
             }
         }
+
+    fun validateLocationCoordinate(field: String, value: String, minimum: BigDecimal, maximum: BigDecimal): BigDecimal? {
+        val parsed = value.toBigDecimalOrNull()
+        if (parsed == null) {
+            reject(field, "must be a decimal string")
+            return null
+        }
+        if (parsed.stripTrailingZeros().scale() > 6) {
+            reject(field, "must have at most 6 fractional digits")
+            return null
+        }
+        if (parsed < minimum || parsed > maximum) {
+            reject(field, "must be between $minimum and $maximum")
+            return null
+        }
+        return parsed
+    }
+
+    fun validateCoordinatePair(latitude: BigDecimal?, longitude: BigDecimal?) {
+        if ((latitude == null) != (longitude == null)) {
+            reject("latitude", "latitude and longitude must be supplied together")
+            reject("longitude", "latitude and longitude must be supplied together")
+        }
+    }
 
     /** Throws [ValidationException] carrying every failure recorded so far, or returns. */
     fun throwIfInvalid() {

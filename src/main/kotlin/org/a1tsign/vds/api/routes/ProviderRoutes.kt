@@ -6,16 +6,21 @@ import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
+import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import org.a1tsign.vds.api.NotFoundException
 import org.a1tsign.vds.api.Validation
 import org.a1tsign.vds.api.dto.*
+import org.a1tsign.vds.api.pageRequest
+import org.a1tsign.vds.api.pageResponse
 import org.a1tsign.vds.auth.requireRole
+import org.a1tsign.vds.db.ProviderListFilter
 import org.a1tsign.vds.domain.*
+import org.a1tsign.vds.service.CatalogQueryService
 import org.a1tsign.vds.service.ProviderService
 
-fun Route.providerRoutes(service: ProviderService) {
+fun Route.providerRoutes(service: ProviderService, queryService: CatalogQueryService) {
     post("/api/v1/providers") {
         call.requireRole(Role.EDITOR)
         val req = call.receive<ProviderWriteRequest>()
@@ -70,6 +75,49 @@ fun Route.providerRoutes(service: ProviderService) {
         val id = providerId(call.parameters["id"])
         call.respond(service.putPaymentMethods(id, methods).map { it.toDto() })
     }
+
+    // ---- Read endpoints (task vds-001.15) -- any authenticated role (VIEWER included) ----
+
+    get("/api/v1/providers") {
+        call.requireRole(Role.VIEWER)
+        val page = call.pageRequest(setOf("id", "name", "slug", "status", "createdAt", "minMonthlyPriceUsd"))
+        val query = call.request.queryParameters
+        val v = Validation()
+        val status = query["status"]?.let { v.enumValue("status", it, ProviderStatus.entries.toTypedArray()) }
+        val registrationCountry = query["registrationCountry"]?.let { v.validateCountryCode("registrationCountry", it) }
+        val locationCountry = query["locationCountry"]?.let { v.validateCountryCode("locationCountry", it) }
+        val paymentMethods = query.getAll("paymentMethod").orEmpty()
+            .mapNotNull { v.enumValue("paymentMethod", it, PaymentMethod.entries.toTypedArray()) }
+        val hasActiveTariffs = parseOptionalBoolean(v, "hasActiveTariffs", query["hasActiveTariffs"])
+        v.throwIfInvalid()
+        val filter = ProviderListFilter(
+            q = query["q"],
+            status = status,
+            registrationCountry = registrationCountry,
+            locationCountry = locationCountry,
+            paymentMethods = paymentMethods,
+            hasActiveTariffs = hasActiveTariffs,
+        )
+        val (total, items) = queryService.listProviders(filter, page.page, page.size, page.sort)
+        call.respond(pageResponse(total, page.page, page.size, items))
+    }
+
+    get("/api/v1/providers/{id}") {
+        call.requireRole(Role.VIEWER)
+        val id = providerId(call.parameters["id"])
+        call.respond(queryService.getProvider(id))
+    }
+
+    get("/api/v1/providers/{id}/tariffs") {
+        call.requireRole(Role.VIEWER)
+        val id = providerId(call.parameters["id"])
+        val page = call.pageRequest(setOf("id", "name", "createdAt"))
+        val v = Validation()
+        val activeOnly = parseOptionalBoolean(v, "activeOnly", call.request.queryParameters["activeOnly"]) ?: false
+        v.throwIfInvalid()
+        val (total, items) = queryService.listProviderTariffs(id, activeOnly, page.page, page.size, page.sort)
+        call.respond(pageResponse(total, page.page, page.size, items.map { it.toDto() }))
+    }
 }
 
 private data class ProviderFields(val slug: String?, val name: String?, val url: String?, val status: ProviderStatus?)
@@ -84,3 +132,11 @@ private fun validateProvider(req: ProviderWriteRequest, v: Validation): Provider
 }
 
 private fun providerId(raw: String?) = raw?.toLongOrNull() ?: throw NotFoundException("Provider not found")
+
+/** `true`/`false`/absent; anything else is recorded on [v] as a field error and `null` is returned. */
+private fun parseOptionalBoolean(v: Validation, field: String, raw: String?): Boolean? = when (raw) {
+    null -> null
+    "true" -> true
+    "false" -> false
+    else -> { v.reject(field, "must be true or false"); null }
+}

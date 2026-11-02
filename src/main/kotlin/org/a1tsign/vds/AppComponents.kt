@@ -10,8 +10,13 @@ import org.a1tsign.vds.auth.LoginThrottle
 import org.a1tsign.vds.service.UserService
 import org.a1tsign.vds.db.ProviderRepository
 import org.a1tsign.vds.service.ProviderService
+import org.a1tsign.vds.service.CatalogQueryService
 import org.a1tsign.vds.db.LocationRepository
 import org.a1tsign.vds.service.LocationService
+import org.a1tsign.vds.db.TariffRepository
+import org.a1tsign.vds.service.TariffService
+import org.a1tsign.vds.db.PriceRepository
+import org.a1tsign.vds.service.PriceService
 import org.a1tsign.vds.db.CurrencyRateRepository
 import org.a1tsign.vds.fx.CurrencyConverter
 import org.a1tsign.vds.fx.CurrencyRateProvider
@@ -47,6 +52,12 @@ class AppComponents(val dataSource: DataSource) {
         private set
     lateinit var locationService: LocationService
         private set
+    lateinit var tariffService: TariffService
+        private set
+    lateinit var priceService: PriceService
+        private set
+    lateinit var catalogQueryService: CatalogQueryService
+        private set
     lateinit var currencyRateRepository: CurrencyRateRepository
         private set
     lateinit var currencyConverter: CurrencyConverter
@@ -69,6 +80,9 @@ class AppComponents(val dataSource: DataSource) {
         userService: UserService,
         providerService: ProviderService,
         locationService: LocationService,
+        tariffService: TariffService,
+        priceService: PriceService,
+        catalogQueryService: CatalogQueryService,
         currencyRateRepository: CurrencyRateRepository,
         currencyConverter: CurrencyConverter,
         fxRefreshService: FxRefreshService,
@@ -84,6 +98,9 @@ class AppComponents(val dataSource: DataSource) {
         this.userService = userService
         this.providerService = providerService
         this.locationService = locationService
+        this.tariffService = tariffService
+        this.priceService = priceService
+        this.catalogQueryService = catalogQueryService
         this.currencyRateRepository = currencyRateRepository
         this.currencyConverter = currencyConverter
         this.fxRefreshService = fxRefreshService
@@ -103,15 +120,20 @@ fun buildComponents(
     val jwt = JwtService(config.jwt, clock)
     val authService = AuthService(database, repository, jwt, passwordHasher, clock, LoginThrottle(clock))
     val userService = UserService(database, repository, passwordHasher, clock)
-    val providerService = ProviderService(database, ProviderRepository(), clock)
-    val locationService = LocationService(database, LocationRepository(), ProviderRepository(), clock)
+    val providerRepository = ProviderRepository()
+    val providerService = ProviderService(database, providerRepository, clock)
+    val catalogQueryService = CatalogQueryService(database, providerRepository, TariffRepository(), PriceRepository())
+    val locationRepository = LocationRepository()
+    val locationService = LocationService(database, locationRepository, ProviderRepository(), clock)
+    val tariffService = TariffService(database, TariffRepository(), ProviderRepository(), locationRepository, clock)
     val currencyRateRepository = CurrencyRateRepository()
     val fxProvider = currencyRateProvider ?: ErApiCurrencyRateProvider(config)
     val currencyConverter = CurrencyConverter(currencyRateRepository)
+    val priceService = PriceService(database, PriceRepository(), currencyConverter, clock)
     val fxRefreshService = FxRefreshService(fxProvider, database, currencyRateRepository, currencyConverter, clock)
     val fxClient = (fxProvider as? ErApiCurrencyRateProvider)?.client
     return AppComponents(dataSource).apply {
         configure(config, database, clock, repository, jwt, passwordHasher, authService, userService, providerService, locationService,
-            currencyRateRepository, currencyConverter, fxRefreshService, fxClient)
+            tariffService, priceService, catalogQueryService, currencyRateRepository, currencyConverter, fxRefreshService, fxClient)
     }
 }

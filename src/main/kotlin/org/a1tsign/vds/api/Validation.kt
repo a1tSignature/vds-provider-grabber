@@ -131,6 +131,20 @@ class Validation {
         }
     }
 
+    /**
+     * Inclusive integer range check -- used both for plain positivity (`minimum = 1`) and for
+     * narrowing a wire `Int` into a `Short` column (`maximum = Short.MAX_VALUE.toInt()`) *before*
+     * the narrowing happens, so an out-of-range value is a `400` naming the field rather than a
+     * silently wrapped value that a `CHECK` constraint would later reject as a `500`.
+     */
+    fun validateIntRange(field: String, value: Int, minimum: Int, maximum: Int): Int? =
+        if (value < minimum || value > maximum) {
+            reject(field, "must be between $minimum and $maximum")
+            null
+        } else {
+            value
+        }
+
     /** Throws [ValidationException] carrying every failure recorded so far, or returns. */
     fun throwIfInvalid() {
         if (details.isNotEmpty()) {

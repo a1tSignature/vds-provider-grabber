@@ -1,0 +1,1462 @@
+openapi: "3.0.3"
+info:
+  title: VDS Provider Grabber API
+  version: "1.0.0"
+  description: >-
+    Catalogue of VDS hosting providers, their locations, tariffs and price history.
+    This document is hand-written (see ADR-07: vds-001-adr-07-openapi-handwritten-vs-ktor-generated)
+    and served verbatim from the classpath at GET /openapi.yaml; it is kept honest by
+    OpenApiContractTest, which fails if the operation set here drifts from the routes the
+    application actually registers. Money and FX-rate values, and geographic coordinates, are
+    always JSON strings in plain decimal notation, never JSON numbers. Timestamps must carry an
+    explicit offset on input and are always returned in UTC with a trailing Z at whole-second
+    precision. A field documented as optional is omitted from the response entirely when it has
+    no value (the shared Json runs with explicitNulls = false) -- it is never sent as JSON null.
+tags:
+  - name: Ops
+  - name: Auth
+  - name: Providers
+  - name: Locations
+  - name: Tariffs
+  - name: Prices
+  - name: Admin
+  - name: Dictionaries
+  - name: Meta
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      tags: [Ops]
+      summary: Liveness probe
+      description: "No authentication required. Never touches the database -- process liveness only."
+      security: []
+      responses:
+        "200":
+          description: The process is up.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+
+  /health/ready:
+    get:
+      tags: [Ops]
+      summary: Readiness probe
+      description: >-
+        No authentication required. Runs a bounded SELECT 1 against the database. Note: the 503
+        response below does NOT use the shared error envelope (ApiError) -- it is answered
+        directly by the handler with a different, narrower body shape.
+      security: []
+      responses:
+        "200":
+          description: The database answered within the bound.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+        "503":
+          description: The database did not answer within the bound. Body is NOT the shared ApiError envelope.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadinessFailureResponse" }
+
+  /version:
+    get:
+      tags: [Ops]
+      summary: Build version
+      description: "No authentication required."
+      security: []
+      responses:
+        "200":
+          description: Version and build timestamp read from the packaged version.properties.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VersionResponse" }
+
+  /openapi.yaml:
+    get:
+      tags: [Meta]
+      summary: This contract document
+      description: >-
+        Required role: VIEWER (any authenticated role suffices -- this endpoint does not filter
+        content per role). Returns the file at src/main/resources/openapi.yaml verbatim from the
+        classpath as text/yaml, never through the JSON content negotiator.
+      responses:
+        "200":
+          description: The OpenAPI document.
+          content:
+            application/yaml:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Obtain a bearer token
+      description: "No authentication required. Subject to a per-IP and per-username-per-IP throttle."
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Credentials accepted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResponse" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "429": { $ref: "#/components/responses/TooManyRequestsError" }
+        "503":
+          description: >-
+            The login throttle is at capacity, or the bcrypt verification slot could not be
+            acquired within 2 seconds. Uses the shared ApiError envelope (unlike /health/ready).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/v1/providers:
+    get:
+      tags: [Providers]
+      summary: List providers
+      description: >-
+        Required role: VIEWER. Filters are ANDed together; paymentMethod is repeatable (a provider
+        must have every listed method). Sortable fields: id, name, slug, status, createdAt,
+        minMonthlyPriceUsd.
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+          description: Free-text match against name/slug.
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/ProviderStatus" }
+        - name: registrationCountry
+          in: query
+          schema: { type: string, pattern: "^[A-Z]{2}$" }
+        - name: locationCountry
+          in: query
+          schema: { type: string, pattern: "^[A-Z]{2}$" }
+        - name: paymentMethod
+          in: query
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: { $ref: "#/components/schemas/PaymentMethod" }
+          description: Repeatable. A provider must offer every listed method (AND semantics).
+        - name: hasActiveTariffs
+          in: query
+          schema: { type: boolean }
+        - { $ref: "#/components/parameters/PageParam" }
+        - { $ref: "#/components/parameters/SizeParam" }
+        - name: sort
+          in: query
+          schema: { type: string }
+          description: "field or field,asc|desc. Allowed fields: id, name, slug, status, createdAt, minMonthlyPriceUsd."
+      responses:
+        "200":
+          description: A page of provider summaries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderSummaryPage" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+    post:
+      tags: [Providers]
+      summary: Create a provider
+      description: "Required role: EDITOR."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProviderWriteRequest" }
+      responses:
+        "201":
+          description: Created. Location header points at the new provider.
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "409":
+          description: The slug is already in use.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+
+  /api/v1/providers/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    get:
+      tags: [Providers]
+      summary: Get a provider's full detail
+      description: "Required role: VIEWER. Includes legal info, payment methods, locations and active tariffs with their current prices."
+      responses:
+        "200":
+          description: Full provider detail.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderDetailDto" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+    put:
+      tags: [Providers]
+      summary: Replace a provider's core fields
+      description: "Required role: EDITOR."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProviderWriteRequest" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409":
+          description: The slug is already in use by another provider.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+    delete:
+      tags: [Providers]
+      summary: Delete a provider
+      description: >-
+        Required role: EDITOR. HARD-DELETES and CASCADES to this provider's legal info, payment
+        methods, locations, tariffs and their entire price history. Irreversible.
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+
+  /api/v1/providers/{id}/tariffs:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    get:
+      tags: [Providers, Tariffs]
+      summary: List one provider's tariffs
+      description: "Required role: VIEWER. Sortable fields: id, name, createdAt."
+      parameters:
+        - name: activeOnly
+          in: query
+          schema: { type: boolean, default: false }
+          description: Defaults to false (unlike GET /api/v1/tariffs, which defaults to true).
+        - { $ref: "#/components/parameters/PageParam" }
+        - { $ref: "#/components/parameters/SizeParam" }
+        - name: sort
+          in: query
+          schema: { type: string }
+          description: "field or field,asc|desc. Allowed fields: id, name, createdAt."
+      responses:
+        "200":
+          description: A page of this provider's tariffs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TariffPage" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+    post:
+      tags: [Tariffs]
+      summary: Create a tariff under a provider
+      description: "Required role: EDITOR."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TariffWriteRequest" }
+      responses:
+        "201":
+          description: Created. Location header points at the new tariff.
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TariffDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409":
+          description: The tariff name or externalId is already in use for this provider.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+
+  /api/v1/providers/{id}/legal-info:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    put:
+      tags: [Providers]
+      summary: Replace a provider's legal info (upsert)
+      description: "Required role: EDITOR."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LegalInfoWriteRequest" }
+      responses:
+        "200":
+          description: Upserted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LegalInfoDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+
+  /api/v1/providers/{id}/payment-methods:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    put:
+      tags: [Providers]
+      summary: Replace a provider's accepted payment methods
+      description: "Required role: EDITOR. The whole list is replaced; duplicates in the body are rejected with 400."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: "#/components/schemas/PaymentMethodWriteRequest" }
+      responses:
+        "200":
+          description: Replaced.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ProviderPaymentMethodDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+
+  /api/v1/providers/{id}/locations:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    post:
+      tags: [Locations]
+      summary: Add a location to a provider
+      description: "Required role: EDITOR. latitude and longitude must be supplied together or not at all."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LocationWriteRequest" }
+      responses:
+        "201":
+          description: Created. Location header points at the new location.
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LocationDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409":
+          description: A location already exists for this provider/country/city/datacenter combination.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+
+  /api/v1/locations/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    put:
+      tags: [Locations]
+      summary: Replace a location
+      description: "Required role: EDITOR."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LocationWriteRequest" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LocationDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409":
+          description: A location already exists for this provider/country/city/datacenter combination.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+    delete:
+      tags: [Locations]
+      summary: Delete a location
+      description: "Required role: EDITOR."
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+
+  /api/v1/tariffs:
+    get:
+      tags: [Tariffs]
+      summary: Cross-provider tariff search
+      description: >-
+        Required role: VIEWER. billingPeriod defaults to MONTHLY; activeOnly defaults to true;
+        inStock has no default (absent = no filter). Sortable fields: id, priceUsd, ramMb,
+        vcpuCount, diskGb, name.
+      parameters:
+        - name: providerId
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: country
+          in: query
+          schema: { type: string, pattern: "^[A-Z]{2}$" }
+          description: Matches a linked location's country code.
+        - name: minVcpu
+          in: query
+          schema: { type: integer }
+        - name: minRamMb
+          in: query
+          schema: { type: integer }
+        - name: minDiskGb
+          in: query
+          schema: { type: integer }
+        - name: diskType
+          in: query
+          schema: { $ref: "#/components/schemas/DiskType" }
+        - name: billingPeriod
+          in: query
+          schema:
+            allOf: [{ $ref: "#/components/schemas/BillingPeriod" }]
+            default: MONTHLY
+        - name: maxPriceUsd
+          in: query
+          schema: { type: string, pattern: "^\\d{1,8}(\\.\\d{1,4})?$" }
+        - name: paymentMethod
+          in: query
+          schema: { $ref: "#/components/schemas/PaymentMethod" }
+          description: Single value (not repeatable here, unlike GET /api/v1/providers).
+        - name: unmeteredTraffic
+          in: query
+          schema: { type: boolean }
+        - name: activeOnly
+          in: query
+          schema: { type: boolean, default: true }
+        - name: inStock
+          in: query
+          schema: { type: boolean }
+          description: No default; absent means no filter on stock status.
+        - { $ref: "#/components/parameters/PageParam" }
+        - { $ref: "#/components/parameters/SizeParam" }
+        - name: sort
+          in: query
+          schema: { type: string }
+          description: "field or field,asc|desc. Allowed fields: id, priceUsd, ramMb, vcpuCount, diskGb, name."
+      responses:
+        "200":
+          description: A page of search results, each with its provider and current price for the requested billing period.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TariffSearchItemPage" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+
+  /api/v1/tariffs/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    get:
+      tags: [Tariffs]
+      summary: Get a tariff's full detail
+      description: "Required role: VIEWER. Includes its provider, linked locations and one current price per billing period that has one."
+      responses:
+        "200":
+          description: Full tariff detail.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TariffDetailDto" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+    put:
+      tags: [Tariffs]
+      summary: Replace a tariff's fields
+      description: "Required role: EDITOR."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TariffWriteRequest" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TariffDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409":
+          description: The tariff name or externalId is already in use for this provider.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+    delete:
+      tags: [Tariffs]
+      summary: Delete a tariff
+      description: >-
+        Required role: EDITOR. HARD-DELETES and CASCADES to this tariff's location links and its
+        entire price history. Irreversible.
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+
+  /api/v1/tariffs/{id}/price-history:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    get:
+      tags: [Tariffs, Prices]
+      summary: Raw price history for a tariff
+      description: "Required role: VIEWER. An empty history is a valid 200, not a 404."
+      parameters:
+        - name: billingPeriod
+          in: query
+          schema: { $ref: "#/components/schemas/BillingPeriod" }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+          description: ISO-8601 with an explicit offset, inclusive lower bound.
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+          description: ISO-8601 with an explicit offset, inclusive upper bound.
+      responses:
+        "200":
+          description: Price history rows, oldest or newest first per the repository's own ordering.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PriceHistoryItemDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+
+  /api/v1/tariffs/{id}/locations:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    put:
+      tags: [Tariffs, Locations]
+      summary: Replace the set of locations a tariff is available in
+      description: >-
+        Required role: EDITOR. Replaces the whole link set atomically. A duplicate id in the body
+        is a 400; a location belonging to a different provider than the tariff is a 409; an
+        unknown location id is a 404 and leaves the previous link set untouched.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { type: integer, format: int64 }
+      responses:
+        "200":
+          description: The resulting set of location ids, sorted ascending.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: integer, format: int64 }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409":
+          description: A listed location belongs to a different provider than the tariff.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+
+  /api/v1/tariffs/{id}/price:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    put:
+      tags: [Prices]
+      summary: Set the current price for a billing period
+      description: >-
+        Required role: EDITOR. 200 = idempotent no-op when amount and currency equal the current
+        row (effectiveFrom is ignored in that case). 201 = a new row is inserted and the previous
+        current row for this billing period is closed at the new row's effectiveFrom. 409 = the
+        requested effectiveFrom is back-dated or equal to the current row's effectiveFrom. 400 =
+        effectiveFrom is more than 60 seconds in the future. The response carries
+        warnings: ["NO_FX_RATE"] when no FX rate was available to compute the USD equivalent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PriceWriteRequest" }
+      responses:
+        "200":
+          description: Idempotent no-op -- the submitted amount/currency already is the current price.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PriceDto" }
+        "201":
+          description: A new current price row was inserted; the previous one (if any) was closed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PriceDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409":
+          description: effectiveFrom is back-dated or equal to the current row's effectiveFrom.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+        "500": { $ref: "#/components/responses/InternalServerError" }
+
+  /api/v1/tariffs/{id}/price/close:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    post:
+      tags: [Prices]
+      summary: Close the current price for a billing period
+      description: >-
+        Required role: EDITOR. Sets effectiveTo on the current row; never reopens a closed row.
+        400 if effectiveTo is more than 60 seconds in the future; 409 if effectiveTo is not after
+        the current row's effectiveFrom; 404 if there is no current price for this billing period.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PriceCloseRequest" }
+      responses:
+        "200":
+          description: Closed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PriceDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409":
+          description: effectiveTo is not after the current row's effectiveFrom.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+
+  /api/v1/tariffs/{id}/prices/{priceId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+      - name: priceId
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    delete:
+      tags: [Prices]
+      summary: Correct (delete) a price row
+      description: >-
+        Required role: ADMIN. Deletes the price row and reopens the row that preceded it, if any.
+        409 if the targeted row is not the current one (effectiveTo already set) -- only the
+        current row of a billing period can be corrected.
+      responses:
+        "204": { description: Deleted and, if applicable, the preceding row was reopened. }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409":
+          description: Only the current price row (effectiveTo not yet set) can be corrected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/v1/admin/users:
+    post:
+      tags: [Admin]
+      summary: Create a user
+      description: "Required role: ADMIN."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateUserRequest" }
+      responses:
+        "201":
+          description: Created. Location header points at the new user.
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "409":
+          description: Username already exists.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+    get:
+      tags: [Admin]
+      summary: List users
+      description: "Required role: ADMIN. Sortable fields: id, username, createdAt, lastLoginAt, status."
+      parameters:
+        - { $ref: "#/components/parameters/PageParam" }
+        - { $ref: "#/components/parameters/SizeParam" }
+        - name: sort
+          in: query
+          schema: { type: string }
+          description: "field or field,asc|desc. Allowed fields: id, username, createdAt, lastLoginAt, status."
+      responses:
+        "200":
+          description: A page of users.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserPage" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+
+  /api/v1/admin/users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    patch:
+      tags: [Admin]
+      summary: Change a user's status and/or roles
+      description: >-
+        Required role: ADMIN. The body must include status or roles (or both) -- an empty body is
+        a 400. 409 if this change would leave no active ADMIN user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PatchUserRequest" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409":
+          description: This change would leave no active ADMIN user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+
+  /api/v1/admin/users/{id}/password:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    put:
+      tags: [Admin]
+      summary: Change a user's password
+      description: "Required role: ADMIN."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChangePasswordRequest" }
+      responses:
+        "204": { description: Changed. }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+
+  /api/v1/admin/fx/refresh:
+    post:
+      tags: [Admin]
+      summary: Refresh FX rates from the upstream provider
+      description: >-
+        Required role: EDITOR (not ADMIN -- this is an operational, not a user-management, action).
+        502 if the upstream FX provider is unavailable or answers unusably.
+      responses:
+        "200":
+          description: Refreshed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FxRefreshResponse" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "502": { $ref: "#/components/responses/BadGatewayError" }
+
+  /api/v1/dictionaries:
+    get:
+      tags: [Dictionaries]
+      summary: Every enum value set the frontend needs
+      description: "Required role: VIEWER (any authenticated role)."
+      responses:
+        "200":
+          description: One array per enum.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DictionariesDto" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Required for every endpoint except GET /health, GET /health/ready, GET /version and
+        POST /api/v1/auth/login.
+
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      required: false
+      schema: { type: integer, minimum: 0, default: 0 }
+      description: Zero-based page index. Out of range is rejected with 400, never clamped.
+    SizeParam:
+      name: size
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      description: Page size, 1-100. Out of range is rejected with 400, never clamped.
+
+  responses:
+    BadRequestError:
+      description: The request body or query string failed validation, or the body could not be parsed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    UnauthorizedError:
+      description: Missing, malformed or expired bearer token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    ForbiddenError:
+      description: Authenticated, but the token's roles do not include the role this endpoint requires.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    NotFoundError:
+      description: No resource exists at this id.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    PayloadTooLargeError:
+      description: The request body exceeds the 256 KB limit.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    UnsupportedMediaTypeError:
+      description: The request body is missing a Content-Type header, or it is not application/json.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    TooManyRequestsError:
+      description: Too many login attempts for this IP, or this username from this IP, within the throttle window.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    InternalServerError:
+      description: An unexpected failure. The body never contains a stack trace or internal detail.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    BadGatewayError:
+      description: An upstream dependency answered, but unusably.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    ServiceUnavailableError:
+      description: A dependency is down or at capacity.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+
+  schemas:
+    ApiErrorDetail:
+      type: object
+      required: [field, message]
+      properties:
+        field: { type: string }
+        message: { type: string }
+
+    ApiError:
+      type: object
+      required: [timestamp, status, error, message, path]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: UTC, Z suffix, whole-second precision.
+        status: { type: integer }
+        error: { type: string, description: "The HTTP status reason phrase." }
+        message: { type: string }
+        path: { type: string }
+        details:
+          type: array
+          items: { $ref: "#/components/schemas/ApiErrorDetail" }
+          description: Present only on a validation failure (400 from a Validation accumulator); omitted otherwise.
+
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [UP] }
+
+    ReadinessFailureResponse:
+      type: object
+      required: [status, reason]
+      properties:
+        status: { type: string, enum: [DOWN] }
+        reason: { type: string }
+
+    VersionResponse:
+      type: object
+      required: [version, buildTimestamp]
+      properties:
+        version: { type: string }
+        buildTimestamp: { type: string }
+
+    ProviderStatus: { type: string, enum: [ACTIVE, INACTIVE, UNKNOWN] }
+    LegalDataSource: { type: string, enum: [MANUAL, CRAWLER, WHOIS, PROVIDER_SITE, UNKNOWN] }
+    Confidence: { type: string, enum: [HIGH, MEDIUM, LOW, UNVERIFIED] }
+    DiskType: { type: string, enum: [NVME, SSD, HDD, UNKNOWN] }
+    Virtualization: { type: string, enum: [KVM, OPENVZ, LXC, XEN, HYPERV, UNKNOWN] }
+    BillingPeriod: { type: string, enum: [HOURLY, MONTHLY, QUARTERLY, SEMIANNUAL, ANNUAL, BIENNIAL, TRIENNIAL] }
+    PriceDataSource: { type: string, enum: [MANUAL, CRAWLER] }
+    UserStatus: { type: string, enum: [ACTIVE, DISABLED] }
+    Role: { type: string, enum: [ADMIN, EDITOR, VIEWER] }
+    PaymentMethod:
+      type: string
+      enum:
+        - VISA_MASTERCARD
+        - AMERICAN_EXPRESS
+        - UNIONPAY
+        - MIR
+        - SBP
+        - RU_BANK_TRANSFER
+        - BANK_WIRE
+        - PAYPAL
+        - ALIPAY
+        - WECHAT_PAY
+        - APPLE_PAY
+        - GOOGLE_PAY
+        - CRYPTO_BTC
+        - CRYPTO_ETH
+        - CRYPTO_USDT
+        - CRYPTO_OTHER
+        - WEBMONEY
+        - PERFECT_MONEY
+        - CASH
+        - OTHER
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string }
+
+    LoginResponse:
+      type: object
+      required: [token, expiresAt, username, roles]
+      properties:
+        token: { type: string }
+        expiresAt: { type: string, format: date-time }
+        username: { type: string }
+        roles:
+          type: array
+          items: { type: string }
+
+    ProviderWriteRequest:
+      type: object
+      required: [slug, name, websiteUrl, status]
+      properties:
+        slug: { type: string, pattern: "^[a-z0-9-]+$", maxLength: 64 }
+        name: { type: string, maxLength: 255 }
+        websiteUrl: { type: string, format: uri, maxLength: 2048, description: Absolute http(s) URL with a host. }
+        description: { type: string }
+        status: { $ref: "#/components/schemas/ProviderStatus" }
+
+    ProviderDto:
+      type: object
+      required: [id, slug, name, websiteUrl, status, createdAt, updatedAt]
+      properties:
+        id: { type: integer, format: int64 }
+        slug: { type: string }
+        name: { type: string }
+        websiteUrl: { type: string }
+        description: { type: string }
+        status: { $ref: "#/components/schemas/ProviderStatus" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    LegalInfoWriteRequest:
+      type: object
+      required: [dataSource, confidence]
+      properties:
+        legalEntityName: { type: string, maxLength: 255 }
+        registrationCountry: { type: string, pattern: "^[A-Z]{2}$" }
+        registrationNumber: { type: string, maxLength: 128 }
+        legalAddress: { type: string }
+        dataSource: { $ref: "#/components/schemas/LegalDataSource" }
+        confidence: { $ref: "#/components/schemas/Confidence" }
+        sourceUrl: { type: string, maxLength: 2048 }
+        verifiedAt: { type: string, format: date-time }
+
+    LegalInfoDto:
+      type: object
+      required: [providerId, dataSource, confidence, updatedAt]
+      properties:
+        providerId: { type: integer, format: int64 }
+        legalEntityName: { type: string }
+        registrationCountry: { type: string }
+        registrationNumber: { type: string }
+        legalAddress: { type: string }
+        dataSource: { $ref: "#/components/schemas/LegalDataSource" }
+        confidence: { $ref: "#/components/schemas/Confidence" }
+        sourceUrl: { type: string }
+        verifiedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    PaymentMethodWriteRequest:
+      type: object
+      required: [method]
+      properties:
+        method: { $ref: "#/components/schemas/PaymentMethod" }
+        note: { type: string }
+
+    ProviderPaymentMethodDto:
+      type: object
+      required: [method]
+      properties:
+        method: { $ref: "#/components/schemas/PaymentMethod" }
+        note: { type: string }
+
+    ProviderSummaryDto:
+      type: object
+      required: [id, slug, name, websiteUrl, status, paymentMethods, locationCountryCodes, activeTariffCount]
+      properties:
+        id: { type: integer, format: int64 }
+        slug: { type: string }
+        name: { type: string }
+        websiteUrl: { type: string }
+        status: { $ref: "#/components/schemas/ProviderStatus" }
+        registrationCountry: { type: string }
+        paymentMethods:
+          type: array
+          items: { $ref: "#/components/schemas/PaymentMethod" }
+        locationCountryCodes:
+          type: array
+          items: { type: string }
+        activeTariffCount: { type: integer }
+        minMonthlyPriceUsd:
+          type: string
+          pattern: "^\\d{1,8}(\\.\\d{1,4})?$"
+          description: Absent when there is no current MONTHLY price among this provider's active tariffs.
+
+    TariffWithPricesDto:
+      type: object
+      required: [tariff, prices]
+      properties:
+        tariff: { $ref: "#/components/schemas/TariffDto" }
+        prices:
+          type: array
+          items: { $ref: "#/components/schemas/PriceDto" }
+
+    ProviderDetailDto:
+      type: object
+      required: [provider, paymentMethods, locations, tariffs]
+      properties:
+        provider: { $ref: "#/components/schemas/ProviderDto" }
+        legalInfo: { $ref: "#/components/schemas/LegalInfoDto" }
+        paymentMethods:
+          type: array
+          items: { $ref: "#/components/schemas/ProviderPaymentMethodDto" }
+        locations:
+          type: array
+          items: { $ref: "#/components/schemas/LocationDto" }
+        tariffs:
+          type: array
+          items: { $ref: "#/components/schemas/TariffWithPricesDto" }
+          description: Active tariffs only.
+
+    LocationWriteRequest:
+      type: object
+      required: [countryCode]
+      properties:
+        countryCode: { type: string, pattern: "^[A-Z]{2}$" }
+        region: { type: string, maxLength: 128 }
+        city: { type: string, maxLength: 128 }
+        datacenterName: { type: string, maxLength: 255 }
+        latitude:
+          type: string
+          pattern: "^-?\\d{1,3}(\\.\\d{1,6})?$"
+          description: NUMERIC(9,6), range -90..90. Must be supplied together with longitude or not at all.
+        longitude:
+          type: string
+          pattern: "^-?\\d{1,3}(\\.\\d{1,6})?$"
+          description: NUMERIC(9,6), range -180..180. Must be supplied together with latitude or not at all.
+
+    LocationDto:
+      type: object
+      required: [id, providerId, countryCode, createdAt, updatedAt]
+      properties:
+        id: { type: integer, format: int64 }
+        providerId: { type: integer, format: int64 }
+        countryCode: { type: string }
+        region: { type: string }
+        city: { type: string }
+        datacenterName: { type: string }
+        latitude: { type: string, pattern: "^-?\\d{1,3}(\\.\\d{1,6})?$" }
+        longitude: { type: string, pattern: "^-?\\d{1,3}(\\.\\d{1,6})?$" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    TariffWriteRequest:
+      type: object
+      required: [name, vcpuCount, ramMb, diskGb, diskType, ipv4Count, virtualization]
+      properties:
+        externalId: { type: string, maxLength: 128 }
+        name: { type: string, maxLength: 255 }
+        url: { type: string, maxLength: 2048 }
+        vcpuCount: { type: integer, minimum: 1, maximum: 32767 }
+        cpuModel: { type: string, maxLength: 128 }
+        ramMb: { type: integer, minimum: 1 }
+        diskGb: { type: integer, minimum: 1 }
+        diskType: { $ref: "#/components/schemas/DiskType" }
+        bandwidthMbps: { type: integer, minimum: 1 }
+        trafficLimitGb: { type: integer, minimum: 1, description: "Absent means unmetered traffic, never 0." }
+        ipv4Count: { type: integer, minimum: 0, maximum: 32767 }
+        ipv6Supported: { type: boolean }
+        virtualization: { $ref: "#/components/schemas/Virtualization" }
+        isActive: { type: boolean, default: true }
+        inStock: { type: boolean, default: true }
+
+    TariffDto:
+      type: object
+      required: [id, providerId, name, vcpuCount, ramMb, diskGb, diskType, ipv4Count, virtualization, isActive, inStock, createdAt, updatedAt]
+      properties:
+        id: { type: integer, format: int64 }
+        providerId: { type: integer, format: int64 }
+        externalId: { type: string }
+        name: { type: string }
+        url: { type: string }
+        vcpuCount: { type: integer }
+        cpuModel: { type: string }
+        ramMb: { type: integer }
+        diskGb: { type: integer }
+        diskType: { $ref: "#/components/schemas/DiskType" }
+        bandwidthMbps: { type: integer }
+        trafficLimitGb: { type: integer, description: "Absent means unmetered traffic." }
+        ipv4Count: { type: integer }
+        ipv6Supported: { type: boolean }
+        virtualization: { $ref: "#/components/schemas/Virtualization" }
+        isActive: { type: boolean }
+        inStock: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    TariffSearchItemDto:
+      type: object
+      required: [tariff, provider]
+      properties:
+        tariff: { $ref: "#/components/schemas/TariffDto" }
+        provider: { $ref: "#/components/schemas/ProviderDto" }
+        currentPrice:
+          allOf: [{ $ref: "#/components/schemas/PriceDto" }]
+          description: Absent when there is no current price for the requested billingPeriod.
+
+    TariffDetailDto:
+      type: object
+      required: [tariff, provider, locations, currentPrices]
+      properties:
+        tariff: { $ref: "#/components/schemas/TariffDto" }
+        provider: { $ref: "#/components/schemas/ProviderDto" }
+        locations:
+          type: array
+          items: { $ref: "#/components/schemas/LocationDto" }
+        currentPrices:
+          type: array
+          items: { $ref: "#/components/schemas/PriceDto" }
+          description: At most one row per billingPeriod.
+
+    PriceHistoryItemDto:
+      type: object
+      required: [id, billingPeriod, amount, currency, effectiveFrom, dataSource]
+      properties:
+        id: { type: integer, format: int64 }
+        billingPeriod: { $ref: "#/components/schemas/BillingPeriod" }
+        amount: { type: string, pattern: "^\\d{1,8}(\\.\\d{1,4})?$" }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        amountUsd: { type: string, pattern: "^\\d{1,8}(\\.\\d{1,4})?$" }
+        usdRate: { type: string, pattern: "^\\d{1,8}(\\.\\d{1,12})?$" }
+        usdRateAt: { type: string, format: date-time }
+        effectiveFrom: { type: string, format: date-time }
+        effectiveTo: { type: string, format: date-time, description: Absent while this row is the current price. }
+        dataSource: { $ref: "#/components/schemas/PriceDataSource" }
+
+    PriceWriteRequest:
+      type: object
+      required: [billingPeriod, amount, currency]
+      properties:
+        billingPeriod: { $ref: "#/components/schemas/BillingPeriod" }
+        amount: { type: string, pattern: "^\\d{1,8}(\\.\\d{1,4})?$" }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        effectiveFrom:
+          type: string
+          format: date-time
+          description: ISO-8601 with an explicit offset. Defaults to now when absent.
+        dataSource:
+          allOf: [{ $ref: "#/components/schemas/PriceDataSource" }]
+          description: Defaults to MANUAL when absent.
+
+    PriceCloseRequest:
+      type: object
+      required: [billingPeriod]
+      properties:
+        billingPeriod: { $ref: "#/components/schemas/BillingPeriod" }
+        effectiveTo:
+          type: string
+          format: date-time
+          description: ISO-8601 with an explicit offset. Defaults to now when absent.
+
+    PriceDto:
+      type: object
+      required: [id, tariffId, billingPeriod, amount, currency, effectiveFrom, dataSource, createdAt, warnings]
+      properties:
+        id: { type: integer, format: int64 }
+        tariffId: { type: integer, format: int64 }
+        billingPeriod: { $ref: "#/components/schemas/BillingPeriod" }
+        amount: { type: string, pattern: "^\\d{1,8}(\\.\\d{1,4})?$" }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        amountUsd: { type: string, pattern: "^\\d{1,8}(\\.\\d{1,4})?$" }
+        usdRate: { type: string, pattern: "^\\d{1,8}(\\.\\d{1,12})?$" }
+        usdRateAt: { type: string, format: date-time }
+        effectiveFrom: { type: string, format: date-time }
+        effectiveTo: { type: string, format: date-time, description: Absent while this row is the current price. }
+        dataSource: { $ref: "#/components/schemas/PriceDataSource" }
+        recordedBy: { type: integer, format: int64, description: Absent for a row with no recording user. }
+        createdAt: { type: string, format: date-time }
+        warnings:
+          type: array
+          items: { type: string, enum: [NO_FX_RATE] }
+          description: "Always present, possibly empty -- encodeDefaults=true keeps this key on the wire even when empty."
+
+    CreateUserRequest:
+      type: object
+      required: [username, password, roles]
+      properties:
+        username: { type: string, maxLength: 64 }
+        password: { type: string }
+        email: { type: string, maxLength: 255 }
+        roles:
+          type: array
+          items: { $ref: "#/components/schemas/Role" }
+
+    PatchUserRequest:
+      type: object
+      description: At least one of status or roles must be present; an empty body is a 400.
+      properties:
+        status: { $ref: "#/components/schemas/UserStatus" }
+        roles:
+          type: array
+          items: { $ref: "#/components/schemas/Role" }
+
+    ChangePasswordRequest:
+      type: object
+      required: [password]
+      properties:
+        password: { type: string }
+
+    UserDto:
+      type: object
+      required: [id, username, status, roles, createdAt, updatedAt]
+      properties:
+        id: { type: integer, format: int64 }
+        username: { type: string }
+        email: { type: string }
+        status: { $ref: "#/components/schemas/UserStatus" }
+        roles:
+          type: array
+          items: { $ref: "#/components/schemas/Role" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        lastLoginAt: { type: string, format: date-time }
+
+    FxRefreshResponse:
+      type: object
+      required: [inserted]
+      properties:
+        inserted: { type: integer, description: Number of currency_rate rows inserted by this refresh. }
+
+    DictionariesDto:
+      type: object
+      required:
+        - paymentMethods
+        - billingPeriods
+        - diskTypes
+        - virtualizationTypes
+        - providerStatuses
+        - confidenceLevels
+        - legalDataSources
+        - priceDataSources
+      properties:
+        paymentMethods: { type: array, items: { type: string } }
+        billingPeriods: { type: array, items: { type: string } }
+        diskTypes: { type: array, items: { type: string } }
+        virtualizationTypes: { type: array, items: { type: string } }
+        providerStatuses: { type: array, items: { type: string } }
+        confidenceLevels: { type: array, items: { type: string } }
+        legalDataSources: { type: array, items: { type: string } }
+        priceDataSources: { type: array, items: { type: string } }
+
+    PageMeta:
+      type: object
+      required: [page, size, totalElements, totalPages]
+      properties:
+        page: { type: integer }
+        size: { type: integer }
+        totalElements: { type: integer, format: int64 }
+        totalPages: { type: integer, description: "Zero for an empty result, never one empty page." }
+
+    ProviderSummaryPage:
+      allOf:
+        - $ref: "#/components/schemas/PageMeta"
+        - type: object
+          required: [content]
+          properties:
+            content:
+              type: array
+              items: { $ref: "#/components/schemas/ProviderSummaryDto" }
+
+    TariffPage:
+      allOf:
+        - $ref: "#/components/schemas/PageMeta"
+        - type: object
+          required: [content]
+          properties:
+            content:
+              type: array
+              items: { $ref: "#/components/schemas/TariffDto" }
+
+    TariffSearchItemPage:
+      allOf:
+        - $ref: "#/components/schemas/PageMeta"
+        - type: object
+          required: [content]
+          properties:
+            content:
+              type: array
+              items: { $ref: "#/components/schemas/TariffSearchItemDto" }
+
+    UserPage:
+      allOf:
+        - $ref: "#/components/schemas/PageMeta"
+        - type: object
+          required: [content]
+          properties:
+            content:
+              type: array
+              items: { $ref: "#/components/schemas/UserDto" }

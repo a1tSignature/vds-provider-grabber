@@ -14,6 +14,7 @@ import org.a1tsign.vds.api.routes.providerRoutes
 import org.a1tsign.vds.api.routes.locationRoutes
 import org.a1tsign.vds.api.routes.tariffRoutes
 import org.a1tsign.vds.api.routes.priceRoutes
+import org.a1tsign.vds.api.routes.openApiRoutes
 
 /**
  * The single place every route group is registered. Keep it one line per group -- a later task
@@ -33,6 +34,7 @@ fun Application.registerRoutes(components: AppComponents) {
                 tariffRoutes(components.tariffService, components.catalogQueryService)
                 priceRoutes(components.priceService)
                 dictionaryRoutes()
+                openApiRoutes()
                 // All protected API route groups are registered inside this block in later tasks.
             }
         }

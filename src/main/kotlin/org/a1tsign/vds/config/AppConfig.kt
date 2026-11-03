@@ -1,6 +1,9 @@
 package org.a1tsign.vds.config
 
+import org.a1tsign.vds.api.parsePlainDecimal
+import java.math.BigDecimal
 import java.net.URI
+import java.util.Properties
 
 /**
  * Wraps a secret value so it never leaks through a `toString()` call (logs, exception messages,
@@ -44,6 +47,39 @@ data class BootstrapAdminConfig(
     val password: Secret,
 )
 
+/**
+ * The `VDS_CRAWLER_*` settings of the vds-002 crawler. Nothing in here is wired into the running
+ * application yet -- task vds-002.7 owns that -- and with [enabled] `false` (the default) no
+ * crawler component is constructed at all, so the service behaves exactly as vds-001 does.
+ *
+ * [username] and [password] can only be `null` while [enabled] is `false`: [loadConfig] turns a
+ * missing credential into a startup failure as soon as the crawler is switched on. Every other
+ * value is parsed and validated even when the crawler is disabled, so a typo is caught before
+ * somebody enables it.
+ */
+data class CrawlerConfig(
+    val enabled: Boolean,
+    val apiBaseUrl: String,
+    val username: String?,
+    val password: Secret?,
+    val intervalHours: Long,
+    val initialDelayMinutes: Long,
+    /** Adapter ids selected for a run; empty means "every adapter registered as default". */
+    val adapters: List<String>,
+    val maxConcurrentAdapters: Int,
+    val adapterTimeoutMinutes: Long,
+    val runTimeoutMinutes: Long,
+    val hostDelayMs: Long,
+    val userAgent: String,
+    val contactUrl: String?,
+    /** `false` is logged at WARN on startup by the component that reads it (task vds-002.7). */
+    val respectRobots: Boolean,
+    val maxBodyBytes: Long,
+    /** In `[0, 1]`, always a [BigDecimal] -- `Double` must not appear in this value's path. */
+    val maxOutOfStockRatio: BigDecimal,
+    val dryRunDefault: Boolean,
+)
+
 data class AppConfig(
     val db: DbConfig,
     val http: HttpConfig,
@@ -51,6 +87,7 @@ data class AppConfig(
     val fx: FxConfig,
     // null when the bootstrap-admin variables are absent; task 7 does the actual creation.
     val bootstrapAdmin: BootstrapAdminConfig?,
+    val crawler: CrawlerConfig,
 )
 
 /**
@@ -60,6 +97,11 @@ data class AppConfig(
 class ConfigurationException(message: String) : Exception(message)
 
 private const val DEFAULT_FX_API_URL = "https://open.er-api.com/v6/latest/USD"
+
+private const val DEFAULT_CRAWLER_API_BASE_URL = "http://127.0.0.1:8080"
+
+/** Product token of the crawler's `User-Agent`; the version and contact URL follow it. */
+const val CRAWLER_USER_AGENT_PRODUCT = "vds-provider-grabber"
 
 /**
  * Parses and validates [env] into an [AppConfig], or throws [ConfigurationException] naming every
@@ -116,6 +158,31 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
         val parsed = raw.toLongOrNull()
         if (parsed == null || parsed < 0) {
             errors += "$name must be zero or greater"
+            return default
+        }
+        return parsed
+    }
+
+    fun booleanFlag(name: String, default: Boolean): Boolean {
+        val raw = env[name] ?: return default
+        return when (raw) {
+            "true" -> true
+            "false" -> false
+            else -> {
+                errors += "$name must be true or false"
+                default
+            }
+        }
+    }
+
+    fun ratio(name: String, default: BigDecimal): BigDecimal {
+        val raw = env[name] ?: return default
+        // Same plain-decimal rule the money path on the wire uses (api/Serializers.kt's
+        // parsePlainDecimal): no exponent, no leading '+', no grouping, no whitespace -- so this
+        // value is a BigDecimal end to end and never goes through Double.
+        val parsed = parsePlainDecimal(raw)
+        if (parsed == null || parsed.signum() < 0 || parsed > BigDecimal.ONE) {
+            errors += "$name must be a decimal number in plain notation between 0 and 1"
             return default
         }
         return parsed
@@ -182,6 +249,42 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
         errors += "VDS_BOOTSTRAP_ADMIN_USERNAME is required when VDS_BOOTSTRAP_ADMIN_PASSWORD is set"
     }
 
+    // --- crawler (vds-002) ---
+    val crawlerEnabled = booleanFlag("VDS_CRAWLER_ENABLED", false)
+    val crawlerApiBaseUrl = env["VDS_CRAWLER_API_BASE_URL"] ?: DEFAULT_CRAWLER_API_BASE_URL
+    if (!isAbsoluteHttpUrl(crawlerApiBaseUrl)) {
+        errors += "VDS_CRAWLER_API_BASE_URL must be an absolute http or https URL"
+    }
+    val crawlerUsername = optionalNonBlank("VDS_CRAWLER_USERNAME")
+    val crawlerPasswordRaw = optionalNonBlank("VDS_CRAWLER_PASSWORD")
+    if (crawlerEnabled && crawlerUsername == null) {
+        errors += "VDS_CRAWLER_USERNAME is required when VDS_CRAWLER_ENABLED is true"
+    }
+    if (crawlerEnabled && crawlerPasswordRaw == null) {
+        errors += "VDS_CRAWLER_PASSWORD is required when VDS_CRAWLER_ENABLED is true"
+    }
+    val crawlerIntervalHours = positiveLong("VDS_CRAWLER_INTERVAL_HOURS", 24L)
+    val crawlerInitialDelayMinutes = positiveLong("VDS_CRAWLER_INITIAL_DELAY_MINUTES", 10L)
+    val crawlerAdapters = env["VDS_CRAWLER_ADAPTERS"]
+        ?.split(",")
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?: emptyList()
+    val crawlerMaxConcurrentAdapters = positiveInt("VDS_CRAWLER_MAX_CONCURRENT_ADAPTERS", 1)
+    val crawlerAdapterTimeoutMinutes = positiveLong("VDS_CRAWLER_ADAPTER_TIMEOUT_MINUTES", 5L)
+    val crawlerRunTimeoutMinutes = positiveLong("VDS_CRAWLER_RUN_TIMEOUT_MINUTES", 30L)
+    val crawlerHostDelayMs = positiveLong("VDS_CRAWLER_HOST_DELAY_MS", 2000L)
+    val crawlerContactUrl = optionalNonBlank("VDS_CRAWLER_CONTACT_URL")
+    if (crawlerContactUrl != null && !isAbsoluteHttpUrl(crawlerContactUrl)) {
+        errors += "VDS_CRAWLER_CONTACT_URL must be an absolute http or https URL"
+    }
+    val crawlerUserAgent = optionalNonBlank("VDS_CRAWLER_USER_AGENT")
+        ?: defaultCrawlerUserAgent(crawlerContactUrl)
+    val crawlerRespectRobots = booleanFlag("VDS_CRAWLER_RESPECT_ROBOTS", true)
+    val crawlerMaxBodyBytes = positiveLong("VDS_CRAWLER_MAX_BODY_BYTES", 2_097_152L)
+    val crawlerMaxOutOfStockRatio = ratio("VDS_CRAWLER_MAX_OUT_OF_STOCK_RATIO", BigDecimal("0.5"))
+    val crawlerDryRunDefault = booleanFlag("VDS_CRAWLER_DRY_RUN_DEFAULT", false)
+
     if (errors.isNotEmpty()) {
         throw ConfigurationException("Invalid configuration: ${errors.joinToString("; ")}")
     }
@@ -214,10 +317,72 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
         } else {
             null
         },
+        crawler = CrawlerConfig(
+            enabled = crawlerEnabled,
+            apiBaseUrl = crawlerApiBaseUrl,
+            username = crawlerUsername,
+            password = crawlerPasswordRaw?.let { Secret(it) },
+            intervalHours = crawlerIntervalHours,
+            initialDelayMinutes = crawlerInitialDelayMinutes,
+            adapters = crawlerAdapters,
+            maxConcurrentAdapters = crawlerMaxConcurrentAdapters,
+            adapterTimeoutMinutes = crawlerAdapterTimeoutMinutes,
+            runTimeoutMinutes = crawlerRunTimeoutMinutes,
+            hostDelayMs = crawlerHostDelayMs,
+            userAgent = crawlerUserAgent,
+            contactUrl = crawlerContactUrl,
+            respectRobots = crawlerRespectRobots,
+            maxBodyBytes = crawlerMaxBodyBytes,
+            maxOutOfStockRatio = crawlerMaxOutOfStockRatio,
+            dryRunDefault = crawlerDryRunDefault,
+        ),
     )
 }
 
+/**
+ * The `VDS_CRAWLER_ADAPTER_<ID>_*` slice of [env] that belongs to the adapter [adapterId], in the
+ * shape handed to an adapter through `CrawlContext.config`: `<ID>` is the adapter id upper-cased
+ * with `-` replaced by `_`, and the map key is the remaining suffix, lower-cased —
+ * `VDS_CRAWLER_ADAPTER_EXAMPLE_STATIC_FOO=bar` becomes `{"foo": "bar"}` for `example-static`.
+ *
+ * [env] is always a parameter, never the real process environment, so this mapping stays pure.
+ *
+ * Caveat an adapter author has to respect: the prefix is ambiguous between two ids whose
+ * upper-cased forms nest (`a` and `a-b` — `VDS_CRAWLER_ADAPTER_A_B_FOO` belongs to both), which
+ * the registry's id uniqueness does not rule out. Pick ids that do not nest.
+ */
+fun crawlerAdapterConfig(adapterId: String, env: Map<String, String>): Map<String, String> {
+    val prefix = "VDS_CRAWLER_ADAPTER_" + adapterId.uppercase().replace('-', '_') + "_"
+    return env.entries
+        .filter { it.key.startsWith(prefix) && it.key.length > prefix.length }
+        .associate { it.key.removePrefix(prefix).lowercase() to it.value }
+}
+
+/**
+ * `vds-provider-grabber/<version>`, plus ` (+<contact url>)` when `VDS_CRAWLER_CONTACT_URL` is
+ * set, so a site owner can tell who is crawling and reach us. The version comes from the same
+ * packaged `version.properties` that `GET /version` serves (read independently here because
+ * `api/routes/OpsRoutes.kt` reads it for its own response and is not this task's to refactor);
+ * a missing resource degrades to `unknown` rather than failing startup.
+ */
+internal fun defaultCrawlerUserAgent(contactUrl: String?): String {
+    val base = "$CRAWLER_USER_AGENT_PRODUCT/${appVersion()}"
+    return if (contactUrl == null) base else "$base (+$contactUrl)"
+}
+
+internal fun appVersion(): String {
+    val properties = Properties()
+    val classLoader = Thread.currentThread().contextClassLoader
+        ?: AppConfig::class.java.classLoader
+    classLoader.getResourceAsStream("version.properties")?.use { properties.load(it) }
+    return properties.getProperty("version", "unknown")
+}
+
+// The host check is what separates a usable URL from a merely parseable one ("http://" is an
+// absolute http URI with no host at all, and used to pass startup validation) -- the same rule as
+// `api/Validation.kt` and `crawler/SnapshotValidator.kt`. It applies to every caller here:
+// VDS_FX_API_URL, VDS_CRAWLER_API_BASE_URL and VDS_CRAWLER_CONTACT_URL.
 private fun isAbsoluteHttpUrl(value: String): Boolean {
     val uri = runCatching { URI(value) }.getOrNull() ?: return false
-    return uri.isAbsolute && (uri.scheme == "http" || uri.scheme == "https")
+    return uri.isAbsolute && (uri.scheme == "http" || uri.scheme == "https") && !uri.host.isNullOrEmpty()
 }

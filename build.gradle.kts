@@ -44,6 +44,8 @@ dependencies {
     implementation(libs.java.jwt)
     implementation(libs.bcrypt)
 
+    implementation(libs.jsoup)
+
     implementation(libs.logback.classic)
 
     testImplementation(kotlin("test"))

@@ -2,6 +2,7 @@ package org.a1tsign.vds.crawler.fetch
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
@@ -48,7 +49,7 @@ class HostRateLimiterTest {
                         ran.incrementAndGet()
                     }
                 }
-            }.forEach { it.join() }
+            }.joinAll()
         }
 
         assertEquals(64, ran.get(), "every call must run exactly once, retried gate check or not")

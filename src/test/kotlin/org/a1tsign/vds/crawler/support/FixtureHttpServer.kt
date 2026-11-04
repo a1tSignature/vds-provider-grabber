@@ -3,7 +3,6 @@ package org.a1tsign.vds.crawler.support
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
-import io.ktor.server.application.call
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -19,6 +18,7 @@ import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import java.time.Instant
+import java.net.Socket
 import java.util.TreeMap
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -360,7 +360,7 @@ class RawResponseServer(private val rawResponse: String) : AutoCloseable {
         worker.interrupt()
     }
 
-    private fun serve(connection: java.net.Socket) {
+    private fun serve(connection: Socket) {
         val input = connection.getInputStream()
         val head = StringBuilder()
         while (!head.endsWith("\r\n\r\n")) {

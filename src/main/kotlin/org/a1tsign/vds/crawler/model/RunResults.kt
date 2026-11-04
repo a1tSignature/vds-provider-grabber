@@ -13,9 +13,10 @@ enum class RunStatus { RUNNING, COMPLETED, CANCELLED }
 enum class FailureReason { VALIDATION, TIMEOUT, MASS_CHANGE_GUARD, FETCH, WRITE, AUTH, ADAPTER_ERROR }
 
 /**
- * What one adapter did, as reported by `GET /api/v1/admin/crawl/runs` (spec req. 36). Every
- * counter is "what actually happened", so a dry run reports zeros and lists its intentions in
- * [CrawlRunSummary.plannedOperations] instead.
+ * What one adapter did, as reported by `GET /api/v1/admin/crawl/runs` (spec req. 36). In a dry run
+ * the same counters report the operations the run **intended** (spec req. 36: the counters are the
+ * ones a real run would have produced), and [CrawlRunSummary.plannedOperations] additionally lists
+ * them in readable form.
  *
  * Timings come from a monotonic source ([durationMs] is measured with `System.nanoTime()`, not a
  * wall clock); instants in [CrawlRunSummary] come from the injected `Clock`.

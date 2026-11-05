@@ -74,7 +74,13 @@ class CrawlScheduler private constructor(
         try {
             executor.schedule(
                 {
-                    tick()
+                    try {
+                        tick()
+                    } catch (failure: Throwable) {
+                        // Exactly like the FX scheduler's precedent: nothing reads this task's
+                        // result, so an uncaught throw here would silently stop the timer forever.
+                        logger.warn("crawl scheduler tick failed; the scheduler will still re-arm", failure)
+                    }
                     arm(intervalMs + jitterMs(intervalMs / JITTER_SHARE))
                 },
                 delayMs,
@@ -86,26 +92,32 @@ class CrawlScheduler private constructor(
         }
     }
 
+    /**
+     * The slot is reserved **inside** the launched coroutine, not before launching it: if `close()`
+     * cancels [scope] in the window between creating the coroutine and it actually starting, the
+     * coroutine never runs its body and therefore never calls [CrawlerRunner.tryReserve] -- so the
+     * slot is never taken and cannot be left permanently reserved with no job left to join. Reserving
+     * first and launching second (the previous shape) had exactly that window.
+     */
     private fun tick() {
         if (!accepting) return
-        val runId = runner.tryReserve(dryRun)
-        if (runId == null) {
-            logger.warn("crawl scheduler tick skipped: a crawl run is already in progress")
-            return
+        val job = scope.launch {
+            val runId = runner.tryReserve(dryRun)
+            if (runId == null) {
+                logger.warn("crawl scheduler tick skipped: a crawl run is already in progress")
+                return@launch
+            }
+            try {
+                runner.runReserved(runId, selection)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (failure: Throwable) {
+                // The runner already logged the run's own outcome; this is the last line of
+                // defence, exactly like the FX scheduler's -- a failed tick never kills the timer.
+                logger.warn("crawl run {} ended with an unhandled failure", runId, failure)
+            }
         }
-        inFlight.set(
-            scope.launch {
-                try {
-                    runner.runReserved(runId, selection)
-                } catch (cancellation: CancellationException) {
-                    throw cancellation
-                } catch (failure: Throwable) {
-                    // The runner already logged the run's own outcome; this is the last line of
-                    // defence, exactly like the FX scheduler's -- a failed tick never kills the timer.
-                    logger.warn("crawl run {} ended with an unhandled failure", runId, failure)
-                }
-            },
-        )
+        inFlight.set(job)
     }
 
     override fun close() {

@@ -161,8 +161,12 @@ class CrawlerRunner(
             return execute(run, selection)
         } catch (failure: Throwable) {
             // Including CancellationException (shutdown): the history must not keep a run that is
-            // RUNNING forever, and the slot must not stay held.
-            publish(summaryOf(run, RunStatus.CANCELLED, run.results.toList(), plannedOperations = emptyList()))
+            // RUNNING forever, and the slot must not stay held. The writer (set by execute() before
+            // any adapter runs) still holds a dry run's plan even though execute() never reached its
+            // own publish() call, so a cancelled dry run's summary is not left reporting an empty one.
+            publish(
+                summaryOf(run, RunStatus.CANCELLED, run.results.toList(), plannedOperations = run.writer?.plannedOperations() ?: emptyList()),
+            )
             throw failure
         } finally {
             active = null
@@ -181,6 +185,7 @@ class CrawlerRunner(
         val adapters = registry.select(selection.adapterIds)
         val ratio = selection.maxOutOfStockRatio ?: config.maxOutOfStockRatio
         val writer = writerFactory(run.dryRun)
+        run.writer = writer
         logger.info(
             "crawl run {} starting: adapters={} dryRun={} maxOutOfStockRatio={}",
             run.runId,
@@ -293,6 +298,12 @@ class CrawlerRunner(
                 }
                 val outcome = reconciler.reconcile(adapter, snapshot, writer, ratio)
                 result(outcome.status, outcome.failureReason, outcome.message, outcome)
+                // If the adapter budget expires while reconciler.reconcile(...) is suspended, this
+                // branch is cancelled before it returns a ReconcileOutcome: the `?: result(...)`
+                // below reports zero counters for this adapter even though the writes it already
+                // made before the cut stay in the catalog. Not required by the task; the run's
+                // overall counters are therefore a lower bound on a TIMEOUT adapter, never wrong in
+                // the other direction (no write is ever double-counted or invented).
             } ?: result(AdapterRunStatus.FAILED, FailureReason.TIMEOUT, "Timed out after ${adapterTimeoutMs}ms")
         } catch (robots: FetchException.RobotsDisallowed) {
             // Not a failure: the site told us not to, which is an answer, not a malfunction.
@@ -386,6 +397,10 @@ class CrawlerRunner(
         val dryRun: Boolean,
     ) {
         val results = mutableListOf<AdapterRunResult>()
+
+        /** Set by [execute] before the first adapter runs; read by [runReserved]'s cancellation path. */
+        @Volatile
+        var writer: CrawlWriter? = null
 
         fun elapsedMs(): Long = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos)
     }

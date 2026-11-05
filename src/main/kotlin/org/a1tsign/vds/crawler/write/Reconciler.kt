@@ -128,6 +128,14 @@ class Reconciler(private val client: CatalogApiClient) {
         private var degraded = false
         private var firstProblem: String? = null
 
+        /**
+         * Catalog tariff ids this run has committed to one observed tariff, across **both**
+         * planning ([planTariffs]) and the write phase's `409` re-read ([createTariff]): a row a
+         * concurrent writer creates mid-run did not exist to be planned against, so without this
+         * set surviving into the write phase two snapshot tariffs could still be written into it.
+         */
+        private val claimedTariffIds = mutableSetOf<Long>()
+
         suspend fun run(): ReconcileOutcome {
             writer.beginProvider(slug)
             val plannedBefore = writer.plannedOperations().size
@@ -345,11 +353,23 @@ class Reconciler(private val client: CatalogApiClient) {
             } catch (conflict: CatalogApiException.Conflict) {
                 logger.info("Tariff '{}' of '{}' already exists; reusing the existing row", observed.name, slug)
                 val reread = match(client.listAllTariffs(state.providerId), observed)
-                if (reread == null) {
-                    degrade("Tariff '${observed.name}' of '$slug' was refused with 409 but cannot be found either")
-                    null
-                } else {
-                    updateTariff(observed, reread)
+                when {
+                    reread == null -> {
+                        degrade("Tariff '${observed.name}' of '$slug' was refused with 409 but cannot be found either")
+                        null
+                    }
+                    !claimedTariffIds.add(reread.id) -> {
+                        // The same collision planTariffs guards against, re-applied here: this row
+                        // did not exist when this run was planned (a concurrent writer created it),
+                        // so it reached the write phase unclaimed and now collides with a tariff
+                        // this run already wrote.
+                        degrade(
+                            "Tariff '${observed.name}' of '$slug' matches a catalog row another tariff of the " +
+                                "same snapshot already claimed; it was skipped",
+                        )
+                        null
+                    }
+                    else -> updateTariff(observed, reread)
                 }
             } catch (clientError: CatalogApiException.ClientError) {
                 degrade("Tariff '${observed.name}' of '$slug' was refused: ${clientError.message}")
@@ -369,7 +389,11 @@ class Reconciler(private val client: CatalogApiClient) {
                 externalId = observed.externalId ?: match.externalId,
             )
             if (echo(match) != desired && write("PUT /tariffs/{id}") { writer.updateTariff(match.id, desired) }) {
-                tariffsUpdated++
+                // An observed in-stock -> out-of-stock transition is the same disappearance signal
+                // applyMissingTariffs counts, just observed directly instead of inferred from
+                // absence; it must land in the same counter so the summary and the mass-change
+                // guard agree on what "flipped" means (see flippingRows).
+                if (match.inStock && !observed.inStock) tariffsMarkedOutOfStock++ else tariffsUpdated++
             }
             return match.id
         }
@@ -452,18 +476,17 @@ class Reconciler(private val client: CatalogApiClient) {
         private fun planTariffs(catalog: List<CatalogTariff>): TariffPlan {
             val matches = mutableListOf<Pair<TariffSnapshot, CatalogTariff?>>()
             val collisions = mutableListOf<TariffSnapshot>()
-            val claimed = mutableSetOf<Long>()
             snapshot.tariffs.orEmpty().forEach { observed ->
                 val match = match(catalog, observed)
                 when {
                     match == null -> matches += observed to null
-                    claimed.add(match.id) -> matches += observed to match
+                    claimedTariffIds.add(match.id) -> matches += observed to match
                     else -> collisions += observed
                 }
             }
             return TariffPlan(
                 matches = matches,
-                missing = catalog.filter { it.id !in claimed },
+                missing = catalog.filter { it.id !in claimedTariffIds },
                 collisions = collisions,
             )
         }
@@ -479,11 +502,24 @@ class Reconciler(private val client: CatalogApiClient) {
             observed.externalId?.let { external -> catalog.firstOrNull { it.externalId == external } }
                 ?: catalog.firstOrNull { it.name.lowercase() == observed.name.lowercase() }
 
+        /**
+         * Every currently in-stock catalog row the write phase would flip to out-of-stock: the
+         * ones the snapshot does not mention at all ([TariffPlan.missing], ADR-03 point 3) **and**
+         * the ones it does mention but reports `inStock = false` ([TariffPlan.matches], applied by
+         * [updateTariff]). Both are the same disappearance signal -- one inferred from absence, one
+         * observed directly -- so the guard must count both or a snapshot whose "in stock" selector
+         * broke (while its "which tariffs exist" selector kept working) wipes the provider with the
+         * guard silent.
+         */
+        private fun flippingRows(plan: TariffPlan): List<CatalogTariff> =
+            plan.missing.filter { it.inStock } +
+                plan.matches.mapNotNull { (observed, match) -> match?.takeIf { it.inStock && !observed.inStock } }
+
         private fun checkMassChange(state: CatalogState, plan: TariffPlan) {
             if (!snapshot.tariffListComplete) return
             val inStock = state.tariffs.count { it.inStock }
             if (inStock < MASS_CHANGE_GUARD_MIN_IN_STOCK) return
-            val flipping = plan.missing.count { it.inStock }
+            val flipping = flippingRows(plan).size
             // Cross-multiplied instead of divided: an exact BigDecimal comparison with no rounding
             // and no Double anywhere. "Exceeds" is strict, so ratio 1.0 always passes.
             if (BigDecimal(flipping) <= maxOutOfStockRatio.multiply(BigDecimal(inStock))) return

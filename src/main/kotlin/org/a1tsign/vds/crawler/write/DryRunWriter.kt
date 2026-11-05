@@ -27,8 +27,9 @@ const val PLANNED_OPERATIONS_LIMIT: Int = 200
  *   of tariffs must not grow the in-memory run history. Dropping lines never affects the counters.
  *
  * One instance per run, shared by every adapter of it; [beginProvider] is what names the provider in
- * each line. All state is behind one lock, because the runner may be configured to run adapters
- * concurrently while an HTTP thread reads the summary.
+ * each line. All state is behind one lock, so an HTTP thread can read the summary while the run
+ * writes it -- `CrawlerRunner` runs adapters one at a time (`VDS_CRAWLER_MAX_CONCURRENT_ADAPTERS > 1`
+ * is refused at startup), so the lock is not there for concurrent adapters.
  */
 class DryRunWriter : CrawlWriter {
 

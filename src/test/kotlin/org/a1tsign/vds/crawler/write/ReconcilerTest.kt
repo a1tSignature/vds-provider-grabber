@@ -3,6 +3,8 @@ package org.a1tsign.vds.crawler.write
 import kotlinx.coroutines.runBlocking
 import org.a1tsign.vds.crawler.model.AdapterRunStatus
 import org.a1tsign.vds.crawler.model.FailureReason
+import org.a1tsign.vds.crawler.model.LocationKey
+import org.a1tsign.vds.crawler.model.LocationSnapshot
 import org.a1tsign.vds.crawler.model.PriceSnapshot
 import org.a1tsign.vds.crawler.model.ProviderSnapshot
 import org.a1tsign.vds.crawler.model.TariffSnapshot
@@ -248,6 +250,39 @@ class ReconcilerTest : AbstractDbTest() {
         }
     }
 
+    @Test
+    fun `a location the API rejects leaves the tariff that links only to it with its existing link set untouched`() {
+        // M2 of 05-reviews/vds-002.5-6-combined-quality.md: the branch ADR-03 exists for -- a
+        // refused location's link set is skipped WHOLE, never truncated -- had no test.
+        val fixture = CatalogFixture(PostgresSupport.database)
+        withCatalog { ctx ->
+            val provider = fixture.createProvider(FIXTURE_PROVIDER_SLUG, clock.instant())
+            val existing = fixture.createLocation(provider.id, "DE", "Berlin", "DC1", clock.instant())
+            val tariff = fixture.createTariff(provider.id, "VPS 1", clock.instant())
+            fixture.linkTariffLocation(tariff.id, existing.id, provider.id)
+            val badKey = LocationKey(countryCode = "ZZZ", city = "Nowhere")
+
+            val outcome = ctx.reconcile(
+                validSnapshot().copy(
+                    legalInfo = null,
+                    paymentMethods = null,
+                    locations = listOf(LocationSnapshot(key = badKey)),
+                    tariffs = listOf(usd(validTariff("VPS 1").copy(locationKeys = listOf(badKey)))),
+                    tariffListComplete = true,
+                ),
+            )
+
+            assertEquals(AdapterRunStatus.PARTIAL, outcome.status)
+            assertTrue(outcome.message!!.contains("400"), "outcome message: ${outcome.message}")
+            assertEquals(0, ctx.harness.countCalls("PUT", "/api/v1/tariffs/${tariff.id}/locations"))
+            assertEquals(
+                setOf(existing.id),
+                transaction(PostgresSupport.database) { TariffRepository().locationIds(tariff.id) },
+                "a refused location must not truncate the tariff's existing link set",
+            )
+        }
+    }
+
     // ---------- 8 + 9. disappearance ----------
 
     @Test
@@ -357,6 +392,39 @@ class ReconcilerTest : AbstractDbTest() {
         assertTrue(warning.contains("0.5"), "the ratio in force must be named: $warning")
     }
 
+    @Test
+    fun `the mass-change guard also counts tariffs the snapshot reports present but out of stock`() {
+        // I1 of 05-reviews/vds-002.5-6-combined-quality.md: a complete snapshot that *lists* every
+        // tariff with inStock = false is the same disappearance as one that omits them, but used to
+        // bypass the guard entirely because checkMassChange only counted TariffPlan.missing.
+        val fixture = CatalogFixture(PostgresSupport.database)
+        withCatalog { ctx ->
+            val provider = fixture.createProvider(FIXTURE_PROVIDER_SLUG, clock.instant())
+            val tariffs = (1..4).map { fixture.createTariff(provider.id, "VPS $it", clock.instant()) }
+            val wipeAttempt = tariffsSnapshot(*tariffs.map { usd(validTariff(it.name).copy(inStock = false)) }.toTypedArray())
+            val recorder = RecordingCrawlWriter()
+
+            val guarded = ctx.reconcile(wipeAttempt, writer = recorder)
+
+            assertEquals(AdapterRunStatus.FAILED, guarded.status)
+            assertEquals(FailureReason.MASS_CHANGE_GUARD, guarded.failureReason)
+            assertEquals(emptyList(), recorder.mutations(), "the guard must perform zero writes")
+            assertTrue(
+                ctx.client.listAllTariffs(provider.id).all { it.inStock },
+                "the catalog must be untouched",
+            )
+
+            val overridden = ctx.reconcile(wipeAttempt, ratio = BigDecimal("1.0"))
+            assertEquals(AdapterRunStatus.SUCCESS, overridden.status)
+            assertEquals(
+                4,
+                overridden.tariffsMarkedOutOfStock,
+                "an observed inStock = false counts the same as absence",
+            )
+            assertTrue(ctx.client.listAllTariffs(provider.id).none { it.inStock })
+        }
+    }
+
     // ---------- 11. the concurrent-create race ----------
 
     @Test
@@ -382,6 +450,73 @@ class ReconcilerTest : AbstractDbTest() {
                 transaction(PostgresSupport.database) { ProviderRepository().countFiltered(ProviderListFilter()) },
                 "exactly one provider row exists",
             )
+        }
+    }
+
+    @Test
+    fun `two snapshot tariffs that collide on a row created concurrently are not both written into it`() {
+        // M3 of 05-reviews/vds-002.5-6-combined-quality.md: createTariff's 409 re-read matched
+        // against a fresh catalog list without consulting the ids this run already claimed, so a
+        // row that did not exist at planning time but collides with two snapshot tariffs could be
+        // written twice. Both snapshot tariffs share one externalId a concurrent writer's row also
+        // carries, so they are both unmatched at plan time and both 409 against the same row.
+        withCatalog { ctx ->
+            var primed = false
+            val racing = object : CrawlWriter by ctx.writer {
+                override suspend fun createTariff(providerId: Long, request: TariffWrite): Long {
+                    if (!primed) {
+                        primed = true
+                        ctx.client.createTariff(
+                            providerId,
+                            TariffWrite(
+                                name = "Concurrent", vcpuCount = 1, ramMb = 512, diskGb = 10,
+                                diskType = "SSD", ipv4Count = 1, virtualization = "KVM",
+                                isActive = true, inStock = true, externalId = "shared-ext",
+                            ),
+                        )
+                    }
+                    return ctx.writer.createTariff(providerId, request)
+                }
+            }
+
+            val outcome = ctx.reconcile(
+                tariffsSnapshot(
+                    usd(validTariff(name = "Alpha", externalId = "shared-ext")),
+                    usd(validTariff(name = "Beta", externalId = "shared-ext")),
+                ),
+                writer = racing,
+            )
+
+            assertEquals(AdapterRunStatus.PARTIAL, outcome.status, "the collision degrades, it does not fail the adapter")
+            val stored = ctx.client.listAllTariffs(ctx.providerId())
+            assertEquals(1, stored.size, "the concurrently created row must not receive two different tariffs' data")
+            assertEquals("shared-ext", stored.single().externalId)
+            assertEquals(
+                "Alpha",
+                stored.single().name,
+                "the first tariff's write must not be silently overwritten by the collision",
+            )
+        }
+    }
+
+    @Test
+    fun `a snapshot tariff whose match is already claimed by an earlier tariff of the same snapshot is skipped, not duplicated`() {
+        val fixture = CatalogFixture(PostgresSupport.database)
+        withCatalog { ctx ->
+            val provider = fixture.createProvider(FIXTURE_PROVIDER_SLUG, clock.instant())
+            fixture.createTariff(provider.id, "VPS 1", clock.instant(), externalId = "p-1")
+
+            val outcome = ctx.reconcile(
+                tariffsSnapshot(
+                    usd(validTariff(name = "New Name", externalId = "p-1")),
+                    usd(validTariff(name = "vps 1", externalId = null)),
+                ),
+            )
+
+            assertEquals(AdapterRunStatus.PARTIAL, outcome.status)
+            val stored = ctx.client.listAllTariffs(provider.id)
+            assertEquals(1, stored.size, "the collision must not create a second row")
+            assertEquals("New Name", stored.single().name, "the first tariff's rename is not overwritten by the collision")
         }
     }
 

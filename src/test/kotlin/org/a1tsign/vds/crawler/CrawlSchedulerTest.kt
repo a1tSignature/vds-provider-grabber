@@ -14,6 +14,7 @@ import org.a1tsign.vds.support.capturingLogs
 import org.junit.jupiter.api.AfterEach
 import org.slf4j.event.Level
 import java.time.Duration
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -105,6 +106,38 @@ class CrawlSchedulerTest {
         assertEquals(RunStatus.CANCELLED, runner.recentRuns().single().status)
         Thread.sleep(200)
         assertEquals(1, runner.recentRuns().size, "close() stops accepting ticks")
+    }
+
+    @Test
+    fun `a non-zero jitter is actually applied to the re-armed delay, never fired earlier than the interval`() {
+        // M10 of 05-reviews/vds-002.5-6-combined-quality.md: every other test injects jitterMs = { 0 },
+        // so spec req. 21's "up to 10% per tick" rested on reading the default lambda, not on a test.
+        val runner = runner()
+        val interval = 200L
+        val jitterCalls = CopyOnWriteArrayList<Long>()
+        val scheduler = CrawlScheduler.create(
+            config = testCrawlerConfig(),
+            runner = runner,
+            intervalMs = interval,
+            initialDelayMs = 20,
+            // Always the maximum allowed jitter: the re-arm delay this forces is exactly
+            // interval * 1.1, so a dropped or ignored jitter value is visible as too-short a gap.
+            jitterMs = { bound -> jitterCalls.add(System.nanoTime()); bound },
+        )!!
+        try {
+            awaitUntil { jitterCalls.size >= 3 }
+        } finally {
+            scheduler.close()
+        }
+
+        val gapsMs = jitterCalls.zipWithNext { a, b -> (b - a) / 1_000_000 }
+        gapsMs.forEach { gapMs ->
+            assertTrue(gapMs >= interval, "a re-armed tick must never fire earlier than the configured interval: $gapMs ms")
+            assertTrue(
+                gapMs <= interval * 11 / 10 + 150,
+                "the jitter is bounded at 10% of the interval, plus scheduling slack: $gapMs ms",
+            )
+        }
     }
 
     // ---------- helpers ----------

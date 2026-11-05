@@ -6,6 +6,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.a1tsign.vds.config.ConfigurationException
 import org.a1tsign.vds.crawler.model.AdapterRunResult
 import org.a1tsign.vds.crawler.model.AdapterRunStatus
 import org.a1tsign.vds.crawler.model.CrawlRunSummary
@@ -336,6 +337,30 @@ class CrawlerRunnerTest : AbstractDbTest() {
                 val next = ctx.runner.runOnce(AdapterSelection(), dryRun = false)
                 assertEquals(RunStatus.COMPLETED, next.status)
                 assertEquals(2, ctx.runner.recentRuns().size)
+            }
+        }
+    }
+
+    // ---------- M9. the maxConcurrentAdapters guard ----------
+
+    @Test
+    fun `a configured concurrency above 1 is refused at construction, not silently ignored`() {
+        // M9 of 05-reviews/vds-002.5-6-combined-quality.md: the one-line comparison standing
+        // between a config of 2 and the broken PageFetcher politeness / pagesFetched accounting
+        // the report names had no test -- every other test constructs with the default of 1.
+        CrawlerAppHarness(clock).use { harness ->
+            CatalogApiClient(config = harness.crawlerConfig(), clock = clock).use { client ->
+                assertFailsWith<ConfigurationException> {
+                    CrawlerRunner(
+                        config = harness.crawlerConfig().copy(maxConcurrentAdapters = 2),
+                        registry = AdapterRegistry(emptyList()),
+                        fetcher = StubPageFetcher(),
+                        validator = SnapshotValidator(clock),
+                        reconciler = Reconciler(client),
+                        clock = clock,
+                        writerFactory = { RecordingCrawlWriter() },
+                    )
+                }
             }
         }
     }

@@ -10,12 +10,20 @@ import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respond
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.a1tsign.vds.api.installApiPlugins
 import org.a1tsign.vds.api.registerRoutes
 import org.a1tsign.vds.auth.BootstrapAdmin
 import org.a1tsign.vds.config.ConfigurationException
 import org.a1tsign.vds.config.loadConfig
 import org.a1tsign.vds.config.nowUtc
+import org.a1tsign.vds.crawler.CRAWL_SHUTDOWN_GRACE_MS
+import org.a1tsign.vds.crawler.CrawlScheduler
+import org.a1tsign.vds.crawler.write.CatalogApiClient
 import org.a1tsign.vds.db.buildDataSource
 import org.a1tsign.vds.db.runMigrations
 import org.a1tsign.vds.fx.FxRefreshScheduler
@@ -25,6 +33,7 @@ import org.slf4j.LoggerFactory
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.system.exitProcess
 
 // Shared between module() (incremented/decremented around every request) and shutdownGracefully()
@@ -80,11 +89,37 @@ fun main() {
     }
     val database = Database.connect(dataSource)
     val clock = Clock.systemUTC()
-    val components = buildComponents(config, dataSource, clock, database)
+    // buildComponents can also throw ConfigurationException now: an unknown id in
+    // VDS_CRAWLER_ADAPTERS is caught by AdapterRegistry.select() while wiring the crawler (spec
+    // req. 39) and must fail startup exactly like a malformed VDS_* variable does above.
+    val components = try {
+        buildComponents(config, dataSource, clock, database)
+    } catch (e: ConfigurationException) {
+        logger.error(e.message)
+        exitProcess(1)
+    }
     BootstrapAdmin(database, components.userRepository, components.passwordHasher).ensure(config.bootstrapAdmin, clock.nowUtc())
     val server = embeddedServer(CIO, port = config.http.port) { module(components) }
     val fxScheduler = FxRefreshScheduler(components.fxRefreshService, config.fx.refreshHours)
-    Runtime.getRuntime().addShutdownHook(Thread { shutdownGracefully(server, clock, dataSource, fxScheduler, components.fxHttpClient) })
+    // null exactly when the crawler is disabled, following components.crawlerRunner (ADR-01: no
+    // thread is started while VDS_CRAWLER_ENABLED is false).
+    val crawlerScheduler = components.crawlerRunner?.let { runner -> CrawlScheduler.create(config.crawler, runner) }
+    Runtime.getRuntime().addShutdownHook(
+        Thread {
+            shutdownGracefully(
+                server,
+                clock,
+                dataSource,
+                fxScheduler,
+                components.fxHttpClient,
+                crawlerScheduler,
+                components.crawlerScope,
+                components.crawlerAdminRunJob,
+                components.crawlerCatalogClient,
+                components.crawlerFetchHttpClient,
+            )
+        },
+    )
     server.start(wait = true)
 }
 
@@ -121,8 +156,8 @@ private const val SHUTDOWN_POLL_INTERVAL_MILLIS = 50L
 
 /**
  * Stops accepting new requests, waits up to 10 s for in-flight requests to finish, then exits.
- * Later tasks (connection pool, FX scheduler) hook their own shutdown into this one named
- * function instead of adding more inline shutdown-hook lambdas.
+ * Later tasks (connection pool, FX scheduler, vds-002's crawler) hook their own shutdown into this
+ * one named function instead of adding more inline shutdown-hook lambdas.
  *
  * `EmbeddedServer.stop(gracePeriodMillis, timeoutMillis)` alone does **not** achieve this on Ktor
  * 3.6.0's CIO engine, for two compounding reasons found empirically (reproduced independently
@@ -144,7 +179,18 @@ private const val SHUTDOWN_POLL_INTERVAL_MILLIS = 50L
  * the drain window. They are rejected with `503` at the very first pipeline phase, before running
  * any route handler, instead of being served or counted, so they do not extend the drain.
  *
- * The Hikari pool is closed last, after `server.stop()`, once nothing can issue a new query.
+ * [crawlerScheduler] (null when the crawler is disabled) is closed first, the same way
+ * [fxScheduler] is: it stops its own periodic ticks and gives an in-flight run up to its own grace
+ * period to unwind (`CrawlScheduler.close()`). An in-flight admin-triggered run
+ * ([crawlerAdminRunJob], set by `CrawlerRoutes.kt` right after `launch`) is given the same bounded
+ * grace period next, mirroring `CrawlScheduler.close()`'s own cancel-then-join -- before this, only
+ * the scheduler's own ticks were ever awaited on shutdown. [crawlerScope] is then cancelled -- that
+ * is what makes an admin-triggered run (launched on this scope, not `GlobalScope`) cancellable by
+ * this shutdown path even if the grace period above was exceeded. The crawler's two HTTP clients
+ * ([crawlerCatalogClient], [crawlerFetchHttpClient]) are closed last, once nothing can start a new
+ * call on them, mirroring [fxHttpClient] below.
+ *
+ * The Hikari pool is closed last of all, after `server.stop()`, once nothing can issue a new query.
  */
 private fun shutdownGracefully(
     server: EmbeddedServer<*, *>,
@@ -152,6 +198,11 @@ private fun shutdownGracefully(
     dataSource: HikariDataSource,
     fxScheduler: FxRefreshScheduler,
     fxHttpClient: io.ktor.client.HttpClient?,
+    crawlerScheduler: CrawlScheduler?,
+    crawlerScope: CoroutineScope?,
+    crawlerAdminRunJob: AtomicReference<Job?>,
+    crawlerCatalogClient: CatalogApiClient?,
+    crawlerFetchHttpClient: io.ktor.client.HttpClient?,
 ) {
     shuttingDown.set(true)
     val deadline = clock.nowUtc().plusMillis(SHUTDOWN_DRAIN_CAP_MILLIS)
@@ -160,6 +211,18 @@ private fun shutdownGracefully(
     }
     fxScheduler.close()
     fxHttpClient?.close()
+    crawlerScheduler?.close()
+    val adminJob = crawlerAdminRunJob.get()
+    if (adminJob != null && adminJob.isActive) {
+        adminJob.cancel()
+        val finished = runBlocking { withTimeoutOrNull(CRAWL_SHUTDOWN_GRACE_MS) { adminJob.join() } }
+        if (finished == null) {
+            logger.warn("admin-triggered crawl run did not finish within {} ms of being cancelled", CRAWL_SHUTDOWN_GRACE_MS)
+        }
+    }
+    crawlerScope?.cancel()
+    crawlerCatalogClient?.close()
+    crawlerFetchHttpClient?.close()
     server.stop(gracePeriodMillis = 0, timeoutMillis = 1_000)
     dataSource.close()
 }

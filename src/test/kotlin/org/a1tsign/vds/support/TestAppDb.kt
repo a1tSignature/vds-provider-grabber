@@ -35,6 +35,10 @@ fun testAppConfig(
     jwtTtlHours: Long = 24,
     bootstrapUsername: String = "bootstrap-admin",
     bootstrapPassword: String = "bootstrap-password-1",
+    // Additive (vds-002.7): lets a crawler-admin-API test switch VDS_CRAWLER_* on without every
+    // other call site having to know about it -- defaults to empty, so existing behaviour is
+    // unchanged.
+    extraEnv: Map<String, String> = emptyMap(),
 ): AppConfig = loadConfig(
     buildMap {
         put("VDS_DB_URL", PostgresSupport.jdbcUrl)
@@ -46,6 +50,7 @@ fun testAppConfig(
             put("VDS_BOOTSTRAP_ADMIN_USERNAME", bootstrapUsername)
             put("VDS_BOOTSTRAP_ADMIN_PASSWORD", bootstrapPassword)
         }
+        putAll(extraEnv)
     },
 )
 

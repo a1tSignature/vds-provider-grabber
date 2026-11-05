@@ -879,6 +879,98 @@ paths:
         "403": { $ref: "#/components/responses/ForbiddenError" }
         "502": { $ref: "#/components/responses/BadGatewayError" }
 
+  /api/v1/admin/crawl/run:
+    post:
+      tags: [Admin]
+      summary: Trigger a crawl run
+      description: >-
+        Required role: ADMIN. Starts a run asynchronously and returns immediately; the run is
+        already visible as RUNNING via GET /api/v1/admin/crawl/runs/{runId}. 409 if a run is
+        already in progress (at most one run at a time, process-wide). 503 if the crawler is
+        disabled (VDS_CRAWLER_ENABLED=false).
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CrawlRunTriggerRequest" }
+      responses:
+        "202":
+          description: Accepted; the run has started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CrawlRunTriggerResponse" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "409":
+          description: A crawl run is already in progress.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailableError" }
+
+  /api/v1/admin/crawl/runs:
+    get:
+      tags: [Admin]
+      summary: The most recent crawl runs
+      description: >-
+        Required role: ADMIN. The last 20 run summaries from the in-memory ring buffer, newest
+        first; nothing is persisted, so this is empty after a restart. 503 if the crawler is
+        disabled.
+      responses:
+        "200":
+          description: Up to 20 summaries, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CrawlRunSummaryDto" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailableError" }
+
+  /api/v1/admin/crawl/runs/{runId}:
+    parameters:
+      - name: runId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Admin]
+      summary: One crawl run summary
+      description: >-
+        Required role: ADMIN. 404 if runId is unknown, was evicted from the 20-entry ring buffer,
+        or is not a valid UUID. 503 if the crawler is disabled.
+      responses:
+        "200":
+          description: The run summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CrawlRunSummaryDto" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailableError" }
+
+  /api/v1/admin/crawl/adapters:
+    get:
+      tags: [Admin]
+      summary: Registered crawler adapters
+      description: >-
+        Required role: ADMIN. enabled reflects whether the current VDS_CRAWLER_ADAPTERS
+        configuration selects this adapter. 503 if the crawler is disabled.
+      responses:
+        "200":
+          description: Every registered adapter.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AdapterInfoDto" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailableError" }
+
   /api/v1/dictionaries:
     get:
       tags: [Dictionaries]
@@ -1390,6 +1482,81 @@ components:
       required: [inserted]
       properties:
         inserted: { type: integer, description: Number of currency_rate rows inserted by this refresh. }
+
+    CrawlRunTriggerRequest:
+      type: object
+      properties:
+        adapterIds:
+          type: array
+          items: { type: string }
+          description: Defaults to the configured selection (VDS_CRAWLER_ADAPTERS) when omitted.
+        dryRun:
+          type: boolean
+          description: Defaults to VDS_CRAWLER_DRY_RUN_DEFAULT when omitted.
+        maxOutOfStockRatio:
+          type: string
+          description: >-
+            Decimal string in [0, 1], plain notation. Defaults to VDS_CRAWLER_MAX_OUT_OF_STOCK_RATIO
+            when omitted.
+
+    CrawlRunTriggerResponse:
+      type: object
+      required: [runId]
+      properties:
+        runId: { type: string, format: uuid }
+
+    AdapterRunResultDto:
+      type: object
+      required: [adapterId, providerSlug, status, durationMs]
+      properties:
+        adapterId: { type: string }
+        providerSlug: { type: string }
+        status: { type: string, enum: [SUCCESS, PARTIAL, FAILED, SKIPPED] }
+        durationMs: { type: integer, format: int64 }
+        pagesFetched: { type: integer }
+        providersCreated: { type: integer }
+        locationsCreated: { type: integer }
+        tariffsCreated: { type: integer }
+        tariffsUpdated: { type: integer }
+        tariffsMarkedOutOfStock: { type: integer }
+        pricesAppended: { type: integer }
+        pricesUnchanged: { type: integer }
+        noFxRateCount: { type: integer }
+        failureReason:
+          type: string
+          enum: [VALIDATION, TIMEOUT, MASS_CHANGE_GUARD, FETCH, WRITE, AUTH, ADAPTER_ERROR]
+        message: { type: string }
+
+    CrawlRunSummaryDto:
+      type: object
+      required: [runId, startedAt, status, dryRun]
+      properties:
+        runId: { type: string, format: uuid }
+        startedAt: { type: string, format: date-time }
+        finishedAt:
+          type: string
+          format: date-time
+          description: Absent while status is RUNNING.
+        status: { type: string, enum: [RUNNING, COMPLETED, CANCELLED] }
+        dryRun: { type: boolean }
+        adapters:
+          type: array
+          items: { $ref: "#/components/schemas/AdapterRunResultDto" }
+        plannedOperations:
+          type: array
+          items: { type: string }
+          description: Filled only by a dry run; capped at 200 entries.
+
+    AdapterInfoDto:
+      type: object
+      required: [id, providerSlug, sourceKind, enabled]
+      properties:
+        id: { type: string }
+        providerSlug: { type: string }
+        sourceKind: { type: string, enum: [API, HTML] }
+        enabled:
+          type: boolean
+          description: Selected by the current VDS_CRAWLER_ADAPTERS configuration.
 
     DictionariesDto:
       type: object

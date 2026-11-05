@@ -9,6 +9,7 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.path
 import io.ktor.server.response.respond
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.a1tsign.vds.AppComponents
 import org.a1tsign.vds.auth.BootstrapAdmin
@@ -154,6 +155,12 @@ class CrawlerAppHarness(
     override fun close() {
         server.stop(gracePeriodMillis = 0, timeoutMillis = 1_000)
         components.fxHttpClient?.close()
+        // task vds-002.7's widened buildComponents() means every harness instance with the crawler
+        // enabled now also owns a live crawlerScope + two HttpClient(CIO) -- close them here too,
+        // the same way Application.kt's shutdownGracefully does for the real process.
+        components.crawlerScope?.cancel()
+        components.crawlerCatalogClient?.close()
+        components.crawlerFetchHttpClient?.close()
     }
 
     private companion object {

@@ -8,6 +8,7 @@ import org.a1tsign.vds.auth.installBearerJwtAuth
 import org.a1tsign.vds.api.routes.opsRoutes
 import org.a1tsign.vds.api.routes.authRoutes
 import org.a1tsign.vds.api.routes.adminUserRoutes
+import org.a1tsign.vds.api.routes.crawlerRoutes
 import org.a1tsign.vds.api.routes.dictionaryRoutes
 import org.a1tsign.vds.api.routes.fxRoutes
 import org.a1tsign.vds.api.routes.providerRoutes
@@ -29,6 +30,13 @@ fun Application.registerRoutes(components: AppComponents) {
             authenticate("bearer-jwt") {
                 adminUserRoutes(components.userService)
                 fxRoutes(components.fxRefreshService)
+                crawlerRoutes(
+                    components.crawlerRegistry,
+                    components.crawlerRunner,
+                    components.crawlerScope,
+                    components.config.crawler,
+                    components.crawlerAdminRunJob,
+                )
                 providerRoutes(components.providerService, components.catalogQueryService)
                 locationRoutes(components.locationService)
                 tariffRoutes(components.tariffService, components.catalogQueryService)

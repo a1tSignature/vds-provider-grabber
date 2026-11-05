@@ -1,6 +1,8 @@
 package org.a1tsign.vds.crawler
 
 import org.a1tsign.vds.config.ConfigurationException
+import org.a1tsign.vds.crawler.adapters.ExampleFailingAdapter
+import org.a1tsign.vds.crawler.adapters.ExampleStaticAdapter
 
 /** One registered adapter plus whether an empty `VDS_CRAWLER_ADAPTERS` picks it up. */
 data class AdapterEntry(
@@ -70,7 +72,19 @@ class AdapterRegistry(entries: List<AdapterEntry>) {
     }
 
     companion object {
-        /** The adapters this build ships: empty until task vds-002.8 adds the two reference ones. */
-        fun production(): AdapterRegistry = AdapterRegistry(emptyList())
+        /**
+         * The adapters this build ships: the two reference ones of spec req. 42 and nothing else --
+         * no adapter for a real hosting company is part of this increment.
+         *
+         * Both carry `includedByDefault = false`, so an empty `VDS_CRAWLER_ADAPTERS` selects
+         * **nothing** on a production box and a run has to name `example-static` /
+         * `example-failing` explicitly (the plan's resolution of spec req. 10 vs req. 42).
+         */
+        fun production(): AdapterRegistry = AdapterRegistry(
+            listOf(
+                AdapterEntry(ExampleStaticAdapter(), includedByDefault = false),
+                AdapterEntry(ExampleFailingAdapter(), includedByDefault = false),
+            ),
+        )
     }
 }

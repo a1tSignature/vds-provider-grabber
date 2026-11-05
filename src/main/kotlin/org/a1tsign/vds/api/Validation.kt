@@ -145,6 +145,20 @@ class Validation {
             value
         }
 
+    /**
+     * `[0, 1]` plain-decimal string -- the same rule `config/AppConfig.kt`'s private `ratio()`
+     * applies to `VDS_CRAWLER_MAX_OUT_OF_STOCK_RATIO`, reused here (additively, vds-002.7) for the
+     * admin crawl trigger's per-run override. `BigDecimal`, never `Double`, end to end.
+     */
+    fun validateRatio(field: String, value: String): BigDecimal? {
+        val parsed = parsePlainDecimal(value)
+        if (parsed == null || parsed.signum() < 0 || parsed > BigDecimal.ONE) {
+            reject(field, "must be a decimal number in plain notation between 0 and 1")
+            return null
+        }
+        return parsed
+    }
+
     /** Throws [ValidationException] carrying every failure recorded so far, or returns. */
     fun throwIfInvalid() {
         if (details.isNotEmpty()) {

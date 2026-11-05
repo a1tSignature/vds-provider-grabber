@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Example Static Hosting &mdash; VPS plans</title>
+</head>
+<body>
+<header>
+  <h1 class="provider-name">Example Static Hosting</h1>
+  <p class="tagline">Plain, boring, predictable virtual servers.</p>
+  <a class="provider-site" href="https://example-static.test/">example-static.test</a>
+</header>
+
+<section class="company">
+  <h2>Company details</h2>
+  <dl>
+    <dt>Legal entity</dt>
+    <dd class="legal-entity">Example Static Hosting GmbH</dd>
+    <dt>Registered in</dt>
+    <dd class="legal-country">DE</dd>
+    <dt>Commercial register</dt>
+    <dd class="legal-registration">HRB 123456 B</dd>
+    <dt>Registered address</dt>
+    <dd class="legal-address">
+      Beispielstrasse 1,
+      10115 Berlin
+    </dd>
+  </dl>
+</section>
+
+<section class="payments">
+  <h2>We accept</h2>
+  <ul>
+    <li class="payment-method" data-method="VISA_MASTERCARD">Visa / Mastercard</li>
+    <li class="payment-method" data-method="BANK_WIRE">Bank wire (EUR only)</li>
+  </ul>
+</section>
+
+<section class="locations">
+  <h2>Where we run</h2>
+  <table class="locations-table">
+    <thead>
+    <tr>
+      <th>Country</th>
+      <th>City</th>
+      <th>Datacenter</th>
+      <th>Region</th>
+    </tr>
+    </thead>
+    <tbody>
+    <tr class="location">
+      <td class="country">DE</td>
+      <td class="city">Falkenstein</td>
+      <td class="datacenter">FSN1</td>
+      <td class="region">Saxony</td>
+    </tr>
+    <tr class="location">
+      <td class="country">FI</td>
+      <td class="city">Helsinki</td>
+      <td class="datacenter">HEL1</td>
+      <td class="region">Uusimaa</td>
+    </tr>
+    </tbody>
+  </table>
+  <p class="note">Every plan below can be ordered in every location.</p>
+</section>
+
+<section class="plans">
+  <h2>VPS plans</h2>
+  <table class="plans-table">
+    <thead>
+    <tr>
+      <th>Plan</th>
+      <th>vCPU</th>
+      <th>RAM, MB</th>
+      <th>Disk, GB</th>
+      <th>IPv4</th>
+      <th>Per month</th>
+      <th>Per year</th>
+    </tr>
+    </thead>
+    <tbody>
+    <tr class="plan" data-plan-id="esh-cx11" data-disk-type="NVME" data-virtualization="KVM">
+      <td class="plan-name">Static CX11</td>
+      <td class="vcpu">1</td>
+      <td class="ram-mb">2048</td>
+      <td class="disk-gb">20</td>
+      <td class="ipv4">1</td>
+      <td class="price-monthly">$ 5.49</td>
+      <td class="price-annual">$48.70</td>
+    </tr>
+    <tr class="plan" data-plan-id="esh-cx21" data-disk-type="NVME" data-virtualization="KVM">
+      <td class="plan-name">Static CX21</td>
+      <td class="vcpu">2</td>
+      <td class="ram-mb">4096</td>
+      <td class="disk-gb">40</td>
+      <td class="ipv4">1</td>
+      <td class="price-monthly">$8.98</td>
+      <td class="price-annual">$&nbsp;96.98</td>
+    </tr>
+    <tr class="plan" data-plan-id="esh-cx51" data-disk-type="SSD" data-virtualization="KVM">
+      <td class="plan-name">Static CX51</td>
+      <td class="vcpu">8</td>
+      <td class="ram-mb">32768</td>
+      <td class="disk-gb">360</td>
+      <td class="ipv4">2</td>
+      <td class="price-monthly">$119.00</td>
+      <td class="price-annual">$ 1,299.00</td>
+    </tr>
+    </tbody>
+  </table>
+</section>
+
+<footer>
+  <p>Prices include VAT. This page is a fixture, not a real hosting company.</p>
+  <p class="note">Variant of example-static.html with one changed MONTHLY price (Static CX11).</p>
+</footer>
+</body>
+</html>

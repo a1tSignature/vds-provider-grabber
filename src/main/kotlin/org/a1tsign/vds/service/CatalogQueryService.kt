@@ -110,6 +110,7 @@ class CatalogQueryService(
                     name = p.name,
                     websiteUrl = p.websiteUrl,
                     status = p.status,
+                    systemStatus = p.systemStatus,
                     registrationCountry = registrationCountries[p.id],
                     paymentMethods = paymentMethods[p.id] ?: emptySet(),
                     locationCountryCodes = locationCountries[p.id] ?: emptySet(),

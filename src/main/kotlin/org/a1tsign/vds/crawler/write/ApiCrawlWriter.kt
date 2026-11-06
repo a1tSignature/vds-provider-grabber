@@ -1,5 +1,7 @@
 package org.a1tsign.vds.crawler.write
 
+import org.a1tsign.vds.domain.SystemStatus
+
 /**
  * The [CrawlWriter] that really writes: pure delegation to [CatalogApiClient], one call per method,
  * no decision of its own (ADR-05).
@@ -48,5 +50,9 @@ class ApiCrawlWriter(private val client: CatalogApiClient) : CrawlWriter {
     override suspend fun putPrice(tariffId: Long, request: PriceWrite): PriceOutcome {
         val outcome = client.putPrice(tariffId, request)
         return PriceOutcome(appended = outcome.appended, noFxRate = outcome.noFxRate)
+    }
+
+    override suspend fun promoteProviderToConfigured(providerId: Long) {
+        client.setSystemStatus(providerId, SystemStatus.CONFIGURED.name)
     }
 }

@@ -1,5 +1,6 @@
 package org.a1tsign.vds.crawler.write
 
+import org.a1tsign.vds.domain.SystemStatus
 import java.util.concurrent.atomic.AtomicLong
 
 /** How many planned-operation lines one run keeps (spec req. 36); the rest are dropped. */
@@ -100,6 +101,10 @@ class DryRunWriter : CrawlWriter {
                 "period=${request.billingPeriod} amount=${request.amount.toPlainString()} currency=${request.currency}",
         )
         return PriceOutcome(appended = true, noFxRate = false)
+    }
+
+    override suspend fun promoteProviderToConfigured(providerId: Long) {
+        record("PROMOTE_PROVIDER provider=$providerSlug systemStatus=${SystemStatus.CONFIGURED.name}")
     }
 
     private fun record(line: String) = synchronized(lock) {

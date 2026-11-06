@@ -75,6 +75,19 @@ interface CrawlWriter {
 
     /** `PUT /api/v1/tariffs/{id}/price` -> appended-vs-unchanged plus the `NO_FX_RATE` flag. */
     suspend fun putPrice(tariffId: Long, request: PriceWrite): PriceOutcome
+
+    /**
+     * `PUT /api/v1/providers/{id}/system-status {"systemStatus":"CONFIGURED"}` -- the promotion of a
+     * discovered `CANDIDATE` row to a normal catalog member (vds-004.2).
+     *
+     * It is a **writer operation**, not an `if (dryRun)` branch in the reconciler (ADR-05): a dry
+     * run must promote nothing, and the way that is provable is that the recording writers record it
+     * and perform nothing. The reconciler calls it at most once per adapter run, only for a row it
+     * read as `CANDIDATE`, and only when that run actually wrote something -- so `REJECTED` and
+     * already-`CONFIGURED` rows are never touched. There is deliberately no parameter for the target
+     * value: this method cannot express a demotion.
+     */
+    suspend fun promoteProviderToConfigured(providerId: Long)
 }
 
 /**

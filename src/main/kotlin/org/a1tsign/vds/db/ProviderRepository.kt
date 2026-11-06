@@ -38,14 +38,30 @@ data class ProviderListFilter(
     val locationCountry: String? = null,
     val paymentMethods: List<PaymentMethod> = emptyList(),
     val hasActiveTariffs: Boolean? = null,
+    /**
+     * The one filter that is **never** "no constraint": a listing shows [SystemStatus.CONFIGURED]
+     * only unless the caller names other values explicitly, so a discovered candidate cannot leak
+     * into the public catalog by someone forgetting to pass a filter.
+     */
+    val systemStatuses: List<SystemStatus> = listOf(SystemStatus.CONFIGURED),
 )
 
 /** Repository methods require a transaction opened by [org.a1tsign.vds.service.ProviderService]. */
 class ProviderRepository {
-    fun insert(slug: String, name: String, websiteUrl: String, description: String?, status: ProviderStatus, now: Instant): Provider {
+    fun insert(
+        slug: String,
+        name: String,
+        websiteUrl: String,
+        description: String?,
+        status: ProviderStatus,
+        now: Instant,
+        /** Omitted = a normal, visible catalog member -- the same safe direction as the column's DEFAULT. */
+        systemStatus: SystemStatus = SystemStatus.CONFIGURED,
+    ): Provider {
         val id = ProviderTable.insert {
             it[ProviderTable.slug] = slug; it[ProviderTable.name] = name; it[ProviderTable.websiteUrl] = websiteUrl
             it[ProviderTable.description] = description; it[ProviderTable.status] = status.name
+            it[ProviderTable.systemStatus] = systemStatus.name
             it[ProviderTable.createdAt] = now.toUtcOffset(); it[ProviderTable.updatedAt] = now.toUtcOffset()
         }[ProviderTable.id]
         return find(id)!!
@@ -55,10 +71,33 @@ class ProviderRepository {
         .where { ProviderTable.id eq id }
         .forUpdate(ForUpdateOption.ForUpdate)
         .firstOrNull()?.toProvider()
-    fun update(id: Long, slug: String, name: String, websiteUrl: String, description: String?, status: ProviderStatus, now: Instant) {
+    /**
+     * [systemStatus] `null` = **leave the column alone** (it is then not part of the `UPDATE`
+     * statement at all), which is what makes an ordinary `PUT /api/v1/providers/{id}` unable to
+     * promote a candidate as a side effect. The nullable parameter was chosen over a second
+     * statement so the whole provider row still moves in one `UPDATE`.
+     */
+    fun update(
+        id: Long,
+        slug: String,
+        name: String,
+        websiteUrl: String,
+        description: String?,
+        status: ProviderStatus,
+        now: Instant,
+        systemStatus: SystemStatus? = null,
+    ) {
         ProviderTable.update({ ProviderTable.id eq id }) {
             it[ProviderTable.slug] = slug; it[ProviderTable.name] = name; it[ProviderTable.websiteUrl] = websiteUrl
             it[ProviderTable.description] = description; it[ProviderTable.status] = status.name; it[ProviderTable.updatedAt] = now.toUtcOffset()
+            if (systemStatus != null) it[ProviderTable.systemStatus] = systemStatus.name
+        }
+    }
+
+    /** `PUT /api/v1/providers/{id}/system-status`: that one column and `updated_at`, nothing else. */
+    fun updateSystemStatus(id: Long, systemStatus: SystemStatus, now: Instant) {
+        ProviderTable.update({ ProviderTable.id eq id }) {
+            it[ProviderTable.systemStatus] = systemStatus.name; it[ProviderTable.updatedAt] = now.toUtcOffset()
         }
     }
     fun delete(id: Long) { ProviderTable.deleteWhere { ProviderTable.id eq id } }
@@ -183,6 +222,8 @@ class ProviderRepository {
     /** `WHERE` builder for [ProviderListFilter] -- every subquery below correlates on `ProviderTable.id`. */
     private fun providerFilter(filter: ProviderListFilter): Op<Boolean> {
         var op: Op<Boolean> = Op.TRUE
+        // Always constrained -- an empty list matches nothing, never everything.
+        op = op and (ProviderTable.systemStatus inList filter.systemStatuses.map { it.name })
         filter.q?.takeIf { it.isNotBlank() }?.let { q ->
             val pattern = "%${q.lowercase().replace("%", "\\%").replace("_", "\\_")}%"
             op = op and ((ProviderTable.name.lowerCase() like pattern) or (ProviderTable.slug.lowerCase() like pattern))

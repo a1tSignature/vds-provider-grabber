@@ -127,6 +127,8 @@ data class CatalogProviderSummary(
     val name: String,
     val websiteUrl: String = "",
     val status: String = "",
+    /** vds-004's second provider axis; a `String` like every other enum-valued field here. */
+    val systemStatus: String = "",
 )
 
 @Serializable
@@ -137,6 +139,12 @@ data class CatalogProvider(
     val websiteUrl: String,
     val description: String? = null,
     val status: String,
+    /**
+     * vds-004's second provider axis. Defaulted (and never sent back on an update) so the crawler
+     * reads it without ever rewriting it: the only deliberate change it may make is the promotion
+     * through `CrawlWriter.promoteProviderToConfigured`.
+     */
+    val systemStatus: String = "",
 )
 
 @Serializable
@@ -224,6 +232,10 @@ data class CatalogProviderDetail(
 )
 
 // ---------- writes ----------
+
+/** Body of `PUT /api/v1/providers/{id}/system-status`. */
+@Serializable
+data class SystemStatusWrite(val systemStatus: String)
 
 @Serializable
 data class ProviderWrite(

@@ -16,6 +16,22 @@ data class Secret(private val value: String) {
     fun reveal(): String = value
 }
 
+/**
+ * The whole `VDS_CRAWLER_ADAPTER_*` slice of the process environment, carried from [loadConfig] --
+ * the one place allowed to read the real environment -- to the composition root, which splits it per
+ * adapter id with [crawlerAdapterConfig]. [loadConfig] cannot do the split itself: the adapter ids
+ * live in the registry, not in the environment.
+ *
+ * [toString] masks the content for the same reason [Secret]'s does -- an adapter's own settings may
+ * legitimately carry a credential (say an API key for a provider's price endpoint) and this value is
+ * reachable from `AppConfig.toString()`. Use [reveal] only where the real map is needed.
+ */
+data class AdapterEnv(private val values: Map<String, String>) {
+    override fun toString(): String = "***(${values.size} $ADAPTER_ENV_PREFIX* variables)"
+
+    fun reveal(): Map<String, String> = values
+}
+
 data class DbConfig(
     val url: String,
     val user: String,
@@ -78,6 +94,12 @@ data class CrawlerConfig(
     /** In `[0, 1]`, always a [BigDecimal] -- `Double` must not appear in this value's path. */
     val maxOutOfStockRatio: BigDecimal,
     val dryRunDefault: Boolean,
+    /**
+     * Every `VDS_CRAWLER_ADAPTER_*` variable, for the composition root to hand each adapter its own
+     * slice. Defaults to empty so a test building this object by hand needs no environment;
+     * [loadConfig] always fills it, and `AppComponentsWiringTest` pins that production path.
+     */
+    val adapterEnv: AdapterEnv = AdapterEnv(emptyMap()),
 )
 
 data class AppConfig(
@@ -99,6 +121,9 @@ class ConfigurationException(message: String) : Exception(message)
 private const val DEFAULT_FX_API_URL = "https://open.er-api.com/v6/latest/USD"
 
 private const val DEFAULT_CRAWLER_API_BASE_URL = "http://127.0.0.1:8080"
+
+/** The prefix of every per-adapter variable; see [crawlerAdapterConfig] for the per-id suffix. */
+const val ADAPTER_ENV_PREFIX: String = "VDS_CRAWLER_ADAPTER_"
 
 /** Product token of the crawler's `User-Agent`; the version and contact URL follow it. */
 const val CRAWLER_USER_AGENT_PRODUCT = "vds-provider-grabber"
@@ -284,6 +309,11 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
     val crawlerMaxBodyBytes = positiveLong("VDS_CRAWLER_MAX_BODY_BYTES", 2_097_152L)
     val crawlerMaxOutOfStockRatio = ratio("VDS_CRAWLER_MAX_OUT_OF_STOCK_RATIO", BigDecimal("0.5"))
     val crawlerDryRunDefault = booleanFlag("VDS_CRAWLER_DRY_RUN_DEFAULT", false)
+    // Taken whole, unvalidated: what a key means is the adapter's business, and loadConfig does not
+    // know which ids exist. VDS_CRAWLER_ADAPTER_TIMEOUT_MINUTES shares the prefix and is copied in
+    // too, which is harmless -- crawlerAdapterConfig filters by the full per-id prefix, so only an
+    // adapter literally called `timeout` could ever see it.
+    val crawlerAdapterEnv = AdapterEnv(env.filterKeys { it.startsWith(ADAPTER_ENV_PREFIX) })
 
     if (errors.isNotEmpty()) {
         throw ConfigurationException("Invalid configuration: ${errors.joinToString("; ")}")
@@ -335,6 +365,7 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
             maxBodyBytes = crawlerMaxBodyBytes,
             maxOutOfStockRatio = crawlerMaxOutOfStockRatio,
             dryRunDefault = crawlerDryRunDefault,
+            adapterEnv = crawlerAdapterEnv,
         ),
     )
 }
@@ -352,7 +383,7 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
  * the registry's id uniqueness does not rule out. Pick ids that do not nest.
  */
 fun crawlerAdapterConfig(adapterId: String, env: Map<String, String>): Map<String, String> {
-    val prefix = "VDS_CRAWLER_ADAPTER_" + adapterId.uppercase().replace('-', '_') + "_"
+    val prefix = ADAPTER_ENV_PREFIX + adapterId.uppercase().replace('-', '_') + "_"
     return env.entries
         .filter { it.key.startsWith(prefix) && it.key.length > prefix.length }
         .associate { it.key.removePrefix(prefix).lowercase() to it.value }

@@ -16,6 +16,8 @@ data class Provider(
     val websiteUrl: String,
     val description: String?,
     val status: ProviderStatus,
+    /** Our own relationship to this row; independent of [status] -- see [SystemStatus]. */
+    val systemStatus: SystemStatus,
     val createdAt: Instant,
     val updatedAt: Instant,
 )

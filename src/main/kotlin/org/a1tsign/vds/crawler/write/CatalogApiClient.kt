@@ -27,6 +27,7 @@ import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import org.a1tsign.vds.config.CrawlerConfig
+import org.a1tsign.vds.domain.SystemStatus
 import org.slf4j.LoggerFactory
 import java.time.Clock
 import java.time.Instant
@@ -201,7 +202,12 @@ class CatalogApiClient(
                 HttpMethod.Get,
                 PROVIDERS_PATH,
                 CatalogPage.serializer(CatalogProviderSummary.serializer()),
-                query = listOf("q" to slug, "page" to page.toString(), "size" to pageSize.toString()),
+                // All three systemStatus values **explicitly**: the listing hides CANDIDATE and
+                // REJECTED by default, and a crawler that could not see a candidate row would POST,
+                // take a 409 from uq_provider_slug, re-read, miss again and fail the adapter on
+                // every single run (vds-004.2 "the 409 trap").
+                query = listOf("q" to slug, "page" to page.toString(), "size" to pageSize.toString()) +
+                    SystemStatus.entries.map { "systemStatus" to it.name },
             ).value
             result.content.firstOrNull { it.slug == slug }?.let { return it }
             page++
@@ -260,6 +266,18 @@ class CatalogApiClient(
             PROVIDERS_PATH,
             CatalogProvider.serializer(),
             body = encode(ProviderWrite.serializer(), request),
+        ).value
+
+    /**
+     * `PUT /api/v1/providers/{id}/system-status`. The reconciler reaches it only through
+     * [CrawlWriter.promoteProviderToConfigured], and only ever with `CONFIGURED`.
+     */
+    suspend fun setSystemStatus(providerId: Long, systemStatus: String): CatalogProvider =
+        call(
+            HttpMethod.Put,
+            "$PROVIDERS_PATH/$providerId/system-status",
+            CatalogProvider.serializer(),
+            body = encode(SystemStatusWrite.serializer(), SystemStatusWrite(systemStatus)),
         ).value
 
     suspend fun updateProvider(providerId: Long, request: ProviderWrite): CatalogProvider =

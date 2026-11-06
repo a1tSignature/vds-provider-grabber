@@ -145,6 +145,9 @@ class CoreSchemaTest : AbstractDbTest() {
                 "website_url" to false,
                 "description" to true,
                 "status" to false,
+                // Added by V2__provider_system_status.sql (vds-004.2); this map stays exact, and an
+                // extra or missing column still fails the assertion.
+                "system_status" to false,
                 "created_at" to false,
                 "updated_at" to false,
             ),

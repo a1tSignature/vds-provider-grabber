@@ -4,6 +4,7 @@ import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 import org.a1tsign.vds.domain.PaymentMethod
 import org.a1tsign.vds.domain.ProviderStatus
+import org.a1tsign.vds.domain.SystemStatus
 import java.math.BigDecimal
 
 /**
@@ -18,6 +19,8 @@ data class ProviderSummaryDto(
     val name: String,
     val websiteUrl: String,
     val status: ProviderStatus,
+    /** Always `CONFIGURED` unless the request asked for other values with `?systemStatus=`. */
+    val systemStatus: SystemStatus,
     val registrationCountry: String? = null,
     val paymentMethods: Set<PaymentMethod> = emptySet(),
     val locationCountryCodes: Set<String> = emptySet(),

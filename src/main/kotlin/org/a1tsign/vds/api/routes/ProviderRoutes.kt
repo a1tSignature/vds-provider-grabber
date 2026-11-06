@@ -26,8 +26,13 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
         val req = call.receive<ProviderWriteRequest>()
         val v = Validation()
         val data = validateProvider(req, v)
+        // Optional and defaulted to CONFIGURED: a vds-001 create body stays valid and visible.
+        val systemStatus = req.systemStatus?.let { v.enumValue("systemStatus", it, SystemStatus.entries.toTypedArray()) }
         v.throwIfInvalid()
-        val result = service.create(data.slug!!, data.name!!, data.url!!, req.description, data.status!!)
+        val result = service.create(
+            data.slug!!, data.name!!, data.url!!, req.description, data.status!!,
+            systemStatus ?: SystemStatus.CONFIGURED,
+        )
         call.response.header("Location", "/api/v1/providers/${result.id}")
         call.respond(HttpStatusCode.Created, result.toDto())
     }
@@ -37,9 +42,24 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
         val req = call.receive<ProviderWriteRequest>()
         val v = Validation()
         val data = validateProvider(req, v)
+        // Absent = leave unchanged, never "default to CONFIGURED": otherwise an ordinary field
+        // update by the crawler would promote a candidate as a side effect.
+        val systemStatus = req.systemStatus?.let { v.enumValue("systemStatus", it, SystemStatus.entries.toTypedArray()) }
         v.throwIfInvalid()
         val id = providerId(call.parameters["id"])
-        call.respond(service.update(id, data.slug!!, data.name!!, data.url!!, req.description, data.status!!).toDto())
+        call.respond(
+            service.update(id, data.slug!!, data.name!!, data.url!!, req.description, data.status!!, systemStatus).toDto(),
+        )
+    }
+
+    put("/api/v1/providers/{id}/system-status") {
+        call.requireRole(Role.EDITOR)
+        val req = call.receive<ProviderSystemStatusWriteRequest>()
+        val v = Validation()
+        val systemStatus = v.enumValue("systemStatus", req.systemStatus, SystemStatus.entries.toTypedArray())
+        v.throwIfInvalid()
+        val id = providerId(call.parameters["id"])
+        call.respond(service.setSystemStatus(id, systemStatus!!).toDto())
     }
 
     delete("/api/v1/providers/{id}") {
@@ -89,6 +109,12 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
         val paymentMethods = query.getAll("paymentMethod").orEmpty()
             .mapNotNull { v.enumValue("paymentMethod", it, PaymentMethod.entries.toTypedArray()) }
         val hasActiveTariffs = parseOptionalBoolean(v, "hasActiveTariffs", query["hasActiveTariffs"])
+        // Repeatable, like paymentMethod; **absent means CONFIGURED only**, so a discovered
+        // candidate never appears in the default catalog listing.
+        val requestedSystemStatuses = query.getAll("systemStatus").orEmpty()
+        val systemStatuses = requestedSystemStatuses
+            .mapNotNull { v.enumValue("systemStatus", it, SystemStatus.entries.toTypedArray()) }
+            .ifEmpty { listOf(SystemStatus.CONFIGURED) }
         v.throwIfInvalid()
         val filter = ProviderListFilter(
             q = query["q"],
@@ -97,6 +123,7 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
             locationCountry = locationCountry,
             paymentMethods = paymentMethods,
             hasActiveTariffs = hasActiveTariffs,
+            systemStatuses = systemStatuses,
         )
         val (total, items) = queryService.listProviders(filter, page.page, page.size, page.sort)
         call.respond(pageResponse(total, page.page, page.size, items))

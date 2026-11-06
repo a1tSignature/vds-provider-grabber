@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "id": "example-static-declarative",
+  "providerSlug": "example-static",
+  "baseUrl": "https://example-static.test",
+  "pagePath": "/vps",
+  "enabled": true,
+  "sourceKind": "HTML",
+  "acknowledgeSlugMismatch": true,
+  "tariffListComplete": true,
+  "provider": {
+    "name": {"selector": "h1.provider-name", "text": true},
+    "websiteUrl": {"selector": "a.provider-site", "attr": "href"},
+    "status": "ACTIVE"
+  },
+  "legalInfo": {
+    "rootSelector": "section.company",
+    "legalEntityName": {"selector": "dd.legal-entity", "text": true},
+    "registrationCountry": {"selector": "dd.legal-country", "text": true},
+    "registrationNumber": {"selector": "dd.legal-registration", "text": true},
+    "legalAddress": {"selector": "dd.legal-address", "text": true}
+  },
+  "paymentMethods": {
+    "rootSelector": "section.payments",
+    "itemSelector": "li.payment-method",
+    "method": {
+      "selector": "li.payment-method",
+      "attr": "data-method",
+      "values": {
+        "VISA_MASTERCARD": "VISA_MASTERCARD",
+        "BANK_WIRE": "BANK_WIRE"
+      }
+    }
+  },
+  "locations": {
+    "rootSelector": "table.locations-table",
+    "rowSelector": "tr.location",
+    "countryCode": {"selector": "td.country", "text": true},
+    "city": {"selector": "td.city", "text": true},
+    "datacenterName": {"selector": "td.datacenter", "text": true},
+    "region": {"selector": "td.region", "text": true}
+  },
+  "tariffs": {
+    "rootSelector": "table.plans-table",
+    "rowSelector": "tr.plan",
+    "externalId": {"selector": "tr.plan", "attr": "data-plan-id"},
+    "name": {"selector": "td.plan-name", "text": true},
+    "vcpuCount": {"selector": "td.vcpu", "text": true},
+    "ramMb": {"selector": "td.ram-mb", "text": true},
+    "diskGb": {"selector": "td.disk-gb", "text": true},
+    "ipv4Count": {"selector": "td.ipv4", "text": true},
+    "diskType": {
+      "selector": "tr.plan",
+      "attr": "data-disk-type",
+      "values": {"NVMe SSD": "NVME", "NVME": "NVME", "SSD": "SSD", "HDD": "HDD"}
+    },
+    "virtualization": {
+      "selector": "tr.plan",
+      "attr": "data-virtualization",
+      "values": {"KVM": "KVM", "OpenVZ": "OPENVZ"}
+    },
+    "locationKeys": "ALL_LOCATIONS",
+    "prices": [
+      {
+        "billingPeriod": "MONTHLY",
+        "selector": "td.price-monthly",
+        "text": true,
+        "grouping": ",",
+        "decimal": ".",
+        "currency": {"bySymbol": {"$": "USD", "€": "EUR"}}
+      },
+      {
+        "billingPeriod": "ANNUAL",
+        "selector": "td.price-annual",
+        "text": true,
+        "grouping": ",",
+        "decimal": ".",
+        "currency": {"bySymbol": {"$": "USD", "€": "EUR"}}
+      }
+    ]
+  }
+}

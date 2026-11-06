@@ -11,6 +11,7 @@ import org.a1tsign.vds.crawler.model.AdapterRunStatus
 import org.a1tsign.vds.crawler.model.FailureReason
 import org.a1tsign.vds.domain.LegalDataSource
 import org.a1tsign.vds.domain.PriceDataSource
+import org.a1tsign.vds.domain.SystemStatus
 import org.slf4j.LoggerFactory
 import java.math.BigDecimal
 
@@ -129,6 +130,13 @@ class Reconciler(private val client: CatalogApiClient) {
         private var firstProblem: String? = null
 
         /**
+         * Whether this pass actually mutated anything. The promotion of a `CANDIDATE` row hangs off
+         * it ("the first run that succeeded **and wrote**"), so an unchanged price -- a `PUT` the
+         * catalog answered `200` without storing a row -- deliberately does not count.
+         */
+        private var wroteSomething = false
+
+        /**
          * Catalog tariff ids this run has committed to one observed tariff, across **both**
          * planning ([planTariffs]) and the write phase's `409` re-read ([createTariff]): a row a
          * concurrent writer creates mid-run did not exist to be planned against, so without this
@@ -199,6 +207,7 @@ class Reconciler(private val client: CatalogApiClient) {
             applyMissingTariffs(plan)
             applyLinks(resolved, locationIds)
             applyPrices(resolved)
+            promoteIfCandidate(state)
         }
 
         // ---------- provider ----------
@@ -225,6 +234,7 @@ class Reconciler(private val client: CatalogApiClient) {
                 throw Halt(AdapterRunStatus.PARTIAL, FailureReason.WRITE, clientError.message)
             }
             providersCreated++
+            wroteSomething = true
             // detail = null: we just created the provider, so legal info, payment methods,
             // locations and tariffs are all empty -- and in a dry run the id is fabricated, so it
             // must never be read back.
@@ -305,7 +315,7 @@ class Reconciler(private val client: CatalogApiClient) {
             key: LocationMatchKey,
             desired: LocationWrite,
         ): Long? = try {
-            writer.createLocation(state.providerId, desired).also { locationsCreated++ }
+            writer.createLocation(state.providerId, desired).also { locationsCreated++; wroteSomething = true }
         } catch (conflict: CatalogApiException.Conflict) {
             // uq_location_provider_country_city_dc refused it: somebody created the same row
             // between our read and this call. Re-read and reuse it (spec req. 25).
@@ -349,7 +359,7 @@ class Reconciler(private val client: CatalogApiClient) {
             // anything, and the crawler never creates a deactivated tariff.
             val desired = tariffWrite(observed, isActive = true, externalId = observed.externalId)
             return try {
-                writer.createTariff(state.providerId, desired).also { tariffsCreated++ }
+                writer.createTariff(state.providerId, desired).also { tariffsCreated++; wroteSomething = true }
             } catch (conflict: CatalogApiException.Conflict) {
                 logger.info("Tariff '{}' of '{}' already exists; reusing the existing row", observed.name, slug)
                 val reread = match(client.listAllTariffs(state.providerId), observed)
@@ -456,7 +466,12 @@ class Reconciler(private val client: CatalogApiClient) {
                         degrade("Price ${price.billingPeriod} of '${observed.name}' was refused: ${clientError.message}")
                         null
                     } ?: return@forEach
-                    if (outcome.appended) pricesAppended++ else pricesUnchanged++
+                    if (outcome.appended) {
+                        pricesAppended++
+                        wroteSomething = true
+                    } else {
+                        pricesUnchanged++
+                    }
                     if (outcome.noFxRate) noFxRateCount++
                 }
             }
@@ -539,6 +554,35 @@ class Reconciler(private val client: CatalogApiClient) {
             )
         }
 
+        // ---------- promotion (vds-004.2) ----------
+
+        /**
+         * The **one** `PUT /providers/{id}/system-status` a run may issue: a row this pass read as
+         * `CANDIDATE` becomes `CONFIGURED` once the pass has actually written something, i.e. once
+         * somebody has demonstrably described how to read this site.
+         *
+         * Everything that must *not* happen is structural rather than conditional:
+         * - a `REJECTED` or already-`CONFIGURED` row fails the status check, so it is never touched
+         *   (and [CrawlWriter.promoteProviderToConfigured] cannot express any other target value);
+         * - a provider this pass **created** has `detail == null` and is `CONFIGURED` already (the
+         *   crawler's `POST` never sends `systemStatus`), so it is not promoted twice;
+         * - a dry run reaches `DryRunWriter`, which records the line and writes nothing (ADR-05) --
+         *   and `wroteSomething` is `false` there anyway unless the dry run "created" something;
+         * - a pass that wrote nothing (the idempotent second run) promotes nothing;
+         * - this is the last step of [apply], called once, so a run cannot promote twice.
+         */
+        private suspend fun promoteIfCandidate(state: CatalogState) {
+            if (state.detail?.provider?.systemStatus != SystemStatus.CANDIDATE.name) return
+            if (!wroteSomething) return
+            logger.info(
+                "Provider '{}' was a candidate and this run wrote to it; promoting systemStatus {} -> {}",
+                slug,
+                SystemStatus.CANDIDATE,
+                SystemStatus.CONFIGURED,
+            )
+            write("PUT /providers/{id}/system-status") { writer.promoteProviderToConfigured(state.providerId) }
+        }
+
         // ---------- write helpers ----------
 
         /**
@@ -549,6 +593,7 @@ class Reconciler(private val client: CatalogApiClient) {
          */
         private suspend fun write(kind: String, block: suspend () -> Unit): Boolean = try {
             block()
+            wroteSomething = true
             true
         } catch (failure: CatalogApiException.Conflict) {
             degrade("$kind for '$slug' was refused: ${failure.message}")

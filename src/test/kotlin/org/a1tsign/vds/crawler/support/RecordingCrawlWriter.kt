@@ -35,6 +35,9 @@ class RecordingCrawlWriter(
         data class UpdateTariff(val tariffId: Long, val request: TariffWrite) : Mutation
         data class ReplaceTariffLocations(val tariffId: Long, val locationIds: List<Long>) : Mutation
         data class PutPrice(val tariffId: Long, val request: PriceWrite) : Mutation
+
+        /** `PUT …/system-status {"systemStatus":"CONFIGURED"}` -- how "a dry run promotes nothing" is proved. */
+        data class PromoteProvider(val providerId: Long) : Mutation
     }
 
     private val recorded = CopyOnWriteArrayList<Mutation>()
@@ -75,6 +78,9 @@ class RecordingCrawlWriter(
         record(Mutation.PutPrice(tariffId, request))
         return priceOutcome
     }
+
+    override suspend fun promoteProviderToConfigured(providerId: Long) =
+        record(Mutation.PromoteProvider(providerId))
 
     private fun record(mutation: Mutation) {
         recorded += mutation

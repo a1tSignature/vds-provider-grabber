@@ -151,6 +151,16 @@ paths:
         - name: hasActiveTariffs
           in: query
           schema: { type: boolean }
+        - name: systemStatus
+          in: query
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: { $ref: "#/components/schemas/SystemStatus" }
+          description: >-
+            Repeatable (OR semantics). Absent means CONFIGURED only, so discovered candidates and
+            rejected rows stay out of the default listing; totalElements/totalPages reflect it.
         - { $ref: "#/components/parameters/PageParam" }
         - { $ref: "#/components/parameters/SizeParam" }
         - name: sort
@@ -308,6 +318,37 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ApiError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+
+  /api/v1/providers/{id}/system-status:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    put:
+      tags: [Providers]
+      summary: Set a provider's system status
+      description: >-
+        Required role: EDITOR. Sets provider.systemStatus explicitly; any of the three values is
+        accepted. This is also the call the crawler makes to promote a CANDIDATE row it has just
+        written to for the first time.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProviderSystemStatusWriteRequest" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
         "413": { $ref: "#/components/responses/PayloadTooLargeError" }
         "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
 
@@ -1111,6 +1152,7 @@ components:
         buildTimestamp: { type: string }
 
     ProviderStatus: { type: string, enum: [ACTIVE, INACTIVE, UNKNOWN] }
+    SystemStatus: { type: string, enum: [CANDIDATE, CONFIGURED, REJECTED] }
     LegalDataSource: { type: string, enum: [MANUAL, CRAWLER, WHOIS, PROVIDER_SITE, UNKNOWN] }
     Confidence: { type: string, enum: [HIGH, MEDIUM, LOW, UNVERIFIED] }
     DiskType: { type: string, enum: [NVME, SSD, HDD, UNKNOWN] }
@@ -1170,10 +1212,21 @@ components:
         websiteUrl: { type: string, format: uri, maxLength: 2048, description: Absolute http(s) URL with a host. }
         description: { type: string }
         status: { $ref: "#/components/schemas/ProviderStatus" }
+        systemStatus:
+          allOf: [{ $ref: "#/components/schemas/SystemStatus" }]
+          description: >-
+            Optional. On POST it defaults to CONFIGURED; on PUT an absent value leaves the current
+            one unchanged (it never defaults to CONFIGURED there).
+
+    ProviderSystemStatusWriteRequest:
+      type: object
+      required: [systemStatus]
+      properties:
+        systemStatus: { $ref: "#/components/schemas/SystemStatus" }
 
     ProviderDto:
       type: object
-      required: [id, slug, name, websiteUrl, status, createdAt, updatedAt]
+      required: [id, slug, name, websiteUrl, status, systemStatus, createdAt, updatedAt]
       properties:
         id: { type: integer, format: int64 }
         slug: { type: string }
@@ -1181,6 +1234,7 @@ components:
         websiteUrl: { type: string }
         description: { type: string }
         status: { $ref: "#/components/schemas/ProviderStatus" }
+        systemStatus: { $ref: "#/components/schemas/SystemStatus" }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
 
@@ -1228,13 +1282,14 @@ components:
 
     ProviderSummaryDto:
       type: object
-      required: [id, slug, name, websiteUrl, status, paymentMethods, locationCountryCodes, activeTariffCount]
+      required: [id, slug, name, websiteUrl, status, systemStatus, paymentMethods, locationCountryCodes, activeTariffCount]
       properties:
         id: { type: integer, format: int64 }
         slug: { type: string }
         name: { type: string }
         websiteUrl: { type: string }
         status: { $ref: "#/components/schemas/ProviderStatus" }
+        systemStatus: { $ref: "#/components/schemas/SystemStatus" }
         registrationCountry: { type: string }
         paymentMethods:
           type: array
@@ -1566,6 +1621,7 @@ components:
         - diskTypes
         - virtualizationTypes
         - providerStatuses
+        - systemStatuses
         - confidenceLevels
         - legalDataSources
         - priceDataSources
@@ -1575,6 +1631,7 @@ components:
         diskTypes: { type: array, items: { type: string } }
         virtualizationTypes: { type: array, items: { type: string } }
         providerStatuses: { type: array, items: { type: string } }
+        systemStatuses: { type: array, items: { type: string } }
         confidenceLevels: { type: array, items: { type: string } }
         legalDataSources: { type: array, items: { type: string } }
         priceDataSources: { type: array, items: { type: string } }

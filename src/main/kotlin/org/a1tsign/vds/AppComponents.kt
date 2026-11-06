@@ -2,6 +2,7 @@ package org.a1tsign.vds
 
 import javax.sql.DataSource
 import org.a1tsign.vds.config.AppConfig
+import org.a1tsign.vds.config.crawlerAdapterConfig
 import org.a1tsign.vds.db.UserRepository
 import org.a1tsign.vds.auth.JwtService
 import org.a1tsign.vds.auth.PasswordHasher
@@ -219,6 +220,10 @@ fun buildComponents(
             reconciler = reconciler,
             clock = clock,
             writerFactory = writerFactory,
+            // Each adapter's own VDS_CRAWLER_ADAPTER_<ID>_* slice, split out of the whole slice
+            // loadConfig captured. Without this the shipped example-static adapter sees an empty
+            // CrawlContext.config and fails with ADAPTER_ERROR (01-inbox/vds-002.9-debt-1).
+            adapterConfig = { adapterId -> crawlerAdapterConfig(adapterId, config.crawler.adapterEnv.reveal()) },
             pagesFetched = { fetcher.pagesFetched },
         )
         crawlerRegistry = registry

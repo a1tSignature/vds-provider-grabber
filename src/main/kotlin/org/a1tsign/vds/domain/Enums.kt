@@ -7,6 +7,23 @@ package org.a1tsign.vds.domain
  */
 enum class ProviderStatus { ACTIVE, INACTIVE, UNKNOWN }
 
+/**
+ * Mirrors the `ck_provider_system_status` CHECK on `provider.system_status` in
+ * `V2__provider_system_status.sql` -- same spelling, same order (`SchemaEnumParityTest` proves it).
+ *
+ * **Independent of [ProviderStatus]**: that one is a claim about the provider's *business*, this one
+ * is a claim about *our own* relationship to the row -- has anybody described how to read this site.
+ * No combination is forbidden and neither field is derived from the other; a discovered candidate is
+ * created as `status = UNKNOWN` + `systemStatus = CANDIDATE`.
+ *
+ * - [CANDIDATE] -- discovered, not configured. Hidden from the default listing.
+ * - [CONFIGURED] -- a normal catalog member. Set automatically by the **first** crawl run for that
+ *   slug that reaches `SUCCESS`/`PARTIAL` **and** performed at least one write.
+ * - [REJECTED] -- terminal "won't do". Set only by a human, hidden from the default listing, and
+ *   never promoted automatically.
+ */
+enum class SystemStatus { CANDIDATE, CONFIGURED, REJECTED }
+
 /** Mirrors `ck_provider_legal_info_data_source` on `provider_legal_info.data_source`. */
 enum class LegalDataSource { MANUAL, CRAWLER, WHOIS, PROVIDER_SITE, UNKNOWN }
 

@@ -21,6 +21,9 @@ object ProviderTable : Table("provider") {
     val websiteUrl = text("website_url")
     val description = text("description").nullable()
     val status = varchar("status", 32)
+
+    /** Added by `V2__provider_system_status.sql`; `DEFAULT 'CONFIGURED'` lives in the migration. */
+    val systemStatus = varchar("system_status", 32)
     val createdAt = timestampWithTimeZone("created_at")
     val updatedAt = timestampWithTimeZone("updated_at")
 

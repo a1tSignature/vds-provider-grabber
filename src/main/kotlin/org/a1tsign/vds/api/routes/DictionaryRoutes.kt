@@ -13,6 +13,7 @@ import org.a1tsign.vds.domain.PaymentMethod
 import org.a1tsign.vds.domain.PriceDataSource
 import org.a1tsign.vds.domain.ProviderStatus
 import org.a1tsign.vds.domain.Role
+import org.a1tsign.vds.domain.SystemStatus
 import org.a1tsign.vds.domain.Virtualization
 
 /**
@@ -32,6 +33,8 @@ data class DictionariesDto(
     val diskTypes: List<String>,
     val virtualizationTypes: List<String>,
     val providerStatuses: List<String>,
+    /** The second, independent provider axis (vds-004): our own relationship to the row. */
+    val systemStatuses: List<String>,
     val confidenceLevels: List<String>,
     val legalDataSources: List<String>,
     val priceDataSources: List<String>,
@@ -47,6 +50,7 @@ fun Route.dictionaryRoutes() {
                 diskTypes = DiskType.entries.map { it.name },
                 virtualizationTypes = Virtualization.entries.map { it.name },
                 providerStatuses = ProviderStatus.entries.map { it.name },
+                systemStatuses = SystemStatus.entries.map { it.name },
                 confidenceLevels = Confidence.entries.map { it.name },
                 legalDataSources = LegalDataSource.entries.map { it.name },
                 priceDataSources = PriceDataSource.entries.map { it.name },

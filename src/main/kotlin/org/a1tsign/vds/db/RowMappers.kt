@@ -26,6 +26,7 @@ fun ResultRow.toProvider(): Provider =
         websiteUrl = this[ProviderTable.websiteUrl],
         description = this[ProviderTable.description],
         status = parseDbEnum("provider", "status", this[ProviderTable.status]),
+        systemStatus = parseDbEnum("provider", "system_status", this[ProviderTable.systemStatus]),
         createdAt = this[ProviderTable.createdAt].toInstant(),
         updatedAt = this[ProviderTable.updatedAt].toInstant(),
     )

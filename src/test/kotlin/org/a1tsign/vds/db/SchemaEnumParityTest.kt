@@ -9,6 +9,7 @@ import org.a1tsign.vds.domain.PaymentMethod
 import org.a1tsign.vds.domain.PriceDataSource
 import org.a1tsign.vds.domain.ProviderStatus
 import org.a1tsign.vds.domain.Role
+import org.a1tsign.vds.domain.SystemStatus
 import org.a1tsign.vds.domain.UserStatus
 import org.a1tsign.vds.domain.Virtualization
 import org.a1tsign.vds.domain.includes
@@ -106,6 +107,7 @@ class SchemaEnumParityTest : AbstractDbTest() {
     fun `every enum-like column CHECK constraint matches its Kotlin enum exactly`() {
         PostgresSupport.dataSource.connection.use { connection ->
             connection.assertEnumMatchesCheckConstraint<ProviderStatus>("provider", "status")
+            connection.assertEnumMatchesCheckConstraint<SystemStatus>("provider", "system_status")
             connection.assertEnumMatchesCheckConstraint<LegalDataSource>("provider_legal_info", "data_source")
             connection.assertEnumMatchesCheckConstraint<Confidence>("provider_legal_info", "confidence")
             connection.assertEnumMatchesCheckConstraint<PaymentMethod>("provider_payment_method", "method")

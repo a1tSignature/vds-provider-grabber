@@ -629,7 +629,13 @@ object SourceConfigFormat {
 
         /**
          * A selector jsoup can parse, and one that carries no regex: jsoup's `:matches(…)` and
-         * `[attr~=…]` would compile a pattern straight out of the file.
+         * `[attr~=…]` would compile a pattern straight out of the file. A plain substring check on
+         * the raw text is not enough by itself: jsoup's `QueryParser` resolves CSS escapes in a
+         * pseudo name before matching it, so `:\6D atches(^(a+)+$)` parses as `:matches(^(a+)+$)`
+         * while never containing the literal text `:matches` (verified against jsoup 1.21.1). A CSS
+         * escape has no legitimate use in this format, so it is refused outright; as a second,
+         * independent layer, the markers are also checked against jsoup's own canonical rendering
+         * of the parsed evaluator, which normalises any escaping jsoup understands.
          */
         fun selector(key: String, selector: String?) {
             if (selector == null) return
@@ -637,13 +643,23 @@ object SourceConfigFormat {
                 fail(key, "must not be blank")
                 return
             }
-            val marker = REGEX_SELECTOR_MARKERS.firstOrNull { selector.contains(it, ignoreCase = true) }
-            if (marker != null) {
-                fail(key, "must not use jsoup's regex syntax ('$marker'): a config carries no expressions", selector)
+            if (selector.contains('\\')) {
+                fail(key, "must not use CSS escapes ('\\\\'): they can smuggle jsoup's regex syntax past this check", selector)
                 return
             }
-            if (runCatching { Selector.evaluatorOf(selector) }.isFailure) {
+            val rawMarker = REGEX_SELECTOR_MARKERS.firstOrNull { selector.contains(it, ignoreCase = true) }
+            if (rawMarker != null) {
+                fail(key, "must not use jsoup's regex syntax ('$rawMarker'): a config carries no expressions", selector)
+                return
+            }
+            val evaluator = runCatching { Selector.evaluatorOf(selector) }.getOrElse {
                 fail(key, "is not a selector jsoup can parse", selector)
+                return
+            }
+            val canonical = evaluator.toString()
+            val canonicalMarker = REGEX_SELECTOR_MARKERS.firstOrNull { canonical.contains(it, ignoreCase = true) }
+            if (canonicalMarker != null) {
+                fail(key, "must not use jsoup's regex syntax ('$canonicalMarker'): a config carries no expressions", selector)
             }
         }
 

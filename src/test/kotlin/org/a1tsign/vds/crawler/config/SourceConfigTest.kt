@@ -58,6 +58,9 @@ class SourceConfigTest {
             // jsoup's :matches()/[attr~=] would compile a java.util.regex pattern out of the file.
             Case("a regex selector", """"selector": "td.month"""", """"selector": "td:matches(^[0-9]+${'$'})"""", ":matches"),
             Case("an attribute-regex selector", """"selector": "td.month"""", """"selector": "td[class~=month]"""", "~="),
+            // A CSS escape in the pseudo name resolves to :matches at jsoup's parser, after the raw
+            // substring check would have let it through -- verified against jsoup 1.21.1.
+            Case("a regex selector smuggled through a CSS escape", """"selector": "td.month"""", """"selector": "td:\\6D atches(^x${'$'})"""", "CSS escape"),
             Case("two ways to read one value", """{"selector": "h1.name", "text": true}""", """{"selector": "h1.name", "text": true, "attr": "id"}""", "provider.name"),
             Case("an optional field the snapshot cannot do without", """{"selector": "td.name", "text": true}""", """{"selector": "td.name", "text": true, "required": false}""", "tariffs.name"),
             Case("two currency sources", """"currency": {"fixed": "EUR"}""", """"currency": {"fixed": "EUR", "bySymbol": {"${'$'}": "USD"}}""", "currency"),

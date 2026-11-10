@@ -111,7 +111,11 @@ fun Route.crawlerRoutes(
         call.requireRole(Role.ADMIN)
         val activeRegistry = registry ?: throw ServiceUnavailableException()
         // Already validated at startup (AppComponents.buildComponents fails fast on an unknown
-        // configured id), so this cannot throw here -- config does not change at runtime.
+        // configured id), so this cannot throw here -- neither the configuration nor the registry's
+        // entry list changes at runtime. Still true under vds-004's config-sourced entries: the
+        // registry is built once, from files read once, and restart-to-apply means a file edited
+        // after startup changes nothing until the next boot (ADR-01 decision 3). The list validated
+        // in buildComponents is literally this list, config-sourced ids included.
         val selectedIds = activeRegistry.select(crawlerConfig.adapters).map { it.id }.toSet()
         call.respond(
             activeRegistry.entries.map { entry ->
@@ -120,6 +124,8 @@ fun Route.crawlerRoutes(
                     providerSlug = entry.adapter.providerSlug,
                     sourceKind = entry.adapter.sourceKind.name,
                     enabled = entry.adapter.id in selectedIds,
+                    origin = entry.origin.name,
+                    file = entry.file,
                 )
             },
         )

@@ -1604,14 +1604,29 @@ components:
 
     AdapterInfoDto:
       type: object
-      required: [id, providerSlug, sourceKind, enabled]
+      required: [id, providerSlug, sourceKind, enabled, origin]
       properties:
         id: { type: string }
         providerSlug: { type: string }
         sourceKind: { type: string, enum: [API, HTML] }
         enabled:
           type: boolean
-          description: Selected by the current VDS_CRAWLER_ADAPTERS configuration.
+          description: >-
+            Selected by the current configuration: an empty VDS_CRAWLER_ADAPTERS selects compiled
+            entries registered as default plus config-sourced entries whose own file says
+            "enabled": true; a non-empty one selects exactly the ids it names.
+        origin:
+          type: string
+          enum: [COMPILED, CONFIG]
+          description: >-
+            COMPILED is an adapter written in Kotlin and shipped in this build; CONFIG is a
+            declarative source built from a JSON file in VDS_DISCOVERY_SOURCES_DIR, read once at
+            startup (restart-to-apply).
+        file:
+          type: string
+          description: >-
+            The source file's name. Present exactly when origin is CONFIG, and absent (not null --
+            the shared ApiJson omits a null) for a COMPILED entry.
 
     DictionariesDto:
       type: object

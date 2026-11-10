@@ -59,13 +59,19 @@ data class CrawlRunSummaryDto(
     val plannedOperations: List<String> = emptyList(),
 )
 
-/** One row of `GET /api/v1/admin/crawl/adapters`. [enabled] means "selected by the current configuration". */
+/**
+ * One row of `GET /api/v1/admin/crawl/adapters`. [enabled] means "selected by the current
+ * configuration"; [origin] tells a compiled adapter from one described by a JSON file (vds-004
+ * ADR-01) and [file] names that file, present exactly when [origin] is `CONFIG`.
+ */
 @Serializable
 data class AdapterInfoDto(
     val id: String,
     val providerSlug: String,
     val sourceKind: String,
     val enabled: Boolean,
+    val origin: String,
+    val file: String? = null,
 )
 
 fun AdapterRunResult.toDto(): AdapterRunResultDto = AdapterRunResultDto(

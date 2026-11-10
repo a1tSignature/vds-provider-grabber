@@ -1,8 +1,11 @@
 package org.a1tsign.vds.config
 
 import org.a1tsign.vds.api.parsePlainDecimal
+import org.slf4j.LoggerFactory
 import java.math.BigDecimal
 import java.net.URI
+import java.nio.file.Files
+import java.nio.file.Path
 import java.util.Properties
 
 /**
@@ -102,6 +105,70 @@ data class CrawlerConfig(
     val adapterEnv: AdapterEnv = AdapterEnv(emptyMap()),
 )
 
+/**
+ * Which search API the discovery leg of vds-004 talks to. [NONE] switches the search leg off while
+ * leaving the declarative-source machinery available -- the knob to use if the vendor relationship
+ * ends before a replacement exists (ADR-02).
+ */
+enum class DiscoverySearchProvider(val envValue: String) {
+    TAVILY("tavily"),
+    NONE("none"),
+    ;
+
+    companion object {
+        fun fromEnv(value: String): DiscoverySearchProvider? = entries.firstOrNull { it.envValue == value }
+    }
+}
+
+/**
+ * The whole `VDS_DISCOVERY_*` block of vds-004. Nothing in here starts a thread or opens a socket by
+ * itself; [enabled] `false` (the default) means the discovery leg is not constructed at all.
+ *
+ * Two deliberate asymmetries against [CrawlerConfig], both from
+ * `06-decisions/vds/vds-004-adr-01-config-sourced-adapter-registry-and-restart-to-apply` and the
+ * task's requirement 51:
+ *
+ * 1. **While [enabled] is `false` no value in this block can prevent startup.** Every violation is
+ *    collected, logged once at WARN by [loadConfig] and then *dropped*, the offending variable
+ *    falling back to its default -- so a half-written discovery configuration can never take a
+ *    vds-002 deployment down. With [enabled] `true` the very same violations join [loadConfig]'s one
+ *    accumulated `ConfigurationException`.
+ * 2. **[sourcesDir] is not gated by [enabled].** Sources are read iff the *crawler* is enabled and
+ *    [sourcesDir] is set (plan decision 5), because an operator must be able to author and run a
+ *    declarative source without switching the search leg on. [sourcesDir] is unset by default, so
+ *    the default configuration still reads nothing at all.
+ */
+data class DiscoveryConfig(
+    val enabled: Boolean,
+    /** Directory of `*.json` source files, read non-recursively at startup; `null` reads nothing. */
+    val sourcesDir: String?,
+    /** Turns an invalid source file into a startup failure -- only while [enabled] (see the class doc). */
+    val sourcesStrict: Boolean,
+    val maxSources: Int,
+    val searchProvider: DiscoverySearchProvider,
+    val searchApiKey: Secret?,
+    val searchEndpoint: String,
+    val searchTimeoutSeconds: Long,
+    val maxResponseBytes: Long,
+    /** Literal query strings, never templates: nothing in this project interpolates into them. */
+    val queries: List<String>,
+    val queryDelayMs: Long,
+    val maxQueriesPerPass: Int,
+    val maxCreditsPerMonth: Int,
+    /** Validated 1..20 -- the vendor's own maximum for one request (ADR-02). */
+    val maxResultsPerQuery: Int,
+    val maxNewCandidatesPerPass: Int,
+    val maxKnownProviders: Int,
+    val domainDenylist: List<String>,
+    val requiredKeywords: List<String>,
+    val intervalHours: Long,
+    val initialDelayMinutes: Long,
+    val minPassIntervalHours: Long,
+    val passTimeoutMinutes: Long,
+    /** The credit ledger's JSON state file; required while [enabled], its directory must be writable. */
+    val stateFile: String?,
+)
+
 data class AppConfig(
     val db: DbConfig,
     val http: HttpConfig,
@@ -110,6 +177,7 @@ data class AppConfig(
     // null when the bootstrap-admin variables are absent; task 7 does the actual creation.
     val bootstrapAdmin: BootstrapAdminConfig?,
     val crawler: CrawlerConfig,
+    val discovery: DiscoveryConfig,
 )
 
 /**
@@ -121,6 +189,50 @@ class ConfigurationException(message: String) : Exception(message)
 private const val DEFAULT_FX_API_URL = "https://open.er-api.com/v6/latest/USD"
 
 private const val DEFAULT_CRAWLER_API_BASE_URL = "http://127.0.0.1:8080"
+
+private val logger = LoggerFactory.getLogger("org.a1tsign.vds.config.AppConfig")
+
+private const val DEFAULT_DISCOVERY_SEARCH_ENDPOINT = "https://api.tavily.com"
+
+/** Newline or `|` separated; a comma is deliberately **not** a separator (a query may contain one). */
+private val DISCOVERY_QUERY_SEPARATOR = Regex("[|\n]")
+
+/** Comma, `|` or newline separated -- a domain and a keyword never contain any of the three. */
+private val DISCOVERY_LIST_SEPARATOR = Regex("[,|\n]")
+
+private const val DEFAULT_DISCOVERY_QUERIES =
+    "vps hosting | cheap vps nvme | аренда vps | vds хостинг | kvm vps hosting"
+
+/**
+ * Hosts that answer the queries above without ever being a VPS provider: review and comparison
+ * sites, forums, deal aggregators, marketplaces, social networks, code and documentation hosts.
+ * They are the dominant false-positive class for whole-web search on these terms, so the list ships
+ * as a default rather than waiting for an operator to discover it. Matching (a bare domain, its
+ * subdomains) is the filter's business in task 6; this is only the data.
+ */
+private val DEFAULT_DISCOVERY_DOMAIN_DENYLIST = listOf(
+    // review / comparison / deal sites
+    "hostadvice.com", "trustpilot.com", "hostingadvice.com", "whtop.com", "serverhunter.com",
+    "vpsbenchmarks.com", "lowendbox.com", "webhostingtalk.com", "lowendtalk.com", "g2.com",
+    "capterra.com", "getapp.com", "slant.co", "hostings.info", "hostingchecker.com",
+    // forums / Q&A / aggregators
+    "reddit.com", "quora.com", "stackoverflow.com", "serverfault.com", "superuser.com",
+    "stackexchange.com", "news.ycombinator.com", "habr.com", "4pda.to", "searchengines.guru",
+    // marketplaces / shops
+    "amazon.com", "ebay.com", "aliexpress.com", "avito.ru", "ozon.ru", "producthunt.com",
+    // social networks / blogging
+    "facebook.com", "twitter.com", "x.com", "vk.com", "t.me", "telegram.me", "youtube.com",
+    "linkedin.com", "instagram.com", "tiktok.com", "medium.com", "dev.to", "pinterest.com",
+    // code / documentation hosts
+    "github.com", "github.io", "gitlab.com", "bitbucket.org", "readthedocs.io", "wikipedia.org",
+    "learn.microsoft.com", "docs.microsoft.com", "developer.mozilla.org", "cloudflare.com",
+)
+
+/** A page that is really selling virtual servers says at least one of these, in one of two languages. */
+private val DEFAULT_DISCOVERY_REQUIRED_KEYWORDS = listOf(
+    "vps", "vds", "virtual server", "virtual private server", "vps hosting",
+    "виртуальный сервер", "виртуальный выделенный сервер",
+)
 
 /** The prefix of every per-adapter variable; see [crawlerAdapterConfig] for the per-id suffix. */
 const val ADAPTER_ENV_PREFIX: String = "VDS_CRAWLER_ADAPTER_"
@@ -148,11 +260,22 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
 
     fun optionalNonBlank(name: String): String? = env[name]?.takeUnless { it.isBlank() }
 
-    fun positiveInt(name: String, default: Int): Int {
+    fun positiveInt(name: String, default: Int, into: MutableList<String> = errors): Int {
         val raw = env[name] ?: return default
         val parsed = raw.toIntOrNull()
         if (parsed == null || parsed <= 0) {
-            errors += "$name must be a positive integer"
+            into += "$name must be a positive integer"
+            return default
+        }
+        return parsed
+    }
+
+    /** [positiveInt] with an upper bound a vendor or a column imposes, named in the message. */
+    fun boundedInt(name: String, default: Int, min: Int, max: Int, into: MutableList<String> = errors): Int {
+        val raw = env[name] ?: return default
+        val parsed = raw.toIntOrNull()
+        if (parsed == null || parsed < min || parsed > max) {
+            into += "$name must be an integer between $min and $max"
             return default
         }
         return parsed
@@ -168,11 +291,11 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
         return parsed
     }
 
-    fun positiveLong(name: String, default: Long): Long {
+    fun positiveLong(name: String, default: Long, into: MutableList<String> = errors): Long {
         val raw = env[name] ?: return default
         val parsed = raw.toLongOrNull()
         if (parsed == null || parsed <= 0) {
-            errors += "$name must be a positive integer"
+            into += "$name must be a positive integer"
             return default
         }
         return parsed
@@ -188,13 +311,13 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
         return parsed
     }
 
-    fun booleanFlag(name: String, default: Boolean): Boolean {
+    fun booleanFlag(name: String, default: Boolean, into: MutableList<String> = errors): Boolean {
         val raw = env[name] ?: return default
         return when (raw) {
             "true" -> true
             "false" -> false
             else -> {
-                errors += "$name must be true or false"
+                into += "$name must be true or false"
                 default
             }
         }
@@ -315,6 +438,99 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
     // adapter literally called `timeout` could ever see it.
     val crawlerAdapterEnv = AdapterEnv(env.filterKeys { it.startsWith(ADAPTER_ENV_PREFIX) })
 
+    // --- discovery (vds-004) ---
+    // Its own error sink, merged into `errors` only while discovery is enabled: with it disabled
+    // every violation below is logged once at WARN and the variable falls back to its default, so
+    // no VDS_DISCOVERY_* value can prevent a vds-002 deployment from starting (requirement 51).
+    // That includes a malformed VDS_DISCOVERY_ENABLED itself, which reads as `false` -- the rule is
+    // deliberately literal, and the WARN is what tells the operator discovery did not come up.
+    val discoveryErrors = mutableListOf<String>()
+    val discoveryEnabled = booleanFlag("VDS_DISCOVERY_ENABLED", false, discoveryErrors)
+    val discoverySourcesDir = optionalNonBlank("VDS_DISCOVERY_SOURCES_DIR")
+    val discoverySourcesStrict = booleanFlag("VDS_DISCOVERY_SOURCES_STRICT", false, discoveryErrors)
+    val discoveryMaxSources = positiveInt("VDS_DISCOVERY_MAX_SOURCES", 200, discoveryErrors)
+    val discoverySearchProviderRaw = optionalNonBlank("VDS_DISCOVERY_SEARCH_PROVIDER")?.lowercase()
+    val discoverySearchProvider = when {
+        discoverySearchProviderRaw == null -> DiscoverySearchProvider.TAVILY
+        else -> DiscoverySearchProvider.fromEnv(discoverySearchProviderRaw) ?: run {
+            discoveryErrors += "VDS_DISCOVERY_SEARCH_PROVIDER must be one of " +
+                DiscoverySearchProvider.entries.joinToString { it.envValue }
+            DiscoverySearchProvider.TAVILY
+        }
+    }
+    val discoverySearchApiKey = optionalNonBlank("VDS_DISCOVERY_SEARCH_API_KEY")
+    if (discoverySearchProvider != DiscoverySearchProvider.NONE && discoverySearchApiKey == null) {
+        // Names the variable only -- never a value, and there is nothing to echo here anyway.
+        discoveryErrors += "VDS_DISCOVERY_SEARCH_API_KEY is required when VDS_DISCOVERY_ENABLED is true " +
+            "and VDS_DISCOVERY_SEARCH_PROVIDER is not none"
+    }
+    val discoverySearchEndpoint = env["VDS_DISCOVERY_SEARCH_ENDPOINT"] ?: DEFAULT_DISCOVERY_SEARCH_ENDPOINT
+    if (!isAbsoluteHttpUrl(discoverySearchEndpoint)) {
+        discoveryErrors += "VDS_DISCOVERY_SEARCH_ENDPOINT must be an absolute http or https URL"
+    }
+    val discoverySearchTimeoutSeconds = positiveLong("VDS_DISCOVERY_SEARCH_TIMEOUT_SECONDS", 10L, discoveryErrors)
+    val discoveryMaxResponseBytes = positiveLong("VDS_DISCOVERY_MAX_RESPONSE_BYTES", 524_288L, discoveryErrors)
+    val discoveryQueries = (env["VDS_DISCOVERY_QUERIES"] ?: DEFAULT_DISCOVERY_QUERIES)
+        .split(DISCOVERY_QUERY_SEPARATOR)
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+    if (discoveryQueries.isEmpty()) {
+        discoveryErrors += "VDS_DISCOVERY_QUERIES must name at least one query"
+    }
+    val discoveryQueryDelayMs = positiveLong("VDS_DISCOVERY_QUERY_DELAY_MS", 1000L, discoveryErrors)
+    val discoveryMaxQueriesPerPass = positiveInt("VDS_DISCOVERY_MAX_QUERIES_PER_PASS", 10, discoveryErrors)
+    val discoveryMaxCreditsPerMonth = positiveInt("VDS_DISCOVERY_MAX_CREDITS_PER_MONTH", 300, discoveryErrors)
+    val discoveryMaxResultsPerQuery = boundedInt("VDS_DISCOVERY_MAX_RESULTS_PER_QUERY", 10, 1, 20, discoveryErrors)
+    val discoveryMaxNewCandidates = positiveInt("VDS_DISCOVERY_MAX_NEW_CANDIDATES_PER_PASS", 20, discoveryErrors)
+    val discoveryMaxKnownProviders = positiveInt("VDS_DISCOVERY_MAX_KNOWN_PROVIDERS", 5000, discoveryErrors)
+    // Both lists are lower-cased here, once: every later comparison is case-insensitive by nature
+    // (a domain is, and a keyword is matched against lower-cased page text). An explicitly empty
+    // value means "no denylist at all" rather than "use the default" -- clearing it is deliberate.
+    val discoveryDomainDenylist = env["VDS_DISCOVERY_DOMAIN_DENYLIST"]
+        ?.split(DISCOVERY_LIST_SEPARATOR)
+        ?.map { it.trim().lowercase() }
+        ?.filter { it.isNotEmpty() }
+        ?: DEFAULT_DISCOVERY_DOMAIN_DENYLIST
+    val discoveryRequiredKeywords = env["VDS_DISCOVERY_REQUIRED_KEYWORDS"]
+        ?.split(DISCOVERY_LIST_SEPARATOR)
+        ?.map { it.trim().lowercase() }
+        ?.filter { it.isNotEmpty() }
+        ?: DEFAULT_DISCOVERY_REQUIRED_KEYWORDS
+    val discoveryIntervalHours = positiveLong("VDS_DISCOVERY_INTERVAL_HOURS", 48L, discoveryErrors)
+    val discoveryInitialDelayMinutes = positiveLong("VDS_DISCOVERY_INITIAL_DELAY_MINUTES", 15L, discoveryErrors)
+    val discoveryMinPassIntervalHours = positiveLong("VDS_DISCOVERY_MIN_PASS_INTERVAL_HOURS", 24L, discoveryErrors)
+    val discoveryPassTimeoutMinutes = positiveLong("VDS_DISCOVERY_PASS_TIMEOUT_MINUTES", 10L, discoveryErrors)
+    val discoveryStateFile = optionalNonBlank("VDS_DISCOVERY_STATE_FILE")
+    // The two file-system checks run only while discovery is enabled: with it off nothing here may
+    // fail startup anyway, and "disabled => nothing happens" is meant literally, down to not
+    // stat()-ing a path. The loader of task 4 re-checks the sources directory itself, because it is
+    // read whenever the *crawler* is on (plan decision 5), discovery enabled or not.
+    if (discoveryEnabled) {
+        if (discoveryStateFile == null) {
+            discoveryErrors += "VDS_DISCOVERY_STATE_FILE is required when VDS_DISCOVERY_ENABLED is true"
+        } else {
+            val parent = pathOrNull(discoveryStateFile)?.toAbsolutePath()?.parent
+            if (parent == null || !Files.isDirectory(parent) || !Files.isWritable(parent)) {
+                discoveryErrors += "VDS_DISCOVERY_STATE_FILE must sit in an existing writable directory, " +
+                    "which '$discoveryStateFile' does not"
+            }
+        }
+        if (discoverySourcesDir != null) {
+            val dir = pathOrNull(discoverySourcesDir)
+            if (dir == null || !Files.isDirectory(dir) || !Files.isReadable(dir)) {
+                discoveryErrors += "VDS_DISCOVERY_SOURCES_DIR must be a readable directory, " +
+                    "which '$discoverySourcesDir' is not"
+            }
+        }
+    }
+    if (discoveryEnabled) {
+        errors += discoveryErrors
+    } else {
+        discoveryErrors.forEach {
+            logger.warn("VDS_DISCOVERY_ENABLED is false, so this does not prevent startup: {}", it)
+        }
+    }
+
     if (errors.isNotEmpty()) {
         throw ConfigurationException("Invalid configuration: ${errors.joinToString("; ")}")
     }
@@ -367,8 +583,36 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
             dryRunDefault = crawlerDryRunDefault,
             adapterEnv = crawlerAdapterEnv,
         ),
+        discovery = DiscoveryConfig(
+            enabled = discoveryEnabled,
+            sourcesDir = discoverySourcesDir,
+            sourcesStrict = discoverySourcesStrict,
+            maxSources = discoveryMaxSources,
+            searchProvider = discoverySearchProvider,
+            searchApiKey = discoverySearchApiKey?.let { Secret(it) },
+            searchEndpoint = discoverySearchEndpoint,
+            searchTimeoutSeconds = discoverySearchTimeoutSeconds,
+            maxResponseBytes = discoveryMaxResponseBytes,
+            queries = discoveryQueries,
+            queryDelayMs = discoveryQueryDelayMs,
+            maxQueriesPerPass = discoveryMaxQueriesPerPass,
+            maxCreditsPerMonth = discoveryMaxCreditsPerMonth,
+            maxResultsPerQuery = discoveryMaxResultsPerQuery,
+            maxNewCandidatesPerPass = discoveryMaxNewCandidates,
+            maxKnownProviders = discoveryMaxKnownProviders,
+            domainDenylist = discoveryDomainDenylist,
+            requiredKeywords = discoveryRequiredKeywords,
+            intervalHours = discoveryIntervalHours,
+            initialDelayMinutes = discoveryInitialDelayMinutes,
+            minPassIntervalHours = discoveryMinPassIntervalHours,
+            passTimeoutMinutes = discoveryPassTimeoutMinutes,
+            stateFile = discoveryStateFile,
+        ),
     )
 }
+
+/** A path a `String` may or may not be; an unusable one becomes the caller's own clear message. */
+private fun pathOrNull(value: String): Path? = runCatching { Path.of(value) }.getOrNull()
 
 /**
  * The `VDS_CRAWLER_ADAPTER_<ID>_*` slice of [env] that belongs to the adapter [adapterId], in the

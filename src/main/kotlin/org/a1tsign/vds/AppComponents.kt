@@ -2,6 +2,7 @@ package org.a1tsign.vds
 
 import javax.sql.DataSource
 import org.a1tsign.vds.config.AppConfig
+import org.a1tsign.vds.config.ConfigurationException
 import org.a1tsign.vds.config.crawlerAdapterConfig
 import org.a1tsign.vds.db.UserRepository
 import org.a1tsign.vds.auth.JwtService
@@ -23,9 +24,14 @@ import org.a1tsign.vds.fx.CurrencyConverter
 import org.a1tsign.vds.fx.CurrencyRateProvider
 import org.a1tsign.vds.fx.ErApiCurrencyRateProvider
 import org.a1tsign.vds.fx.FxRefreshService
+import org.a1tsign.vds.crawler.AdapterEntry
+import org.a1tsign.vds.crawler.AdapterOrigin
 import org.a1tsign.vds.crawler.AdapterRegistry
 import org.a1tsign.vds.crawler.CrawlerRunner
 import org.a1tsign.vds.crawler.SnapshotValidator
+import org.a1tsign.vds.crawler.adapters.DeclarativeAdapter
+import org.a1tsign.vds.crawler.config.SourceConfigLoader
+import org.a1tsign.vds.crawler.config.SourceLoadReport
 import org.a1tsign.vds.crawler.fetch.KtorPageFetcher
 import org.a1tsign.vds.crawler.fetch.crawlerHttpClient
 import org.a1tsign.vds.crawler.write.ApiCrawlWriter
@@ -106,6 +112,19 @@ class AppComponents(val dataSource: DataSource) {
         private set
 
     /**
+     * What this startup made of `VDS_DISCOVERY_SOURCES_DIR` (vds-004): the declarative sources that
+     * became registry entries and every file that was refused, with its error.
+     * [SourceLoadReport.NOT_LOADED] when nothing was read -- the crawler is disabled, or no
+     * directory is configured (the default).
+     *
+     * Immutable for the process's lifetime, like [crawlerRegistry] itself: restart-to-apply
+     * (ADR-01) means this report is also the answer to "did the restart pick my file up?", which
+     * task 6's `GET /api/v1/admin/discovery/sources` serves.
+     */
+    var discoverySources: SourceLoadReport = SourceLoadReport.NOT_LOADED
+        private set
+
+    /**
      * The `Job` of the currently in-flight admin-triggered run (`POST /api/v1/admin/crawl/run`),
      * set by `api/routes/CrawlerRoutes.kt` right after `launch`. `Application.kt`'s
      * `shutdownGracefully` joins it (bounded, like [org.a1tsign.vds.crawler.CrawlScheduler.close])
@@ -140,6 +159,7 @@ class AppComponents(val dataSource: DataSource) {
         crawlerScope: CoroutineScope?,
         crawlerCatalogClient: CatalogApiClient?,
         crawlerFetchHttpClient: HttpClient?,
+        discoverySources: SourceLoadReport,
     ) {
         this.config = config
         this.database = database
@@ -163,6 +183,7 @@ class AppComponents(val dataSource: DataSource) {
         this.crawlerScope = crawlerScope
         this.crawlerCatalogClient = crawlerCatalogClient
         this.crawlerFetchHttpClient = crawlerFetchHttpClient
+        this.discoverySources = discoverySources
     }
 }
 
@@ -197,15 +218,64 @@ fun buildComponents(
     var crawlerScope: CoroutineScope? = null
     var crawlerCatalogClient: CatalogApiClient? = null
     var crawlerFetchHttpClient: HttpClient? = null
+    var discoverySources = SourceLoadReport.NOT_LOADED
     if (config.crawler.enabled) {
         if (!config.crawler.respectRobots) {
             logger.warn(
                 "VDS_CRAWLER_RESPECT_ROBOTS is false: this crawler will not honour robots.txt on the sites it fetches",
             )
         }
-        val registry = AdapterRegistry.production()
+        val compiledEntries = AdapterRegistry.compiledEntries()
+        // Declarative sources (vds-004) are read iff the *crawler* is enabled and a directory is
+        // configured -- VDS_DISCOVERY_ENABLED does not gate them (plan decision 5: an operator must
+        // be able to author and run a source config with the search leg off). The directory is unset
+        // by default, so the default configuration still reads nothing at all.
+        val sourcesDir = config.discovery.sourcesDir
+        if (sourcesDir != null) {
+            discoverySources = SourceConfigLoader(clock).load(
+                directory = sourcesDir,
+                maxSources = config.discovery.maxSources,
+                // Cross-origin uniqueness: a file must not be able to shadow or collide with a
+                // compiled adapter such as example-static.
+                reservedIds = compiledEntries.map { it.adapter.id }.toSet(),
+                reservedSlugs = compiledEntries.map { it.adapter.providerSlug }.toSet(),
+            )
+            if (config.discovery.sourcesStrict) {
+                if (config.discovery.enabled) {
+                    if (discoverySources.hasFailures) {
+                        // Same fail-fast path as a malformed VDS_* variable: one ERROR line and a
+                        // non-zero exit from Application.kt's main(), naming every refused file.
+                        throw ConfigurationException(
+                            "VDS_DISCOVERY_SOURCES_STRICT is true and a declarative source was refused: " +
+                                discoverySources.failureSummary(),
+                        )
+                    }
+                } else {
+                    // The "discovery disabled can never fail startup" rule is literal, strict mode
+                    // included -- so it is announced rather than silently honoured or silently dropped.
+                    logger.warn(
+                        "VDS_DISCOVERY_SOURCES_STRICT is true but VDS_DISCOVERY_ENABLED is false, " +
+                            "so strict mode was not applied: an invalid source file is skipped, not a startup failure",
+                    )
+                }
+            }
+        }
+        val registry = AdapterRegistry.production(
+            // The file's own "enabled" becomes includedByDefault, which is what makes an empty
+            // VDS_CRAWLER_ADAPTERS select exactly the config sources that turned themselves on
+            // (ADR-01 decision 5) without AdapterRegistry.select needing a second rule.
+            discoverySources.loaded.map { source ->
+                AdapterEntry(
+                    adapter = DeclarativeAdapter(source.config),
+                    includedByDefault = source.config.enabled,
+                    origin = AdapterOrigin.CONFIG,
+                    file = source.file,
+                )
+            },
+        )
         // Fail-fast (spec req. 39): an unknown id in VDS_CRAWLER_ADAPTERS must abort startup, not
         // fail quietly on the scheduler's first tick minutes later -- see Application.kt's main().
+        // The list validated here is the same immutable one every handler later reads.
         registry.select(config.crawler.adapters)
         val fetchClient = crawlerHttpClient()
         val fetcher = KtorPageFetcher(config.crawler, clock, fetchClient)
@@ -237,6 +307,7 @@ fun buildComponents(
             config, database, clock, repository, jwt, passwordHasher, authService, userService, providerService, locationService,
             tariffService, priceService, catalogQueryService, currencyRateRepository, currencyConverter, fxRefreshService, fxClient,
             crawlerRegistry, crawlerRunner, crawlerScope, crawlerCatalogClient, crawlerFetchHttpClient,
+            discoverySources,
         )
     }
 }

@@ -1012,6 +1012,96 @@ paths:
         "403": { $ref: "#/components/responses/ForbiddenError" }
         "503": { $ref: "#/components/responses/ServiceUnavailableError" }
 
+  /api/v1/admin/discovery/run:
+    post:
+      tags: [Admin]
+      summary: Trigger a discovery pass
+      description: >-
+        Required role: ADMIN. Starts a pass asynchronously and returns immediately; the pass is
+        already visible as RUNNING via GET /api/v1/admin/discovery/passes/{passId}. 409 if a
+        discovery pass or a crawl run holds the shared run slot. 503 if discovery is disabled.
+        A dry run still searches (and spends credits) but writes nothing.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DiscoveryRunTriggerRequest" }
+      responses:
+        "202":
+          description: Accepted; the pass has started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryRunTriggerResponse" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "409":
+          description: A discovery pass or a crawl run is already in progress.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailableError" }
+
+  /api/v1/admin/discovery/passes:
+    get:
+      tags: [Admin]
+      summary: The most recent discovery passes
+      description: >-
+        Required role: ADMIN. The last 20 pass summaries from the in-memory ring buffer, newest
+        first; nothing is persisted. 503 if discovery is disabled.
+      responses:
+        "200":
+          description: Up to 20 summaries, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DiscoveryPassSummaryDto" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailableError" }
+
+  /api/v1/admin/discovery/passes/{passId}:
+    parameters:
+      - name: passId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Admin]
+      summary: One discovery pass summary
+      description: >-
+        Required role: ADMIN. 404 if passId is unknown, was evicted from the 20-entry ring buffer,
+        or is not a valid UUID. 503 if discovery is disabled.
+      responses:
+        "200":
+          description: The pass summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryPassSummaryDto" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailableError" }
+
+  /api/v1/admin/discovery/sources:
+    get:
+      tags: [Admin]
+      summary: Declarative sources loaded at startup
+      description: >-
+        Required role: ADMIN. The startup snapshot of VDS_DISCOVERY_SOURCES_DIR: every loaded
+        source and every file that failed to load, with its errors (restart-to-apply). 503 if
+        discovery is disabled.
+      responses:
+        "200":
+          description: The startup load report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoverySourcesDto" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailableError" }
+
   /api/v1/dictionaries:
     get:
       tags: [Dictionaries]
@@ -1627,6 +1717,133 @@ components:
           description: >-
             The source file's name. Present exactly when origin is CONFIG, and absent (not null --
             the shared ApiJson omits a null) for a COMPILED entry.
+
+    DiscoveryRunTriggerRequest:
+      type: object
+      properties:
+        dryRun:
+          type: boolean
+          description: Defaults to false. A dry run still searches and spends credits; it writes nothing.
+        maxQueries:
+          type: integer
+          minimum: 1
+          description: Can only lower VDS_DISCOVERY_MAX_QUERIES_PER_PASS.
+        force:
+          type: boolean
+          description: Overrides only the minimum interval between passes, never the monthly credit cap.
+
+    DiscoveryRunTriggerResponse:
+      type: object
+      required: [passId]
+      properties:
+        passId: { type: string, format: uuid }
+
+    PlannedCandidateDto:
+      type: object
+      required: [slug, name, websiteUrl, query, resultUrl]
+      properties:
+        slug: { type: string }
+        name: { type: string }
+        websiteUrl: { type: string }
+        query: { type: string }
+        resultUrl: { type: string }
+
+    DiscoveryPassSummaryDto:
+      type: object
+      required:
+        - passId
+        - startedAt
+        - status
+        - dryRun
+        - queriesIssued
+        - queriesFailed
+        - creditsSpent
+        - resultsSeen
+        - resultsRejected
+        - knownProviders
+        - candidatesCreated
+        - candidatesDeferred
+        - candidatesFailed
+      properties:
+        passId: { type: string, format: uuid }
+        startedAt: { type: string, format: date-time }
+        finishedAt:
+          type: string
+          format: date-time
+          description: Absent while status is RUNNING.
+        status: { type: string, enum: [RUNNING, COMPLETED, CANCELLED] }
+        dryRun: { type: boolean }
+        queriesIssued: { type: integer }
+        queriesFailed: { type: integer }
+        creditsSpent: { type: integer }
+        creditsRemainingThisMonth:
+          type: integer
+          description: The local credit ledger's figure.
+        vendorCreditsRemaining:
+          type: integer
+          description: Absent when the vendor usage cross-check was skipped or failed.
+        resultsSeen: { type: integer }
+        resultsRejected:
+          type: object
+          additionalProperties: { type: integer }
+          description: Keyed by DENYLIST, KEYWORD, MALFORMED_URL, SLUG_TOO_LONG, ALREADY_KNOWN.
+        knownProviders: { type: integer }
+        candidatesCreated: { type: integer }
+        candidatesDeferred: { type: integer }
+        candidatesFailed: { type: integer }
+        plannedCandidates:
+          type: array
+          items: { $ref: "#/components/schemas/PlannedCandidateDto" }
+          description: Filled only by a dry run; capped at 200 entries.
+        failureReason:
+          type: string
+          enum:
+            - NO_SEARCH_PROVIDER
+            - BUDGET
+            - SEARCH_QUOTA
+            - SEARCH_AUTH
+            - KNOWN_SET_TOO_LARGE
+            - CATALOG_UNAVAILABLE
+            - CATALOG_AUTH
+            - TIMEOUT
+            - SHUTDOWN
+            - INTERNAL_ERROR
+        message: { type: string }
+
+    DiscoverySourceDto:
+      type: object
+      required: [id, providerSlug, enabled, file, loadedAt]
+      properties:
+        id: { type: string }
+        providerSlug: { type: string }
+        enabled: { type: boolean }
+        file: { type: string }
+        loadedAt: { type: string, format: date-time }
+
+    DiscoverySourceFailureDto:
+      type: object
+      required: [file, errors]
+      properties:
+        file: { type: string }
+        errors:
+          type: array
+          items: { type: string }
+
+    DiscoverySourcesDto:
+      type: object
+      required: [loaded, failed, problems]
+      properties:
+        directory: { type: string }
+        loaded:
+          type: array
+          items: { $ref: "#/components/schemas/DiscoverySourceDto" }
+        failed:
+          type: array
+          items: { $ref: "#/components/schemas/DiscoverySourceFailureDto" }
+        problems:
+          type: array
+          items: { type: string }
+          description: Directory-level refusals, as opposed to per-file failures.
 
     DictionariesDto:
       type: object

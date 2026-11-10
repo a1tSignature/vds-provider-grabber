@@ -247,6 +247,21 @@ data class ProviderWrite(
 )
 
 /**
+ * Body of the discovery pass's `POST /api/v1/providers` (vds-004): [ProviderWrite] plus an explicit
+ * [systemStatus], which the pass always sets to `CANDIDATE`. No legal info, payment methods,
+ * locations or tariffs ever accompany it.
+ */
+@Serializable
+data class CandidateProviderWrite(
+    val slug: String,
+    val name: String,
+    val websiteUrl: String,
+    val status: String,
+    val systemStatus: String,
+    val description: String? = null,
+)
+
+/**
  * `dataSource` is a caller-supplied string, but the only value the crawler may ever send is
  * `CRAWLER` (spec req. 30); `verifiedAt` is deliberately absent -- the crawler verifies nothing.
  */

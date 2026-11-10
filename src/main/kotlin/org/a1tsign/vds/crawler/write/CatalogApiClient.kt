@@ -221,6 +221,21 @@ class CatalogApiClient(
         return null
     }
 
+    /**
+     * One page of **every** provider, whatever its `systemStatus` (all three requested explicitly,
+     * as in [findProviderBySlug]), ordered by `id` so consecutive pages neither skip nor repeat a
+     * row that existed when the walk started. The vds-004 discovery pass builds its dedup set from
+     * these pages and bounds the walk itself.
+     */
+    suspend fun listProvidersPage(page: Int): CatalogPage<CatalogProviderSummary> =
+        call(
+            HttpMethod.Get,
+            PROVIDERS_PATH,
+            CatalogPage.serializer(CatalogProviderSummary.serializer()),
+            query = listOf("page" to page.toString(), "size" to pageSize.toString(), "sort" to "id,asc") +
+                SystemStatus.entries.map { "systemStatus" to it.name },
+        ).value
+
     /** `GET /api/v1/providers/{id}` -- the detail, whose `tariffs` are the **active** ones only. */
     suspend fun getProvider(providerId: Long): CatalogProviderDetail =
         call(HttpMethod.Get, "$PROVIDERS_PATH/$providerId", CatalogProviderDetail.serializer()).value
@@ -266,6 +281,19 @@ class CatalogApiClient(
             PROVIDERS_PATH,
             CatalogProvider.serializer(),
             body = encode(ProviderWrite.serializer(), request),
+        ).value
+
+    /**
+     * `POST /api/v1/providers` with an explicit `systemStatus` -- the vds-004 discovery pass's one
+     * write, always `CANDIDATE`. A separate request type from [ProviderWrite] on purpose: the
+     * crawler's own create/update bodies never carry `systemStatus` at all.
+     */
+    suspend fun createCandidateProvider(request: CandidateProviderWrite): CatalogProvider =
+        call(
+            HttpMethod.Post,
+            PROVIDERS_PATH,
+            CatalogProvider.serializer(),
+            body = encode(CandidateProviderWrite.serializer(), request),
         ).value
 
     /**

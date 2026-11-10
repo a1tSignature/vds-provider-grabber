@@ -28,6 +28,7 @@ import org.a1tsign.vds.crawler.AdapterEntry
 import org.a1tsign.vds.crawler.AdapterOrigin
 import org.a1tsign.vds.crawler.AdapterRegistry
 import org.a1tsign.vds.crawler.CrawlerRunner
+import org.a1tsign.vds.crawler.RunSlot
 import org.a1tsign.vds.crawler.SnapshotValidator
 import org.a1tsign.vds.crawler.adapters.DeclarativeAdapter
 import org.a1tsign.vds.crawler.config.SourceConfigLoader
@@ -39,6 +40,14 @@ import org.a1tsign.vds.crawler.write.CatalogApiClient
 import org.a1tsign.vds.crawler.write.CrawlWriter
 import org.a1tsign.vds.crawler.write.DryRunWriter
 import org.a1tsign.vds.crawler.write.Reconciler
+import org.a1tsign.vds.config.DiscoverySearchProvider
+import org.a1tsign.vds.discovery.ApiCandidateCatalog
+import org.a1tsign.vds.discovery.CreditLedger
+import org.a1tsign.vds.discovery.DiscoveryRunner
+import org.a1tsign.vds.discovery.SearchProvider
+import org.a1tsign.vds.discovery.TavilySearchProvider
+import java.nio.file.Path
+import java.util.concurrent.TimeUnit
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -134,6 +143,29 @@ class AppComponents(val dataSource: DataSource) {
      */
     val crawlerAdminRunJob: AtomicReference<Job?> = AtomicReference(null)
 
+    // ---------- vds-004 discovery, all null together while VDS_DISCOVERY_ENABLED is false ----------
+    // (no search client is created and no thread is started while discovery is disabled).
+    /** `null` also while enabled when `VDS_DISCOVERY_SEARCH_PROVIDER=none`. */
+    var discoverySearchProvider: SearchProvider? = null
+        private set
+
+    /** The search provider's own outbound `HttpClient`; closed on shutdown like [fxHttpClient]. */
+    var discoverySearchHttpClient: HttpClient? = null
+        private set
+
+    var discoveryLedger: CreditLedger? = null
+        private set
+
+    var discoveryRunner: DiscoveryRunner? = null
+        private set
+
+    /** The scope `api/routes/DiscoveryRoutes.kt` launches an admin-triggered pass on; cancelled on shutdown. */
+    var discoveryScope: CoroutineScope? = null
+        private set
+
+    /** The in-flight admin-triggered pass, joined (bounded) by `shutdownGracefully` -- the [crawlerAdminRunJob] precedent. */
+    val discoveryAdminPassJob: AtomicReference<Job?> = AtomicReference(null)
+
     val isConfigured: Boolean get() = this::authService.isInitialized
 
     internal fun configure(
@@ -160,6 +192,11 @@ class AppComponents(val dataSource: DataSource) {
         crawlerCatalogClient: CatalogApiClient?,
         crawlerFetchHttpClient: HttpClient?,
         discoverySources: SourceLoadReport,
+        discoverySearchProvider: SearchProvider?,
+        discoverySearchHttpClient: HttpClient?,
+        discoveryLedger: CreditLedger?,
+        discoveryRunner: DiscoveryRunner?,
+        discoveryScope: CoroutineScope?,
     ) {
         this.config = config
         this.database = database
@@ -184,6 +221,11 @@ class AppComponents(val dataSource: DataSource) {
         this.crawlerCatalogClient = crawlerCatalogClient
         this.crawlerFetchHttpClient = crawlerFetchHttpClient
         this.discoverySources = discoverySources
+        this.discoverySearchProvider = discoverySearchProvider
+        this.discoverySearchHttpClient = discoverySearchHttpClient
+        this.discoveryLedger = discoveryLedger
+        this.discoveryRunner = discoveryRunner
+        this.discoveryScope = discoveryScope
     }
 }
 
@@ -219,6 +261,20 @@ fun buildComponents(
     var crawlerCatalogClient: CatalogApiClient? = null
     var crawlerFetchHttpClient: HttpClient? = null
     var discoverySources = SourceLoadReport.NOT_LOADED
+    var discoverySearchProvider: SearchProvider? = null
+    var discoverySearchHttpClient: HttpClient? = null
+    var discoveryLedger: CreditLedger? = null
+    var discoveryRunner: DiscoveryRunner? = null
+    var discoveryScope: CoroutineScope? = null
+    if (config.discovery.enabled && !config.crawler.enabled) {
+        // Discovery writes candidates through the crawler's service account and shares the
+        // crawler's run slot, so without the crawler there is nothing to build it from. Announced
+        // rather than a startup failure: discovery stays off and its endpoints answer 503.
+        logger.warn(
+            "VDS_DISCOVERY_ENABLED is true but VDS_CRAWLER_ENABLED is false: discovery needs the crawler's " +
+                "service account and run slot, so it is not started",
+        )
+    }
     if (config.crawler.enabled) {
         if (!config.crawler.respectRobots) {
             logger.warn(
@@ -282,6 +338,8 @@ fun buildComponents(
         val catalogClient = CatalogApiClient(config.crawler, clock)
         val reconciler = Reconciler(catalogClient)
         val writerFactory: (Boolean) -> CrawlWriter = { dryRun -> if (dryRun) DryRunWriter() else ApiCrawlWriter(catalogClient) }
+        // One slot for a crawl run and a discovery pass: they are never in flight together.
+        val runSlot = RunSlot()
         crawlerRunner = CrawlerRunner(
             config = config.crawler,
             registry = registry,
@@ -295,11 +353,45 @@ fun buildComponents(
             // CrawlContext.config and fails with ADAPTER_ERROR (01-inbox/vds-002.9-debt-1).
             adapterConfig = { adapterId -> crawlerAdapterConfig(adapterId, config.crawler.adapterEnv.reveal()) },
             pagesFetched = { fetcher.pagesFetched },
+            slot = runSlot,
         )
         crawlerRegistry = registry
         crawlerFetchHttpClient = fetchClient
         crawlerCatalogClient = catalogClient
         crawlerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+        // ---------- vds-004 discovery: nothing is constructed, no client, no thread, while disabled ----------
+        if (config.discovery.enabled) {
+            val discovery = config.discovery
+            if (discovery.searchProvider == DiscoverySearchProvider.TAVILY) {
+                // loadConfig refuses TAVILY without a key while discovery is enabled.
+                val tavily = TavilySearchProvider(
+                    endpoint = discovery.searchEndpoint,
+                    apiKey = checkNotNull(discovery.searchApiKey) { "VDS_DISCOVERY_SEARCH_API_KEY is required" },
+                    requestTimeoutMs = TimeUnit.SECONDS.toMillis(discovery.searchTimeoutSeconds),
+                    maxResponseBytes = discovery.maxResponseBytes,
+                )
+                discoverySearchProvider = tavily
+                discoverySearchHttpClient = tavily.client
+            }
+            val ledger = CreditLedger(
+                path = Path.of(checkNotNull(discovery.stateFile) { "VDS_DISCOVERY_STATE_FILE is required" }),
+                clock = clock,
+                maxCreditsPerMonth = discovery.maxCreditsPerMonth,
+                maxQueriesPerPass = discovery.maxQueriesPerPass,
+                minPassIntervalHours = discovery.minPassIntervalHours,
+            )
+            discoveryLedger = ledger
+            discoveryRunner = DiscoveryRunner(
+                config = discovery,
+                searchProvider = discoverySearchProvider,
+                ledger = ledger,
+                catalog = ApiCandidateCatalog(catalogClient),
+                clock = clock,
+                slot = runSlot,
+            )
+            discoveryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        }
     }
 
     return AppComponents(dataSource).apply {
@@ -307,7 +399,7 @@ fun buildComponents(
             config, database, clock, repository, jwt, passwordHasher, authService, userService, providerService, locationService,
             tariffService, priceService, catalogQueryService, currencyRateRepository, currencyConverter, fxRefreshService, fxClient,
             crawlerRegistry, crawlerRunner, crawlerScope, crawlerCatalogClient, crawlerFetchHttpClient,
-            discoverySources,
+            discoverySources, discoverySearchProvider, discoverySearchHttpClient, discoveryLedger, discoveryRunner, discoveryScope,
         )
     }
 }

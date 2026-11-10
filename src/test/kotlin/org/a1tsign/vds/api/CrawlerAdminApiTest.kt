@@ -37,6 +37,7 @@ import org.a1tsign.vds.config.CrawlerConfig
 import org.a1tsign.vds.config.HttpConfig
 import org.a1tsign.vds.buildComponents
 import org.a1tsign.vds.crawler.AdapterEntry
+import org.a1tsign.vds.crawler.AdapterOrigin
 import org.a1tsign.vds.crawler.AdapterRegistry
 import org.a1tsign.vds.crawler.AdapterSelection
 import org.a1tsign.vds.crawler.CrawlerRunner
@@ -59,17 +60,23 @@ import org.a1tsign.vds.domain.UserStatus
 import org.a1tsign.vds.support.AbstractDbTest
 import org.a1tsign.vds.support.PostgresSupport
 import org.a1tsign.vds.support.UserFixture
+import org.a1tsign.vds.support.capturingLogs
 import org.a1tsign.vds.support.loginForToken
 import org.a1tsign.vds.support.testAppConfig
 import org.a1tsign.vds.support.testAppDb
+import org.junit.jupiter.api.io.TempDir
+import org.slf4j.event.Level
 import java.math.BigDecimal
+import java.nio.file.Path
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -602,5 +609,166 @@ class CrawlerAdminApiTest : AbstractDbTest() {
             assertTrue(inFlight.isCancelled)
             assertTrue(inFlight.isCompleted)
         }
+    }
+
+    // ---------- 11. declarative sources (vds-004.4) ----------
+
+    private fun sourcesConfig(dir: Path, extraEnv: Map<String, String> = emptyMap()) = testAppConfig(
+        extraEnv = mapOf(
+            "VDS_CRAWLER_ENABLED" to "true",
+            "VDS_CRAWLER_USERNAME" to "crawler-service",
+            "VDS_CRAWLER_PASSWORD" to "crawler-password-1",
+            "VDS_DISCOVERY_SOURCES_DIR" to dir.toString(),
+        ) + extraEnv,
+    )
+
+    @Test
+    fun `a malformed source file is reported and skipped at startup, and strict mode turns it into a startup failure`(
+        @TempDir dir: Path,
+    ) {
+        dir.resolve("acme.json").writeText(sourceFile("acme", enabled = true))
+        dir.resolve("broken.json").writeText("""{"schemaVersion": 1, "id": "broken"}""")
+
+        // Strict mode is set but discovery is off, so it must not be applied -- and must say so.
+        lateinit var components: org.a1tsign.vds.AppComponents
+        val logs = capturingLogs {
+            components = buildComponents(
+                sourcesConfig(dir, mapOf("VDS_DISCOVERY_SOURCES_STRICT" to "true")),
+                PostgresSupport.dataSource,
+                clock,
+                PostgresSupport.database,
+            )
+        }
+        assertTrue(
+            logs.messagesAt(Level.WARN).any { it.contains("strict mode was not applied") },
+            "strict mode with discovery disabled is announced, not silently honoured: ${logs.messages()}",
+        )
+        try {
+            assertEquals(listOf("acme"), components.discoverySources.loaded.map { it.config.id })
+            assertEquals("acme.json", components.discoverySources.loaded.single().file)
+            val failure = components.discoverySources.failed.single()
+            assertEquals("broken.json", failure.file)
+            assertTrue(failure.problems.isNotEmpty(), "the report carries the file's own error")
+
+            val registry = assertNotNull(components.crawlerRegistry)
+            val entry = registry.entries.single { it.adapter.id == "acme" }
+            assertEquals(AdapterOrigin.CONFIG, entry.origin)
+            assertEquals("acme.json", entry.file)
+            assertTrue(registry.entries.none { it.adapter.id == "broken" }, "a refused file is absent from the registry")
+            // The file turned itself on, so the empty configured selection picks it -- and no
+            // compiled reference adapter.
+            assertEquals(listOf("acme"), registry.select(components.config.crawler.adapters).map { it.id })
+        } finally {
+            components.crawlerScope?.cancel()
+            components.crawlerCatalogClient?.close()
+            components.crawlerFetchHttpClient?.close()
+            components.fxHttpClient?.close()
+        }
+
+        val strict = sourcesConfig(
+            dir,
+            mapOf(
+                "VDS_DISCOVERY_SOURCES_STRICT" to "true",
+                "VDS_DISCOVERY_ENABLED" to "true",
+                "VDS_DISCOVERY_SEARCH_API_KEY" to "tvly-key",
+                "VDS_DISCOVERY_STATE_FILE" to dir.resolve("state.json").toString(),
+            ),
+        )
+        val exception = assertFailsWith<ConfigurationException> {
+            buildComponents(strict, PostgresSupport.dataSource, clock, PostgresSupport.database)
+        }
+        assertTrue(exception.message!!.contains("broken.json"), exception.message)
+    }
+
+    @Test
+    fun `the adapters endpoint reports origin and file, and editing a source file after startup changes nothing`(
+        @TempDir dir: Path,
+    ) = runBlocking {
+        dir.resolve("acme.json").writeText(sourceFile("acme", enabled = true))
+        dir.resolve("beta.json").writeText(sourceFile("beta", domain = "beta.example", slug = "beta-example"))
+
+        CrawlerAppHarness(clock).use { appHarness ->
+            val components = buildComponents(sourcesConfig(dir), PostgresSupport.dataSource, clock, PostgresSupport.database)
+            val registry = assertNotNull(components.crawlerRegistry)
+            try {
+                CatalogApiClient(appHarness.crawlerConfig(), appHarness.clock).use { catalogClient ->
+                    val cfg = testCrawlerConfig()
+                    val runner = CrawlerRunner(
+                        config = cfg,
+                        registry = registry,
+                        fetcher = StubPageFetcher(),
+                        validator = SnapshotValidator(appHarness.clock),
+                        reconciler = Reconciler(catalogClient),
+                        clock = appHarness.clock,
+                        writerFactory = { DryRunWriter() },
+                    )
+                    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+                    val admin = appHarness.token(Role.ADMIN)
+                    try {
+                        crawlApp(appHarness, Harness(registry, runner, scope, cfg, admin, admin, admin, catalogClient)) {
+                            suspend fun adapters(): String =
+                                client.get("/api/v1/admin/crawl/adapters") { header(auth(admin).first, auth(admin).second) }
+                                    .bodyAsText()
+
+                            val before = adapters()
+                            val rows = Json.parseToJsonElement(before).jsonArray
+                                .associateBy { it.jsonObject.getValue("id").jsonPrimitive.content }
+
+                            val acme = rows.getValue("acme").jsonObject
+                            assertEquals("CONFIG", acme.getValue("origin").jsonPrimitive.content)
+                            assertEquals("acme.json", acme.getValue("file").jsonPrimitive.content)
+                            assertTrue(acme.getValue("enabled").jsonPrimitive.boolean)
+
+                            // The default "enabled": false means registered but not selected.
+                            val beta = rows.getValue("beta").jsonObject
+                            assertEquals("CONFIG", beta.getValue("origin").jsonPrimitive.content)
+                            assertTrue(!beta.getValue("enabled").jsonPrimitive.boolean)
+
+                            val compiled = rows.getValue("example-static").jsonObject
+                            assertEquals("COMPILED", compiled.getValue("origin").jsonPrimitive.content)
+                            assertNull(compiled["file"], "a compiled entry carries no source file name")
+
+                            // Restart-to-apply: the entry list a handler reads is the immutable one
+                            // buildComponents validated, so the file system moving under it is invisible.
+                            dir.resolve("acme.json").writeText(sourceFile("acme-renamed", enabled = false))
+                            dir.resolve("gamma.json").writeText(sourceFile("gamma", domain = "gamma.example", slug = "gamma-example", enabled = true))
+
+                            assertEquals(before, adapters())
+                            assertEquals(listOf("acme"), registry.select(emptyList()).map { it.id })
+                        }
+                    } finally {
+                        scope.cancel()
+                    }
+                }
+            } finally {
+                components.crawlerScope?.cancel()
+                components.crawlerCatalogClient?.close()
+                components.crawlerFetchHttpClient?.close()
+                components.fxHttpClient?.close()
+            }
+        }
+    }
+
+    private companion object {
+        /** A valid declarative source; `providerSlug` is the slug of `baseUrl`'s own domain. */
+        fun sourceFile(
+            id: String,
+            domain: String = "acme.example",
+            slug: String = "acme-example",
+            enabled: Boolean = false,
+        ): String = """
+            {
+              "schemaVersion": 1,
+              "id": "$id",
+              "providerSlug": "$slug",
+              "baseUrl": "https://$domain",
+              "pagePath": "/vps",
+              "enabled": $enabled,
+              "provider": {
+                "name": {"selector": "h1.name", "text": true},
+                "websiteUrl": {"selector": "a.site", "attr": "href"}
+              }
+            }
+        """.trimIndent()
     }
 }

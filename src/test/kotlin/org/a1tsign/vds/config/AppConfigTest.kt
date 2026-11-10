@@ -1,6 +1,10 @@
 package org.a1tsign.vds.config
 
+import org.junit.jupiter.api.io.TempDir
 import java.math.BigDecimal
+import java.nio.file.Path
+import kotlin.io.path.createDirectory
+import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -605,5 +609,147 @@ class AppConfigTest {
             crawlerAdapterConfig("example-static", env),
         )
         assertEquals(emptyMap(), crawlerAdapterConfig("unconfigured", env))
+    }
+
+    // --- discovery (vds-004.4) ---
+
+    /** Enabled discovery with everything it needs; [extra] breaks exactly one thing. */
+    private fun discoveryEnv(stateDir: Path, extra: Map<String, String> = emptyMap()): Map<String, String> =
+        minimalRequiredEnv() + mapOf(
+            "VDS_DISCOVERY_ENABLED" to "true",
+            "VDS_DISCOVERY_SEARCH_API_KEY" to DISCOVERY_API_KEY,
+            "VDS_DISCOVERY_STATE_FILE" to stateDir.resolve("discovery-state.json").toString(),
+        ) + extra
+
+    @Test
+    fun `discovery is disabled with every documented default when no VDS_DISCOVERY variable is set`() {
+        val discovery = loadConfig(minimalRequiredEnv()).discovery
+
+        assertFalse(discovery.enabled)
+        assertNull(discovery.sourcesDir, "unset by default, so the default configuration reads no source file at all")
+        assertFalse(discovery.sourcesStrict)
+        assertEquals(200, discovery.maxSources)
+        assertEquals(DiscoverySearchProvider.TAVILY, discovery.searchProvider)
+        assertNull(discovery.searchApiKey)
+        assertEquals("https://api.tavily.com", discovery.searchEndpoint)
+        assertEquals(10L, discovery.searchTimeoutSeconds)
+        assertEquals(524288L, discovery.maxResponseBytes)
+        assertEquals(
+            listOf("vps hosting", "cheap vps nvme", "аренда vps", "vds хостинг", "kvm vps hosting"),
+            discovery.queries,
+        )
+        assertEquals(1000L, discovery.queryDelayMs)
+        assertEquals(10, discovery.maxQueriesPerPass)
+        assertEquals(300, discovery.maxCreditsPerMonth)
+        assertEquals(10, discovery.maxResultsPerQuery)
+        assertEquals(20, discovery.maxNewCandidatesPerPass)
+        assertEquals(5000, discovery.maxKnownProviders)
+        assertEquals(48L, discovery.intervalHours)
+        assertEquals(15L, discovery.initialDelayMinutes)
+        assertEquals(24L, discovery.minPassIntervalHours)
+        assertEquals(10L, discovery.passTimeoutMinutes)
+        assertNull(discovery.stateFile)
+        assertTrue(discovery.domainDenylist.contains("reddit.com"), "the default denylist ships the false-positive class")
+        assertTrue(discovery.requiredKeywords.containsAll(listOf("vps", "vds", "virtual server", "виртуальный сервер")))
+    }
+
+    @Test
+    fun `every documented discovery violation fails startup while discovery is enabled, without echoing the key`(
+        @TempDir dir: Path,
+    ) {
+        val notADirectory = dir.resolve("a-file.json").also { it.writeText("{}") }
+        val cases = listOf(
+            Triple("an unknown search provider", mapOf("VDS_DISCOVERY_SEARCH_PROVIDER" to "bing"), "VDS_DISCOVERY_SEARCH_PROVIDER must be one of tavily, none"),
+            Triple("a missing API key", mapOf("VDS_DISCOVERY_SEARCH_API_KEY" to ""), "VDS_DISCOVERY_SEARCH_API_KEY is required"),
+            Triple("no query at all", mapOf("VDS_DISCOVERY_QUERIES" to " | "), "VDS_DISCOVERY_QUERIES must name at least one query"),
+            Triple("a state file in a directory that does not exist", mapOf("VDS_DISCOVERY_STATE_FILE" to dir.resolve("absent/state.json").toString()), "VDS_DISCOVERY_STATE_FILE must sit in an existing writable directory"),
+            Triple("no state file", mapOf("VDS_DISCOVERY_STATE_FILE" to ""), "VDS_DISCOVERY_STATE_FILE is required"),
+            Triple("a sources directory that is a file", mapOf("VDS_DISCOVERY_SOURCES_DIR" to notADirectory.toString()), "VDS_DISCOVERY_SOURCES_DIR must be a readable directory"),
+            Triple("a sources directory that does not exist", mapOf("VDS_DISCOVERY_SOURCES_DIR" to dir.resolve("absent").toString()), "VDS_DISCOVERY_SOURCES_DIR must be a readable directory"),
+            Triple("a relative search endpoint", mapOf("VDS_DISCOVERY_SEARCH_ENDPOINT" to "/search"), "VDS_DISCOVERY_SEARCH_ENDPOINT must be an absolute http or https URL"),
+            Triple("more results per query than the vendor allows", mapOf("VDS_DISCOVERY_MAX_RESULTS_PER_QUERY" to "99"), "VDS_DISCOVERY_MAX_RESULTS_PER_QUERY must be an integer between 1 and 20"),
+            Triple("zero results per query", mapOf("VDS_DISCOVERY_MAX_RESULTS_PER_QUERY" to "0"), "VDS_DISCOVERY_MAX_RESULTS_PER_QUERY must be an integer between 1 and 20"),
+            Triple("a non-positive interval", mapOf("VDS_DISCOVERY_INTERVAL_HOURS" to "0"), "VDS_DISCOVERY_INTERVAL_HOURS must be a positive integer"),
+            Triple("a non-positive credit cap", mapOf("VDS_DISCOVERY_MAX_CREDITS_PER_MONTH" to "-1"), "VDS_DISCOVERY_MAX_CREDITS_PER_MONTH must be a positive integer"),
+            Triple("a non-positive pass timeout", mapOf("VDS_DISCOVERY_PASS_TIMEOUT_MINUTES" to "0"), "VDS_DISCOVERY_PASS_TIMEOUT_MINUTES must be a positive integer"),
+        )
+
+        cases.forEach { (description, broken, expected) ->
+            val exception = assertFailsWith<ConfigurationException>(description) { loadConfig(discoveryEnv(dir, broken)) }
+
+            assertTrue(exception.message!!.contains(expected), "$description: ${exception.message}")
+            assertFalse(exception.message!!.contains(DISCOVERY_API_KEY), "$description leaked the API key")
+        }
+
+        // The 1..20 bound is inclusive at both ends -- the vendor's own range.
+        listOf(1, 20).forEach { limit ->
+            val env = discoveryEnv(dir, mapOf("VDS_DISCOVERY_MAX_RESULTS_PER_QUERY" to limit.toString()))
+            assertEquals(limit, loadConfig(env).discovery.maxResultsPerQuery)
+        }
+
+        // The valid baseline itself loads, and `none` needs no key at all.
+        assertTrue(loadConfig(discoveryEnv(dir)).discovery.enabled)
+        val none = loadConfig(
+            discoveryEnv(dir, mapOf("VDS_DISCOVERY_SEARCH_PROVIDER" to "none", "VDS_DISCOVERY_SEARCH_API_KEY" to "")),
+        ).discovery
+        assertEquals(DiscoverySearchProvider.NONE, none.searchProvider)
+        assertNull(none.searchApiKey)
+    }
+
+    @Test
+    fun `with discovery disabled no VDS_DISCOVERY value prevents startup`(@TempDir dir: Path) {
+        val env = minimalRequiredEnv() + mapOf(
+            "VDS_DISCOVERY_ENABLED" to "false",
+            "VDS_DISCOVERY_MAX_RESULTS_PER_QUERY" to "99",
+            "VDS_DISCOVERY_SEARCH_PROVIDER" to "bing",
+            "VDS_DISCOVERY_QUERIES" to "",
+            "VDS_DISCOVERY_INTERVAL_HOURS" to "0",
+            "VDS_DISCOVERY_SEARCH_ENDPOINT" to "not-a-url",
+            "VDS_DISCOVERY_STATE_FILE" to dir.resolve("absent/state.json").toString(),
+            "VDS_DISCOVERY_SOURCES_DIR" to dir.resolve("absent").toString(),
+        )
+
+        val discovery = loadConfig(env).discovery
+
+        assertFalse(discovery.enabled)
+        // Each broken value fell back to its default instead of taking the process down.
+        assertEquals(10, discovery.maxResultsPerQuery)
+        assertEquals(48L, discovery.intervalHours)
+
+        // A malformed VDS_DISCOVERY_ENABLED reads as false for the same reason, and the WARN is
+        // what tells the operator discovery did not come up.
+        assertFalse(loadConfig(minimalRequiredEnv() + ("VDS_DISCOVERY_ENABLED" to "yes")).discovery.enabled)
+    }
+
+    @Test
+    fun `discovery lists and queries parse from their documented separators, and the key never renders`(
+        @TempDir dir: Path,
+    ) {
+        val sourcesDir = dir.resolve("sources").createDirectory()
+        val config = loadConfig(
+            discoveryEnv(
+                dir,
+                mapOf(
+                    "VDS_DISCOVERY_SOURCES_DIR" to sourcesDir.toString(),
+                    "VDS_DISCOVERY_SOURCES_STRICT" to "true",
+                    "VDS_DISCOVERY_QUERIES" to " vps, hosting | \n cheap vps \n",
+                    "VDS_DISCOVERY_DOMAIN_DENYLIST" to "Reddit.com, forum.example\n|  ",
+                    "VDS_DISCOVERY_REQUIRED_KEYWORDS" to "VPS|виртуальный сервер",
+                ),
+            ),
+        )
+
+        // A query may contain a comma, so only a newline and '|' separate queries.
+        assertEquals(listOf("vps, hosting", "cheap vps"), config.discovery.queries)
+        assertEquals(listOf("reddit.com", "forum.example"), config.discovery.domainDenylist)
+        assertEquals(listOf("vps", "виртуальный сервер"), config.discovery.requiredKeywords)
+        assertEquals(sourcesDir.toString(), config.discovery.sourcesDir)
+        assertTrue(config.discovery.sourcesStrict)
+        assertEquals(DISCOVERY_API_KEY, config.discovery.searchApiKey?.reveal())
+        assertFalse(config.toString().contains(DISCOVERY_API_KEY))
+    }
+
+    private companion object {
+        const val DISCOVERY_API_KEY = "tvly-secret-key-never-logged"
     }
 }

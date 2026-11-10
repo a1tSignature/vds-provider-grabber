@@ -10,6 +10,14 @@ import kotlin.test.assertTrue
 private fun entry(id: String, providerSlug: String = id, includedByDefault: Boolean = true) =
     AdapterEntry(StubAdapter(id, providerSlug), includedByDefault)
 
+/** What `AppComponents` builds out of one loaded source file: the file's `enabled` is the default flag. */
+private fun configEntry(id: String, enabled: Boolean) = AdapterEntry(
+    adapter = StubAdapter(id, "$id-slug"),
+    includedByDefault = enabled,
+    origin = AdapterOrigin.CONFIG,
+    file = "$id.json",
+)
+
 class AdapterRegistryTest {
 
     @Test
@@ -67,6 +75,34 @@ class AdapterRegistryTest {
         )
 
         assertEquals(listOf("b", "a"), registry.select(listOf("b", "a")).map { it.id })
+    }
+
+    @Test
+    fun `an empty selection takes the config sources that enabled themselves and no compiled adapter`() {
+        val registry = AdapterRegistry.production(listOf(configEntry("on", enabled = true), configEntry("off", enabled = false)))
+
+        assertEquals(listOf("on"), registry.select(emptyList()).map { it.id })
+        // Naming an id is the operator's deliberate act: it selects a config source whose own file
+        // says "enabled": false, and an unknown id still fails fast.
+        assertEquals(listOf("off", "on"), registry.select(listOf("off", "on")).map { it.id })
+        assertFailsWith<ConfigurationException> { registry.select(listOf("nope")) }
+
+        val config = registry.entries.single { it.adapter.id == "on" }
+        assertEquals(AdapterOrigin.CONFIG, config.origin)
+        assertEquals("on.json", config.file)
+        val compiled = registry.entries.filter { it.origin == AdapterOrigin.COMPILED }
+        assertTrue(compiled.isNotEmpty() && compiled.none { it.includedByDefault }, "no compiled reference adapter is a default")
+        assertTrue(compiled.all { it.file == null })
+    }
+
+    @Test
+    fun `an entry whose origin and source file name disagree is a programming error`() {
+        assertFailsWith<IllegalArgumentException> {
+            AdapterRegistry(listOf(AdapterEntry(StubAdapter("a", "a"), false, AdapterOrigin.CONFIG, file = null)))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            AdapterRegistry(listOf(AdapterEntry(StubAdapter("a", "a"), false, AdapterOrigin.COMPILED, file = "a.json")))
+        }
     }
 
     @Test

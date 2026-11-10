@@ -29,13 +29,11 @@ import java.util.concurrent.atomic.AtomicReference
 private val logger = LoggerFactory.getLogger("org.a1tsign.vds.api.routes.DiscoveryRoutes")
 
 /**
- * ADMIN-only endpoints over the vds-004 discovery pass: trigger one, inspect the in-memory pass
- * history, and see which declarative sources the last startup loaded.
+ * ADMIN-only discovery endpoints: trigger a pass, read the in-memory pass history, list the
+ * declarative sources loaded at startup.
  *
- * [runner]/[scope] are `null` together, exactly while discovery is not constructed
- * (`VDS_DISCOVERY_ENABLED=false`): **every** handler below then answers `503` through the existing
- * envelope -- `GET /sources` included, so the group is consistently unavailable rather than half
- * `503` and half an empty `200` (the `CrawlerRoutes` precedent).
+ * [runner] and [scope] are `null` when `VDS_DISCOVERY_ENABLED=false`; every endpoint here, including
+ * `GET /sources`, then answers `503`.
  */
 fun Route.discoveryRoutes(
     runner: DiscoveryRunner?,
@@ -57,8 +55,7 @@ fun Route.discoveryRoutes(
         val passId = activeRunner.tryReserve(
             PassRequest(dryRun = req.dryRun ?: false, maxQueries = req.maxQueries, force = req.force ?: false),
         ) ?: throw ConflictException("A crawl run or a discovery pass is already in progress")
-        // The application-owned scope Application.kt's shutdownGracefully cancels, never GlobalScope;
-        // the job is published so shutdown can join it with a bounded grace period.
+        // The application scope is cancelled on shutdown; the job is published so shutdown can join it.
         val job = activeScope.launch {
             try {
                 activeRunner.runReserved(passId)

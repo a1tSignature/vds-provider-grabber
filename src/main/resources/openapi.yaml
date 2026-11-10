@@ -1019,13 +1019,17 @@ paths:
       description: >-
         Required role: ADMIN. Starts a pass asynchronously and returns immediately; the pass is
         already visible as RUNNING via GET /api/v1/admin/discovery/passes/{passId}. 409 if a
-        discovery pass or a crawl run holds the shared run slot. 503 if discovery is disabled.
-        A dry run still searches (and spends credits) but writes nothing.
+        discovery pass or a crawl run holds the shared run slot. 503 if discovery is disabled, or
+        enabled while the crawler (VDS_CRAWLER_ENABLED) is not. A dry run still searches (and
+        spends credits) but writes nothing. The pass stops searching once
+        VDS_DISCOVERY_MAX_NEW_CANDIDATES_PER_PASS candidates are found; an unresolved 429 from the
+        search vendor fails that query only.
       requestBody:
         required: false
         content:
           application/json:
             schema: { $ref: "#/components/schemas/DiscoveryRunTriggerRequest" }
+            example: { dryRun: true, maxQueries: 1 }
       responses:
         "202":
           description: Accepted; the pass has started.
@@ -1091,7 +1095,7 @@ paths:
       description: >-
         Required role: ADMIN. The startup snapshot of VDS_DISCOVERY_SOURCES_DIR: every loaded
         source and every file that failed to load, with its errors (restart-to-apply). 503 if
-        discovery is disabled.
+        discovery is disabled, or enabled while the crawler is not.
       responses:
         "200":
           description: The startup load report.
@@ -1742,11 +1746,20 @@ components:
       type: object
       required: [slug, name, websiteUrl, query, resultUrl]
       properties:
-        slug: { type: string }
+        slug:
+          type: string
+          description: The provider slug the candidate would get, derived from its normalized domain.
+          example: example-host-com
         name: { type: string }
-        websiteUrl: { type: string }
-        query: { type: string }
-        resultUrl: { type: string }
+        websiteUrl:
+          type: string
+          example: https://example-host.com/
+        query:
+          type: string
+          description: The configured search query that returned this hit.
+        resultUrl:
+          type: string
+          description: The search hit's own URL, at most 2048 characters.
 
     DiscoveryPassSummaryDto:
       type: object
@@ -1774,7 +1787,9 @@ components:
         status: { type: string, enum: [RUNNING, COMPLETED, CANCELLED] }
         dryRun: { type: boolean }
         queriesIssued: { type: integer }
-        queriesFailed: { type: integer }
+        queriesFailed:
+          type: integer
+          description: Queries that ended in a search failure (rate limit, timeout, malformed answer).
         creditsSpent: { type: integer }
         creditsRemainingThisMonth:
           type: integer
@@ -1786,11 +1801,22 @@ components:
         resultsRejected:
           type: object
           additionalProperties: { type: integer }
-          description: Keyed by DENYLIST, KEYWORD, MALFORMED_URL, SLUG_TOO_LONG, ALREADY_KNOWN.
-        knownProviders: { type: integer }
+          description: >-
+            Keyed by DENYLIST, KEYWORD, MALFORMED_URL, SLUG_TOO_LONG, ALREADY_KNOWN; every key is
+            present. MALFORMED_URL also counts a hit whose URL is longer than 2048 characters.
+          example: { DENYLIST: 12, KEYWORD: 3, MALFORMED_URL: 0, SLUG_TOO_LONG: 0, ALREADY_KNOWN: 7 }
+        knownProviders:
+          type: integer
+          description: Providers already in the catalog when the pass started, in every systemStatus.
         candidatesCreated: { type: integer }
-        candidatesDeferred: { type: integer }
-        candidatesFailed: { type: integer }
+        candidatesDeferred:
+          type: integer
+          description: >-
+            Hits that passed every filter after the per-pass candidate cap was reached. A lower
+            bound: the pass stops searching at the cap, so later queries are never issued.
+        candidatesFailed:
+          type: integer
+          description: Candidates whose create request the catalog refused; the pass went on.
         plannedCandidates:
           type: array
           items: { $ref: "#/components/schemas/PlannedCandidateDto" }

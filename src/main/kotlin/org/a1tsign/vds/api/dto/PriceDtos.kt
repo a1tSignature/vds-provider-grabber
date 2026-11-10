@@ -6,11 +6,9 @@ import org.a1tsign.vds.domain.TariffPrice
 import java.time.Instant
 
 /**
- * `amount` is a decimal **string**, validated by `Validation.validateAmount` (not the contextual
- * `BigDecimal` serializer) so an out-of-range value reports a field-level `400` instead of a bare
- * deserialization failure. `effectiveFrom` follows the same pattern as
- * `LegalInfoWriteRequest.verifiedAt`: a plain `@Contextual Instant?`, enforced by
- * [org.a1tsign.vds.api.InstantSerializer] itself (must carry an explicit offset).
+ * `amount` is a decimal string checked by `Validation.validateAmount`, not by the `BigDecimal`
+ * serializer, so an out-of-range value is a field-level `400`. `effectiveFrom` goes through
+ * [org.a1tsign.vds.api.InstantSerializer], which requires an explicit offset.
  */
 @Serializable
 data class PriceWriteRequest(
@@ -27,11 +25,7 @@ data class PriceCloseRequest(
     @Contextual val effectiveTo: Instant? = null,
 )
 
-/**
- * [warnings] is always encoded (`ApiJson.encodeDefaults = true` serializes a field even when it
- * equals its default), so a client always sees either `"warnings":[]` or `"warnings":["NO_FX_RATE"]`
- * -- never an absent key, unlike a nullable field under `explicitNulls = false`.
- */
+/** [warnings] is always present (`[]` when empty), because `ApiJson` encodes defaults. */
 @Serializable
 data class PriceDto(
     val id: Long,

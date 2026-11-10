@@ -22,21 +22,15 @@ const val MONEY_SCALE: Int = 4
 /** Integer digits a money value may have -- the other half of `NUMERIC(12, 4)`. */
 const val MONEY_MAX_INTEGER_DIGITS: Int = 8
 
-/**
- * Plain decimal notation: optional sign, digits, optional `.digits`. No exponent (`1e3`), no
- * leading `+`, no grouping separator, no whitespace -- so what the client sent and what the
- * database will store are the same number read the same way by every client.
- */
+/** Plain decimal notation: optional `-`, digits, optional `.digits`. No exponent, `+`, grouping or whitespace. */
 private val PLAIN_DECIMAL_PATTERN = Regex("""^-?\d+(\.\d+)?$""")
 
 /**
- * [BigDecimal] on the wire is **always** a JSON string in plain decimal notation, in requests and
- * responses alike, so no money value ever passes through a `Double` (`0.1 + 0.2`) or reaches a
- * client as `9.2E-1`.
+ * [BigDecimal] is a JSON string in plain notation in requests and responses, so money never passes
+ * through a `Double` or reaches a client as `9.2E-1`.
  *
- * `deserialize` calls [Decoder.decodeString], which on the shared [ApiJson] (`isLenient = false`)
- * refuses a JSON *number* token -- that is what makes `{"amount": 10}` a `400` instead of a
- * silently accepted double.
+ * With `isLenient = false` on [ApiJson], [Decoder.decodeString] rejects a JSON number token, so
+ * `{"amount": 10}` is a `400`.
  */
 object BigDecimalSerializer : KSerializer<BigDecimal> {
     override val descriptor: SerialDescriptor =
@@ -54,13 +48,10 @@ object BigDecimalSerializer : KSerializer<BigDecimal> {
 }
 
 /**
- * [Instant] on the wire is **always** UTC with a `Z` suffix and whole-second precision
- * (`2026-10-28T10:00:00Z`): the output has one shape, so a client never has to cope with a
- * sometimes-present fractional part.
+ * [Instant] is written as UTC with `Z` and whole seconds: `2026-10-28T10:00:00Z`.
  *
- * Input must be ISO-8601 **with an explicit offset** ([DateTimeFormatter.ISO_OFFSET_DATE_TIME]).
- * A timestamp without one (`2026-10-28T12:00:00`) is rejected rather than guessed at: guessing
- * UTC would silently shift a client's local-time input by its own offset.
+ * Input must be ISO-8601 with an explicit offset. A timestamp without one is rejected: assuming UTC
+ * would shift a client's local time by its offset.
  */
 object InstantSerializer : KSerializer<Instant> {
     override val descriptor: SerialDescriptor =
@@ -75,8 +66,7 @@ object InstantSerializer : KSerializer<Instant> {
         return try {
             OffsetDateTime.parse(raw, DateTimeFormatter.ISO_OFFSET_DATE_TIME).toInstant()
         } catch (e: DateTimeParseException) {
-            // The cause is kept so the WARN that ApiError's BadRequestException branch logs says
-            // which part of the timestamp was unparseable; the client still gets a fixed message.
+            // Keep the cause: the server-side WARN shows what failed to parse; the client gets a fixed message.
             throw SerializationException(
                 "Expected an ISO-8601 timestamp with an explicit offset, e.g. 2026-10-28T12:00:00Z",
                 e,
@@ -86,17 +76,14 @@ object InstantSerializer : KSerializer<Instant> {
 }
 
 /**
- * The one and only `Json` instance in the codebase -- `ContentNegotiation` is configured with it
- * and nothing else may build another, or two endpoints would disagree about the wire format.
+ * The only `Json` instance, used by `ContentNegotiation`. A second one would let endpoints disagree
+ * on the wire format.
  *
- * - `ignoreUnknownKeys = false`: a typo in a request body is a `400`, not a silently dropped field.
- * - `encodeDefaults = true`: a response field is never missing just because it happens to equal
- *   its default, so a client can rely on every documented key being present.
- * - `explicitNulls = false`: a null field is **omitted** rather than sent as `null`. That is what
- *   makes `details` absent (not `"details":null`) on a non-validation error, and it is the rule
- *   every later DTO must be written against: optional means absent.
- * - `isLenient = false`: an unquoted/number token where a string is required is a `400` -- the
- *   guard that keeps `Double` out of the money path (see [BigDecimalSerializer]).
+ * - `ignoreUnknownKeys = false`: a typo in a request field is a `400`, not a silently dropped field.
+ * - `encodeDefaults = true`: every documented response key is present, even when it equals its default.
+ * - `explicitNulls = false`: a null field is omitted, not sent as `null`. In DTOs, optional means absent.
+ * - `isLenient = false`: a number where a string is required is a `400`, which keeps `Double` out
+ *   of money values ([BigDecimalSerializer]).
  */
 val ApiJson: Json = Json {
     ignoreUnknownKeys = false
@@ -125,8 +112,8 @@ sealed interface AmountParse {
 }
 
 /**
- * The money rules of `NUMERIC(12, 4)`, applied to the raw string so the caller can report *which*
- * field was wrong -- `Validation.validateAmount` is the wrapper that records it.
+ * Applies the `NUMERIC(12, 4)` money rules to a raw string. [Validation.validateAmount] attaches the
+ * field name to the failure.
  */
 fun parseAmount(raw: String): AmountParse {
     val value = parsePlainDecimal(raw)

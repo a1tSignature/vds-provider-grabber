@@ -8,15 +8,14 @@ const val URL_MAX_LENGTH: Int = 2048
 
 private val SLUG_PATTERN = Regex("^[a-z0-9-]+$")
 
-// Format only, deliberately: the same `^[A-Z]{2}$` / `^[A-Z]{3}$` the schema's CHECK constraints
-// use (ck_location_country_code, ck_tariff_price_currency). A validator stricter than the database
-// would reject rows the database accepts and vice versa.
+// Same patterns as the CHECK constraints ck_location_country_code and ck_tariff_price_currency:
+// a stricter or looser validator would disagree with the database.
 private val COUNTRY_CODE_PATTERN = Regex("^[A-Z]{2}$")
 private val CURRENCY_PATTERN = Regex("^[A-Z]{3}$")
 
 /**
- * Accumulates field-level failures so one request body reports **all** of them at once instead of
- * the first. Usage: validate every field, then [throwIfInvalid], then use the returned values:
+ * Collects field failures so one response reports all of them, not just the first. Validate every
+ * field, call [throwIfInvalid], then use the returned values:
  *
  * ```
  * val validation = Validation()
@@ -132,10 +131,8 @@ class Validation {
     }
 
     /**
-     * Inclusive integer range check -- used both for plain positivity (`minimum = 1`) and for
-     * narrowing a wire `Int` into a `Short` column (`maximum = Short.MAX_VALUE.toInt()`) *before*
-     * the narrowing happens, so an out-of-range value is a `400` naming the field rather than a
-     * silently wrapped value that a `CHECK` constraint would later reject as a `500`.
+     * Inclusive range check. Call it before narrowing a wire `Int` into a `Short` column, so an
+     * out-of-range value is a `400` naming the field instead of a wrapped value and a `500`.
      */
     fun validateIntRange(field: String, value: Int, minimum: Int, maximum: Int): Int? =
         if (value < minimum || value > maximum) {
@@ -145,11 +142,7 @@ class Validation {
             value
         }
 
-    /**
-     * `[0, 1]` plain-decimal string -- the same rule `config/AppConfig.kt`'s private `ratio()`
-     * applies to `VDS_CRAWLER_MAX_OUT_OF_STOCK_RATIO`, reused here (additively, vds-002.7) for the
-     * admin crawl trigger's per-run override. `BigDecimal`, never `Double`, end to end.
-     */
+    /** A plain-decimal string in `[0, 1]`, parsed as `BigDecimal`. */
     fun validateRatio(field: String, value: String): BigDecimal? {
         val parsed = parsePlainDecimal(value)
         if (parsed == null || parsed.signum() < 0 || parsed > BigDecimal.ONE) {

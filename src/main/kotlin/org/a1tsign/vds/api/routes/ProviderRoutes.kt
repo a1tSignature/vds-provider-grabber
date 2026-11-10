@@ -26,7 +26,7 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
         val req = call.receive<ProviderWriteRequest>()
         val v = Validation()
         val data = validateProvider(req, v)
-        // Optional and defaulted to CONFIGURED: a vds-001 create body stays valid and visible.
+        // Optional, defaults to CONFIGURED, so create requests without it stay valid and visible.
         val systemStatus = req.systemStatus?.let { v.enumValue("systemStatus", it, SystemStatus.entries.toTypedArray()) }
         v.throwIfInvalid()
         val result = service.create(
@@ -96,8 +96,6 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
         call.respond(service.putPaymentMethods(id, methods).map { it.toDto() })
     }
 
-    // ---- Read endpoints (task vds-001.15) -- any authenticated role (VIEWER included) ----
-
     get("/api/v1/providers") {
         call.requireRole(Role.VIEWER)
         val page = call.pageRequest(setOf("id", "name", "slug", "status", "createdAt", "minMonthlyPriceUsd"))
@@ -109,8 +107,8 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
         val paymentMethods = query.getAll("paymentMethod").orEmpty()
             .mapNotNull { v.enumValue("paymentMethod", it, PaymentMethod.entries.toTypedArray()) }
         val hasActiveTariffs = parseOptionalBoolean(v, "hasActiveTariffs", query["hasActiveTariffs"])
-        // Repeatable, like paymentMethod; **absent means CONFIGURED only**, so a discovered
-        // candidate never appears in the default catalog listing.
+        // Repeatable, like paymentMethod. Absent means CONFIGURED only, so discovered candidates
+        // stay out of the default listing.
         val requestedSystemStatuses = query.getAll("systemStatus").orEmpty()
         val systemStatuses = requestedSystemStatuses
             .mapNotNull { v.enumValue("systemStatus", it, SystemStatus.entries.toTypedArray()) }

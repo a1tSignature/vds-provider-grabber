@@ -101,8 +101,6 @@ fun Route.tariffRoutes(service: TariffService, queryService: CatalogQueryService
         call.respond(HttpStatusCode.OK, result.sorted())
     }
 
-    // ---- Read endpoints (task vds-001.16) -- any authenticated role (VIEWER included) ----
-
     get("/api/v1/tariffs") {
         call.requireRole(Role.VIEWER)
         val page = call.pageRequest(setOf("id", "priceUsd", "ramMb", "vcpuCount", "diskGb", "name"))
@@ -210,11 +208,7 @@ private fun parseOptionalBoolean(v: Validation, field: String, raw: String?): Bo
 private fun parseQueryInt(v: Validation, field: String, raw: String): Int? =
     raw.toIntOrNull() ?: run { v.reject(field, "must be an integer"); null }
 
-/**
- * The same strict rule [org.a1tsign.vds.api.InstantSerializer] enforces on a request body --
- * `ISO_OFFSET_DATE_TIME` only, an offset-less timestamp is rejected -- applied to a query
- * parameter, which never goes through that serializer itself.
- */
+/** The [org.a1tsign.vds.api.InstantSerializer] rule (explicit offset required), applied to a query parameter. */
 private fun parseOffsetInstant(v: Validation, field: String, raw: String?): Instant? {
     if (raw == null) return null
     return try {

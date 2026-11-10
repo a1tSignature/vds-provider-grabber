@@ -7,9 +7,10 @@
 
 ## Чего нет в этом инкременте
 
-- **Нет краулера.** Ничего в этом репозитории не собирает страницы с ценами провайдеров
-  автоматически; каждая строка попадает через write API (или, для локальной разработки, через
-  `dev-seed.sql` — см. ниже).
+- **Краулер и discovery по умолчанию выключены.** Пока не заданы `VDS_CRAWLER_ENABLED=true` и
+  `VDS_DISCOVERY_ENABLED=true`, сервис не обращается ни к одному чужому сайту и ни к одному
+  поисковому API: каждая строка попадает через write API (или, для локальной разработки, через
+  `dev-seed.sql`). Как их включить — в разделе 7.
 - **Нет фронтенда.** Это только HTTP JSON API.
 - **Нет анонимного доступа.** Каждый маршрут `/api/v1/*`, кроме `POST /api/v1/auth/login`,
   требует bearer-токен; публичного/неавторизованного пути для чтения не существует.
@@ -68,6 +69,8 @@ fail-fast в `config/AppConfig.kt`: отсутствующая или некор
 
 \* `VDS_BOOTSTRAP_ADMIN_USERNAME`/`VDS_BOOTSTRAP_ADMIN_PASSWORD` — это пара **«всё или ничего»**:
 задать только одну из них — ошибка конфигурации.
+
+Переменные краулера (`VDS_CRAWLER_*`) и discovery (`VDS_DISCOVERY_*`) описаны в разделе 7.
 
 ## 3. Сборка и запуск fat jar
 
@@ -153,14 +156,280 @@ docker compose exec -T postgres psql -U vds -d vds < src/main/resources/db/dev-s
 и завершается с ненулевым кодом, если заданный в скрипте бюджет превышен. Всегда удаляет
 запущенный им контейнер, в том числе при неудаче.
 
+Профиль `./scripts/measure-footprint.sh --crawler` дополнительно измеряет сервис с включённым
+краулером, а `./scripts/measure-footprint.sh --discovery` — с включённым discovery: простой, пик
+во время прохода, пик во время обхода декларативного источника и пик при их совпадении. Ни один
+профиль не обращается к настоящему поисковому API и не тратит кредиты.
+
+## 7. Discovery: поиск новых провайдеров и декларативные источники
+
+Discovery состоит из двух независимых частей:
+
+- **Проход discovery** ищет в интернете сайты, похожие на VPS-провайдеров, и заводит для каждого
+  скрытую запись-кандидат. Страницы кандидата он не открывает и тарифы не собирает.
+- **Декларативный источник** — JSON-файл, который описывает, как собрать данные одного
+  провайдера с одной страницы. Его обходит краулер, как и скомпилированный адаптер.
+
+### 7.1. Что нужно от краулера
+
+Discovery работает поверх краулера. При `VDS_DISCOVERY_ENABLED=true` и
+`VDS_CRAWLER_ENABLED=false` сервис стартует, пишет `WARN`, не выполняет ни одного прохода, а
+эндпоинты discovery отвечают `503`.
+
+Краулер пишет в каталог через тот же HTTP API под отдельной учётной записью. Создайте её заранее
+через `POST /api/v1/admin/users` с ролью `EDITOR`.
+
+| Переменная | Обязательна | По умолчанию | Валидация |
+|---|---|---|---|
+| `VDS_CRAWLER_ENABLED` | нет | `false` | `true`/`false` |
+| `VDS_CRAWLER_USERNAME` | при включённом краулере | — | не пустая |
+| `VDS_CRAWLER_PASSWORD` | при включённом краулере | — | не пустая |
+| `VDS_CRAWLER_API_BASE_URL` | нет | `http://127.0.0.1:8080` | абсолютный URL `http`/`https`; должен указывать на этот же сервис |
+| `VDS_CRAWLER_ADAPTERS` | нет | *(пусто)* | id через запятую; неизвестный id — ошибка старта. Пустое значение выбирает все декларативные источники с `"enabled": true` |
+| `VDS_CRAWLER_INTERVAL_HOURS` | нет | `24` | положительное целое число |
+| `VDS_CRAWLER_INITIAL_DELAY_MINUTES` | нет | `10` | положительное целое число |
+| `VDS_CRAWLER_HOST_DELAY_MS` | нет | `2000` | положительное целое число; пауза между запросами к одному хосту |
+| `VDS_CRAWLER_RESPECT_ROBOTS` | нет | `true` | `true`/`false` |
+| `VDS_CRAWLER_CONTACT_URL` | нет | *(нет)* | абсолютный URL; попадает в `User-Agent`, чтобы владелец сайта мог с вами связаться |
+| `VDS_CRAWLER_DRY_RUN_DEFAULT` | нет | `false` | `true`/`false` |
+
+Остальные переменные `VDS_CRAWLER_*` (таймауты, лимит размера страницы, свой `User-Agent`, порог
+«нет в наличии») имеют рабочие значения по умолчанию; они перечислены в `config/AppConfig.kt`.
+Эндпоинты `/api/v1/admin/crawl/**` описаны в `openapi.yaml`.
+
+### 7.2. Переменные discovery
+
+Пока `VDS_DISCOVERY_ENABLED=false`, ни одно значение `VDS_DISCOVERY_*` не может помешать старту:
+некорректное значение даёт строку `WARN` и заменяется значением по умолчанию.
+
+| Переменная | Обязательна | По умолчанию | Валидация |
+|---|---|---|---|
+| `VDS_DISCOVERY_ENABLED` | нет | `false` | `true`/`false` |
+| `VDS_DISCOVERY_STATE_FILE` | при включённом discovery | — | путь к файлу учёта кредитов; каталог должен существовать и быть доступен на запись |
+| `VDS_DISCOVERY_SEARCH_PROVIDER` | нет | `tavily` | `tavily` или `none` (`none` — проходы завершаются сразу, без поиска) |
+| `VDS_DISCOVERY_SEARCH_API_KEY` | при включённом discovery, если провайдер не `none` | — | не пустая; никогда не попадает в логи и ответы API |
+| `VDS_DISCOVERY_SEARCH_ENDPOINT` | нет | `https://api.tavily.com` | абсолютный URL `http`/`https` |
+| `VDS_DISCOVERY_SEARCH_TIMEOUT_SECONDS` | нет | `10` | положительное целое число |
+| `VDS_DISCOVERY_MAX_RESPONSE_BYTES` | нет | `524288` | положительное целое число |
+| `VDS_DISCOVERY_QUERIES` | нет | `vps hosting \| cheap vps nvme \| аренда vps \| vds хостинг \| kvm vps hosting` | запросы через `\|` или перевод строки (запятая не разделитель); хотя бы один |
+| `VDS_DISCOVERY_QUERY_DELAY_MS` | нет | `1000` | положительное целое число; пауза между запросами |
+| `VDS_DISCOVERY_MAX_QUERIES_PER_PASS` | нет | `10` | положительное целое число |
+| `VDS_DISCOVERY_MAX_CREDITS_PER_MONTH` | нет | `300` | положительное целое число; локальный месячный лимит |
+| `VDS_DISCOVERY_MAX_RESULTS_PER_QUERY` | нет | `10` | целое число от 1 до 20 |
+| `VDS_DISCOVERY_MAX_NEW_CANDIDATES_PER_PASS` | нет | `20` | положительное целое число |
+| `VDS_DISCOVERY_MAX_KNOWN_PROVIDERS` | нет | `5000` | положительное целое число; если в каталоге больше, проход завершается до первого запроса |
+| `VDS_DISCOVERY_DOMAIN_DENYLIST_FILE` | нет | *(встроенный список)* | путь к файлу со списком доменов, см. 7.3 |
+| `VDS_DISCOVERY_DOMAIN_DENYLIST` | нет | *(встроенный список)* | домены через запятую, `\|` или перевод строки; нельзя задавать вместе с файлом |
+| `VDS_DISCOVERY_REQUIRED_KEYWORDS` | нет | `vps`, `vds`, `virtual server`, `virtual private server`, `vps hosting`, `виртуальный сервер`, `виртуальный выделенный сервер` | через запятую, `\|` или перевод строки; результат поиска должен содержать хотя бы одно слово в заголовке или сниппете |
+| `VDS_DISCOVERY_INTERVAL_HOURS` | нет | `48` | положительное целое число |
+| `VDS_DISCOVERY_INITIAL_DELAY_MINUTES` | нет | `15` | положительное целое число |
+| `VDS_DISCOVERY_MIN_PASS_INTERVAL_HOURS` | нет | `24` | положительное целое число; чаще проход не запустится без `force` |
+| `VDS_DISCOVERY_PASS_TIMEOUT_MINUTES` | нет | `10` | положительное целое число |
+| `VDS_DISCOVERY_SOURCES_DIR` | нет | *(нет)* | каталог с файлами источников, см. 7.5; при включённом discovery должен существовать |
+| `VDS_DISCOVERY_SOURCES_STRICT` | нет | `false` | `true` — любой негодный файл источника останавливает старт (действует только при включённом discovery) |
+| `VDS_DISCOVERY_MAX_SOURCES` | нет | `200` | положительное целое число |
+
+### 7.3. Список запрещённых доменов (denylist)
+
+Поиск по словам вроде «vps hosting» в основном возвращает не провайдеров, а обзорные сайты,
+форумы, маркетплейсы, соцсети и документацию. Denylist отсекает их до создания кандидата.
+
+- Встроенный список лежит в `src/main/resources/discovery/domain-denylist.txt` и входит в jar.
+- Свой список задаётся файлом: `VDS_DISCOVERY_DOMAIN_DENYLIST_FILE=/etc/vds/denylist.txt`.
+  Формат — один домен на строку, `#` начинает комментарий, пустые строки пропускаются, размер
+  до 64 КБ.
+- **Ваш файл заменяет встроенный список, а не дополняет его.** Скопируйте встроенный файл и
+  правьте копию.
+- Файл читается один раз при старте: после правки перезапустите сервис. Отсутствующий или
+  слишком большой файл при включённом discovery — ошибка старта.
+- Запись блокирует и все свои поддомены: `reddit.com` блокирует `old.reddit.com`. Регистр,
+  `www.` и точка в конце роли не играют. Запись, которая не является доменом, пропускается со
+  строкой `WARN`.
+- Пустой файл или пустое значение `VDS_DISCOVERY_DOMAIN_DENYLIST` отключают denylist совсем.
+
+### 7.4. Аккаунт Tavily и кредиты
+
+Это правила, а не рекомендации: только они гарантируют, что поиск остаётся бесплатным.
+
+- Аккаунт на **бесплатном тарифе, без привязанного способа оплаты и без pay-as-you-go**. Только
+  тогда исчерпанный лимит означает отказ в поиске, а не списание денег.
+- Бесплатный тариф даёт **1000 кредитов в месяц**; один поиск уровня `basic` стоит **1 кредит**.
+  Сервис использует только `basic`.
+- Локальный лимит `VDS_DISCOVERY_MAX_CREDITS_PER_MONTH` (по умолчанию 300) ведётся в файле
+  `VDS_DISCOVERY_STATE_FILE`. Кредит записывается до запроса, а не после. Если файл не читается,
+  поиск не выполняется вовсе.
+- Перед проходом сервис сверяется с остатком, который сообщает сам Tavily, и берёт более
+  строгую из двух цифр.
+- Ответ `429` считается сбоем одного запроса: проход переходит к следующему. Исчерпанная квота
+  или отвергнутый ключ завершают проход.
+
+### 7.5. Декларативный источник
+
+Формат файла — на проверенном примере. Он лежит в
+`src/test/resources/crawler/example-static-source.json`, и тесты подтверждают, что он даёт тот же
+результат, что и скомпилированный адаптер `example-static`:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "example-static-declarative",
+  "providerSlug": "example-static",
+  "baseUrl": "https://example-static.test",
+  "pagePath": "/vps",
+  "enabled": true,
+  "sourceKind": "HTML",
+  "acknowledgeSlugMismatch": true,
+  "tariffListComplete": true,
+  "provider": {
+    "name": {"selector": "h1.provider-name", "text": true},
+    "websiteUrl": {"selector": "a.provider-site", "attr": "href"},
+    "status": "ACTIVE"
+  },
+  "legalInfo": {
+    "rootSelector": "section.company",
+    "legalEntityName": {"selector": "dd.legal-entity", "text": true},
+    "registrationCountry": {"selector": "dd.legal-country", "text": true},
+    "registrationNumber": {"selector": "dd.legal-registration", "text": true},
+    "legalAddress": {"selector": "dd.legal-address", "text": true}
+  },
+  "paymentMethods": {
+    "rootSelector": "section.payments",
+    "itemSelector": "li.payment-method",
+    "method": {
+      "selector": "li.payment-method",
+      "attr": "data-method",
+      "values": {
+        "VISA_MASTERCARD": "VISA_MASTERCARD",
+        "BANK_WIRE": "BANK_WIRE"
+      }
+    }
+  },
+  "locations": {
+    "rootSelector": "table.locations-table",
+    "rowSelector": "tr.location",
+    "countryCode": {"selector": "td.country", "text": true},
+    "city": {"selector": "td.city", "text": true},
+    "datacenterName": {"selector": "td.datacenter", "text": true},
+    "region": {"selector": "td.region", "text": true}
+  },
+  "tariffs": {
+    "rootSelector": "table.plans-table",
+    "rowSelector": "tr.plan",
+    "externalId": {"selector": "tr.plan", "attr": "data-plan-id"},
+    "name": {"selector": "td.plan-name", "text": true},
+    "vcpuCount": {"selector": "td.vcpu", "text": true},
+    "ramMb": {"selector": "td.ram-mb", "text": true},
+    "diskGb": {"selector": "td.disk-gb", "text": true},
+    "ipv4Count": {"selector": "td.ipv4", "text": true},
+    "diskType": {
+      "selector": "tr.plan",
+      "attr": "data-disk-type",
+      "values": {"NVMe SSD": "NVME", "NVME": "NVME", "SSD": "SSD", "HDD": "HDD"}
+    },
+    "virtualization": {
+      "selector": "tr.plan",
+      "attr": "data-virtualization",
+      "values": {"KVM": "KVM", "OpenVZ": "OPENVZ"}
+    },
+    "locationKeys": "ALL_LOCATIONS",
+    "prices": [
+      {
+        "billingPeriod": "MONTHLY",
+        "selector": "td.price-monthly",
+        "text": true,
+        "grouping": ",",
+        "decimal": ".",
+        "currency": {"bySymbol": {"$": "USD", "€": "EUR"}}
+      },
+      {
+        "billingPeriod": "ANNUAL",
+        "selector": "td.price-annual",
+        "text": true,
+        "grouping": ",",
+        "decimal": ".",
+        "currency": {"bySymbol": {"$": "USD", "€": "EUR"}}
+      }
+    ]
+  }
+}
+```
+
+Как добавить и включить источник:
+
+1. Положите файл `*.json` в каталог `VDS_DISCOVERY_SOURCES_DIR`. Ограничения: до 64 КБ на файл,
+   до `VDS_DISCOVERY_MAX_SOURCES` файлов, обычный файл (символическая ссылка отвергается),
+   CSS-селекторы без обратной косой черты (вместо `.md\:flex` пишите `[class*=md:flex]`).
+2. Поставьте `"enabled": true` **в самом файле**.
+3. **Перезапустите сервис.** Файлы читаются только при старте; горячей перезагрузки нет, и это
+   сделано намеренно.
+4. Проверьте результат: `GET /api/v1/admin/discovery/sources` показывает загруженные источники
+   и файлы, которые загрузить не удалось, с текстом ошибки. Другого способа убедиться, что
+   перезапуск подхватил файл, нет. Эндпоинт отвечает `503`, пока discovery выключен, хотя сами
+   источники читаются при любом включённом краулере.
+
+### 7.6. Запуск вручную
+
+Сначала всегда `dryRun`. Все эндпоинты требуют роль `ADMIN`.
+
+```bash
+# обход источника: сначала без записи в каталог
+curl -s -X POST http://localhost:8080/api/v1/admin/crawl/run \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"adapterIds":["example-static-declarative"],"dryRun":true}'
+
+# проход discovery: сначала без создания кандидатов
+curl -s -X POST http://localhost:8080/api/v1/admin/discovery/run \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"dryRun":true,"maxQueries":1}'
+
+curl -s http://localhost:8080/api/v1/admin/discovery/passes -H "Authorization: Bearer $TOKEN"
+```
+
+- **Пробный проход discovery выполняет настоящие поисковые запросы и тратит настоящие
+  кредиты.** Он только ничего не пишет в каталог. `maxQueries` ограничивает расход.
+- `force: true` снимает только минимальный интервал между проходами, но не месячный лимит.
+- Проход и обход не идут одновременно: второй запуск получает `409`.
+- Когда набрано `VDS_DISCOVERY_MAX_NEW_CANDIDATES_PER_PASS` кандидатов, проход перестаёт
+  искать, чтобы не тратить кредиты. Поэтому `candidatesDeferred` в сводке — нижняя оценка.
+- Результат поиска с URL длиннее 2048 символов отклоняется как `MALFORMED_URL`.
+- Сводки последних 20 проходов хранятся только в памяти и пропадают при перезапуске.
+
+### 7.7. Кандидаты в каталоге
+
+- Проход создаёт провайдера со статусом `CANDIDATE`. Провайдеры `CANDIDATE` и `REJECTED` скрыты
+  из `GET /api/v1/providers`; чтобы их увидеть, добавьте `?systemStatus=CANDIDATE`.
+- Кандидат становится `CONFIGURED` автоматически после первого успешного обхода, то есть когда
+  для него написан и включён источник.
+- `REJECTED` ставит только человек: `PUT /api/v1/providers/{id}/system-status`. Это конечное
+  состояние, проход не создаст такого кандидата заново.
+
+**Один домен — одна запись.** Дубликаты отсекаются строго по нормализованному домену, поэтому:
+
+- `vps.example.com` и `example.com` — две разные записи;
+- провайдер, сменивший домен, появится второй записью;
+- региональные домены одной компании (`example.com`, `example.ru`) — отдельные записи.
+
+Это выглядит как ошибка, но сделано намеренно: объединение потребовало бы списка публичных
+суффиксов и догадок о том, кто кому принадлежит.
+
+### 7.8. Юридическая ответственность
+
+Кандидат создаётся по одному результату поиска. Никто не проверял условия использования его
+сайта, `robots.txt` и право перепубликовывать его цены. Единственный человек между находкой и
+моментом, когда сервис начнёт читать этот сайт и публиковать его тарифы, — автор файла
+источника. Включая источник, вы подтверждаете, что прочитали условия сайта и что сбор и
+публикация этих данных вам разрешены.
+
 ## Эксплуатационные заметки
 
 - **Логи идут только в stdout.** `CallLogging` никогда не включает заголовок `Authorization`
   или тело запроса в какую-либо строку лога.
 - **Сбой Flyway завершает процесс с ненулевым кодом до того, как HTTP-сервер привяжет порт** —
   наполовину смигрированная база данных никогда не обслуживает трафик.
-- **SIGTERM** останавливает планировщик обновления курсов валют, дренирует запросы в полёте до
-  10 секунд, затем закрывает пул соединений.
+- **SIGTERM** сначала отменяет идущий проход discovery, затем дренирует запросы в полёте до
+  10 секунд, останавливает планировщики и идущий обход и закрывает пул соединений. Проходу и
+  обходу даётся до 10 секунд на завершение, поэтому остановка может занять около 20 секунд:
+  **таймаут остановки контейнера не должен быть меньше** (у Docker по умолчанию он 10 секунд).
 - **Не выставляйте этот сервис публично, пока он не стоит за обратным проксом с TLS-терминацией.**
   Он работает по обычному HTTP: bearer-токены и пароли будут пересекать интернет
   незашифрованными, а источник IP клиента для троттлинга входа (сейчас это адрес прямого

@@ -24,40 +24,18 @@ private data class VersionResponse(val version: String, val buildTimestamp: Stri
 
 private val READY_TIMEOUT = 2.seconds
 
-// Bounds the JDBC query phase itself (`statement.queryTimeout`, in whole seconds per the JDBC
-// API), independent of READY_TIMEOUT which bounds the coroutine/connection-acquisition phase —
-// see the KDoc below for why both are needed.
+// Bounds the query itself (JDBC queryTimeout, whole seconds), which READY_TIMEOUT cannot reach.
 private const val READY_QUERY_TIMEOUT_SECONDS = 1
 
 /**
- * Operational endpoints. `GET /health` never touches the database (process liveness only);
- * `GET /health/ready` does, and must never hang: acquiring a pool connection plus running the
- * query is bounded by [READY_TIMEOUT], independent of Hikari's own `connectionTimeout` setting
- * (that bounds only the "acquire a connection" half, not the query, and defaults to 5 s here —
- * see `AppConfig` — longer than the 2 s this endpoint must answer within, so it cannot be relied
- * on alone).
+ * `GET /health` reports process liveness only. `GET /health/ready` checks the database and answers
+ * within [READY_TIMEOUT], even though Hikari's `connectionTimeout` is longer.
  *
- * The bound is `withTimeoutOrNull(READY_TIMEOUT)` wrapped around `runInterruptible(Dispatchers.IO)`
- * rather than a plain `withContext(Dispatchers.IO) { ... }`. That distinction matters: a plain
- * `withContext` around a *blocking* JDBC call has no suspension point inside it, so when the
- * timeout fires, `withTimeoutOrNull` cancels the coroutine but there is nothing to interrupt —
- * the worker thread keeps blocking inside Hikari's own connection-acquisition wait until *that*
- * internally resolves (measured empirically: with PostgreSQL stopped, a plain `withContext`
- * version answered in ~5 s, i.e. Hikari's `connectionTimeoutMs` default, not 2 s).
- * `runInterruptible` additionally calls `Thread.interrupt()` on the worker thread the moment the
- * coroutine is cancelled; HikariCP's connection-acquisition wait (`ConcurrentBag.borrow`, a
- * `SynchronousQueue.poll(timeout, unit)` under the hood) responds to that interrupt immediately,
- * so the whole check is actually bounded by [READY_TIMEOUT] end to end (verified empirically:
- * same scenario answers in ~2 s with this version).
- *
- * `runInterruptible`/`Thread.interrupt()` only covers the connection-*acquisition* half, though:
- * once a connection is actually in hand, the `SELECT 1` runs over pgjdbc's plain blocking socket
- * (`PGStream`), which does not respond to thread interruption at all. Against a PostgreSQL that
- * accepts the TCP connection but never answers the query, that phase would hang forever even with
- * the `runInterruptible` wrapper above, holding the borrowed Hikari connection hostage. So the
- * query itself is given its own, independent bound via [READY_QUERY_TIMEOUT_SECONDS]
- * (`statement.queryTimeout`), which pgjdbc enforces by cancelling the query on the wire — this is
- * the one bound that actually reaches the blocking socket read.
+ * A blocking JDBC call ignores coroutine cancellation, so two bounds are needed:
+ * - `runInterruptible` interrupts the worker thread on timeout, which aborts Hikari's wait for a
+ *   pool connection. A plain `withContext(Dispatchers.IO)` would wait the full `connectionTimeout`.
+ * - pgjdbc's socket read ignores interrupts, so a server that accepts the connection but never
+ *   answers is bounded only by [READY_QUERY_TIMEOUT_SECONDS] (`statement.queryTimeout`).
  */
 fun Route.opsRoutes(dataSource: DataSource) {
     get("/health") {

@@ -25,10 +25,10 @@ import org.slf4j.event.Level
 import java.time.Clock
 import io.ktor.server.plugins.PayloadTooLargeException as KtorPayloadTooLargeException
 
-/** 256 KB. The heap this runs on is 192 MB, so a request body is never allowed to be "whatever". */
+/** 256 KB. The service targets a 192 MB heap, so request bodies are always capped. */
 const val MAX_REQUEST_BODY_BYTES: Long = 256L * 1024
 
-/** The one `413` message, shared by both body-limit paths -- see [RequestBodySizeLimit]. */
+/** The `413` message for both paths of [RequestBodySizeLimit]. */
 internal const val BODY_TOO_LARGE_MESSAGE = "Request body exceeds the $MAX_REQUEST_BODY_BYTES byte limit"
 
 private const val BODY_PUMP_BUFFER_BYTES = 8 * 1024
@@ -36,37 +36,17 @@ private const val BODY_PUMP_BUFFER_BYTES = 8 * 1024
 private fun bodyTooLarge() = PayloadTooLargeException(BODY_TOO_LARGE_MESSAGE)
 
 /**
- * Rejects a request body larger than [MAX_REQUEST_BODY_BYTES] as a `413`, **without ever holding
- * the whole body in memory** -- the bug the limit exists to prevent would be reintroduced by
- * reading the body first and measuring it afterwards.
+ * Rejects a request body over [MAX_REQUEST_BODY_BYTES] with `413` without holding the whole body in
+ * memory. Ktor 3.6.0 has no built-in body limit.
  *
- * Ktor 3.6.0 ships no body-limit plugin of its own: `ktor-server-core-jvm-3.6.0.jar` contains the
- * exception type `io.ktor.server.plugins.PayloadTooLargeException` and nothing that throws it for
- * an oversized request (verified by listing the jar). Hence this plugin, with two paths:
+ * - A declared `Content-Length` over the limit is rejected in `onCall`, before any handler reads
+ *   the body. This is only a fast path.
+ * - Every body is counted as the handler reads it ([countingBodyChannel]) and aborted once the
+ *   total passes the limit.
  *
- * - **A declared `Content-Length` over the limit:** rejected in `onCall`, which runs before any
- *   route handler and therefore before anything reads the body (pinned by a test asserting the
- *   handler never runs). Nothing is consumed at all. This is only a cheap fast path, never the
- *   enforcement.
- * - **Every request, whatever its framing:** the raw body channel is wrapped via the
- *   `ReceiveRequestBytes` hook and bytes are counted as the request handler reads them, aborting
- *   the moment the running total passes the limit. At most [BODY_PUMP_BUFFER_BYTES] is buffered
- *   here on top of whatever the reader asked for.
- *
- * The counting wrapper deliberately does **not** skip requests that declare a `Content-Length`,
- * because `Content-Length` is not a trustworthy statement about how many body bytes the engine
- * will deliver. `io.ktor.http.cio.parseHttpBody` tests `isTransferEncodingChunked` *before* it
- * looks at `contentLength`, and the CIO server pipeline rejects only a *duplicate* `Content-Length`
- * header, never a `Transfer-Encoding` + `Content-Length` conflict. A request carrying both is
- * therefore decoded as an unbounded chunked stream while `request.contentLength()` returns the
- * declared lie -- measured over a raw socket against a real `embeddedServer(CIO)`: with the
- * wrapper skipped, 270 336 bytes reached a handler behind a 256 KB cap. Pinned by
- * `a body declaring both Content-Length and chunked framing cannot bypass the limit`, which also
- * covers an understated `Content-Length`. The cost of always counting is one pass through an
- * 8 KB buffer per request.
- *
- * Both paths answer with the standard `413` envelope, but they cannot throw the *same* exception,
- * and that is not a style choice -- see [countingBodyChannel].
+ * Counting also runs when `Content-Length` is within the limit: CIO decodes a request that carries
+ * both `Transfer-Encoding: chunked` and `Content-Length` as an unbounded chunked stream, while
+ * `contentLength()` still returns the declared value.
  */
 val RequestBodySizeLimit = createApplicationPlugin(name = "RequestBodySizeLimit") {
     onCall { call ->
@@ -79,25 +59,12 @@ val RequestBodySizeLimit = createApplicationPlugin(name = "RequestBodySizeLimit"
 }
 
 /**
- * Pumps [source] through a counting loop, failing the downstream channel once more than
- * [MAX_REQUEST_BODY_BYTES] has been read. Scoped to the call (`ApplicationCall : CoroutineScope`),
- * so the pump cannot outlive the request it belongs to.
+ * Copies [source] to the returned channel and fails it once more than [MAX_REQUEST_BODY_BYTES] has
+ * been read. Runs in the call's scope, so it cannot outlive the request.
  *
- * It throws **Ktor's** `PayloadTooLargeException`, not ours, because the exception has to survive
- * a channel boundary. `io.ktor.utils.io.CloseToken.wrapCause` decides what the *reader* of a
- * failed channel sees (verified against the 3.6.0 bytecode):
- *
- * ```
- * origin is CopyableThrowable<*>   -> origin.createCopy()          // arrives as itself
- * origin is CancellationException  -> CancellationException(...)
- * else                             -> ClosedByteChannelException(origin)
- * ```
- *
- * Ktor's `PayloadTooLargeException` implements `kotlinx.coroutines.CopyableThrowable` and so takes
- * the first branch. Our [PayloadTooLargeException] is a plain `RuntimeException`: thrown here it
- * reached `StatusPages` wrapped in `ClosedByteChannelException`, matched the catch-all and became
- * a `500` -- measured, not assumed. Ours is still what the `Content-Length` path and any handler
- * throws, since that never crosses a channel.
+ * Throws Ktor's `PayloadTooLargeException`, not ours: it implements `CopyableThrowable`, so the
+ * channel reader receives it unchanged. Any other exception reaches `StatusPages` wrapped in
+ * `ClosedByteChannelException` and becomes a `500`.
  */
 private fun ApplicationCall.countingBodyChannel(source: ByteReadChannel): ByteReadChannel =
     writer(Dispatchers.Unconfined) {
@@ -117,20 +84,16 @@ private fun ApplicationCall.countingBodyChannel(source: ByteReadChannel): ByteRe
     }.channel
 
 /**
- * The HTTP contract shared by every endpoint. Install once, in `Application.module` and in tests
- * (`support/TestApp.kt`), so a test exercises the real wire format rather than a look-alike.
+ * The HTTP contract shared by every endpoint, installed by `Application.module` and the test app.
  *
- * Order is deliberate: `StatusPages` first, so it is the outermost interceptor and turns an
- * exception raised by any plugin installed after it -- the body-size limit, `ContentNegotiation`'s
- * deserialization -- into the standard envelope.
+ * `StatusPages` must come first: as the outermost interceptor it also turns exceptions from the
+ * plugins installed after it (body-size limit, `ContentNegotiation`) into [ApiError].
  */
 fun Application.installApiPlugins(config: HttpConfig, clock: Clock) {
     install(StatusPages) { installApiErrorHandling(clock) }
     install(CallLogging) {
         level = Level.INFO
-        // Spelled out rather than left to the default format, to make it explicit and testable
-        // that one access-log line is method + path + status and nothing else: no header (an
-        // `Authorization: Bearer ...` above all) and no byte of the request body is ever logged.
+        // Method, path and status only: headers (Authorization) and bodies must never be logged.
         format { call ->
             val status = call.response.status()?.value?.toString() ?: "unhandled"
             "${call.request.httpMethod.value} ${call.request.path()} -> $status"
@@ -139,15 +102,10 @@ fun Application.installApiPlugins(config: HttpConfig, clock: Clock) {
     install(RequestBodySizeLimit)
     install(ContentNegotiation) { json(ApiJson) }
     install(CORS) {
-        // An exact-origin whitelist. With VDS_CORS_ALLOWED_ORIGINS unset (the default) the list is
-        // empty, the predicate matches nothing, and no cross-origin request is allowed at all --
-        // never a fallback to anyHost(), which would make the write endpoints reachable from any
-        // page on the internet. Same-origin requests (no Origin header) are unaffected.
+        // Exact-origin whitelist. Empty by default, which allows no cross-origin request at all.
+        // Never anyHost(): it would expose the write endpoints to any page on the internet.
         allowOrigins { origin -> origin in config.corsAllowedOrigins }
-        // The full method/header set is listed rather than leaning on Ktor's defaults (which cover
-        // only GET/POST/HEAD and the simple request headers): the write methods and Authorization
-        // are *not* default, and the next 40 endpoints should read the allowed set here, not in the
-        // library.
+        // Ktor's defaults cover only GET/POST/HEAD and simple headers, so the full set is listed.
         allowMethod(HttpMethod.Get)
         allowMethod(HttpMethod.Post)
         allowMethod(HttpMethod.Put)
@@ -155,12 +113,8 @@ fun Application.installApiPlugins(config: HttpConfig, clock: Clock) {
         allowMethod(HttpMethod.Delete)
         allowMethod(HttpMethod.Options)
         allowHeader(HttpHeaders.Authorization)
-        // Not an allowlist entry like the one above: `CORSConfig.allowHeader` special-cases this
-        // one name and sets `allowNonSimpleContentTypes = true` (3.6.0 bytecode), which is what
-        // permits a non-simple Content-Type such as `application/json` cross-origin. Delete it and
-        // *every* cross-origin JSON request answers 403 -- the preflight and the real POST alike,
-        // i.e. the whole browser-facing API. Pinned by
-        // `an allowed origin may send a cross-origin JSON request`.
+        // Also sets allowNonSimpleContentTypes = true. Without this line every cross-origin
+        // application/json request, preflight included, gets 403.
         allowHeader(HttpHeaders.ContentType)
     }
 }

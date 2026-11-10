@@ -37,18 +37,15 @@ fun <T> pageResponse(total: Long, page: Int, size: Int, items: List<T>): PageRes
 
 /**
  * Parses `page` (0-based, default 0), `size` (default [DEFAULT_PAGE_SIZE], at most
- * [MAX_PAGE_SIZE]) and `sort` (`field` or `field,asc|desc`, default direction `asc`) off the query
- * string, reporting **every** bad parameter at once as a `400`.
+ * [MAX_PAGE_SIZE]) and `sort` (`field` or `field,asc|desc`, default `asc`) from the query string,
+ * reporting every bad parameter at once as a `400`.
  *
- * An out-of-range value is rejected, never clamped: a client that asked for 1000 rows and silently
- * got 100 cannot tell it is paging through a truncated view.
+ * Out-of-range values are rejected, not clamped, so a client never pages through a silently
+ * truncated view. [sortableFields] is the endpoint's whitelist, so `sort` never reaches `ORDER BY`
+ * as free text.
  *
- * [sortableFields] is the endpoint's own whitelist -- anything else is a `400`, so a `sort`
- * parameter can never reach a SQL `ORDER BY` as free text.
- *
- * The result always ends with `id ASC`: without a unique final key, rows with equal sort values
- * come back in whatever order the database picks per query, so a row can appear on two pages or on
- * none while the client walks them.
+ * The sort always ends with `id ASC`: without a unique last key, rows with equal sort values can
+ * appear on two pages or on none.
  */
 fun ApplicationCall.pageRequest(sortableFields: Set<String>): PageRequest {
     val validation = Validation()

@@ -203,30 +203,48 @@ private val DISCOVERY_LIST_SEPARATOR = Regex("[,|\n]")
 private const val DEFAULT_DISCOVERY_QUERIES =
     "vps hosting | cheap vps nvme | аренда vps | vds хостинг | kvm vps hosting"
 
-/**
- * Hosts that answer the queries above without ever being a VPS provider: review and comparison
- * sites, forums, deal aggregators, marketplaces, social networks, code and documentation hosts.
- * They are the dominant false-positive class for whole-web search on these terms, so the list ships
- * as a default rather than waiting for an operator to discover it. Matching (a bare domain, its
- * subdomains) is the filter's business in task 6; this is only the data.
- */
-private val DEFAULT_DISCOVERY_DOMAIN_DENYLIST = listOf(
-    // review / comparison / deal sites
-    "hostadvice.com", "trustpilot.com", "hostingadvice.com", "whtop.com", "serverhunter.com",
-    "vpsbenchmarks.com", "lowendbox.com", "webhostingtalk.com", "lowendtalk.com", "g2.com",
-    "capterra.com", "getapp.com", "slant.co", "hostings.info", "hostingchecker.com",
-    // forums / Q&A / aggregators
-    "reddit.com", "quora.com", "stackoverflow.com", "serverfault.com", "superuser.com",
-    "stackexchange.com", "news.ycombinator.com", "habr.com", "4pda.to", "searchengines.guru",
-    // marketplaces / shops
-    "amazon.com", "ebay.com", "aliexpress.com", "avito.ru", "ozon.ru", "producthunt.com",
-    // social networks / blogging
-    "facebook.com", "twitter.com", "x.com", "vk.com", "t.me", "telegram.me", "youtube.com",
-    "linkedin.com", "instagram.com", "tiktok.com", "medium.com", "dev.to", "pinterest.com",
-    // code / documentation hosts
-    "github.com", "github.io", "gitlab.com", "bitbucket.org", "readthedocs.io", "wikipedia.org",
-    "learn.microsoft.com", "docs.microsoft.com", "developer.mozilla.org", "cloudflare.com",
-)
+/** Classpath resource holding the denylist used when the operator configures none. */
+private const val DEFAULT_DISCOVERY_DOMAIN_DENYLIST_RESOURCE = "/discovery/domain-denylist.txt"
+
+/** A denylist file larger than this is refused: it is read whole into memory at startup. */
+private const val DISCOVERY_DOMAIN_DENYLIST_FILE_MAX_BYTES = 64 * 1024
+
+/** One domain per line; `#` starts a comment; blank lines are ignored. */
+internal fun parseDomainListFile(text: String): List<String> =
+    text.lineSequence()
+        .map { it.substringBefore('#').trim().lowercase() }
+        .filter { it.isNotEmpty() }
+        .distinct()
+        .toList()
+
+private val DEFAULT_DISCOVERY_DOMAIN_DENYLIST: List<String> by lazy {
+    val stream = checkNotNull(object {}.javaClass.getResourceAsStream(DEFAULT_DISCOVERY_DOMAIN_DENYLIST_RESOURCE)) {
+        "$DEFAULT_DISCOVERY_DOMAIN_DENYLIST_RESOURCE is missing from the classpath"
+    }
+    parseDomainListFile(stream.use { it.readAllBytes().toString(Charsets.UTF_8) })
+}
+
+/** The entries of [file], or `null` after adding the reason it cannot be used to [errors]. */
+private fun readDomainDenylistFile(file: String, errors: MutableList<String>): List<String>? {
+    val name = "VDS_DISCOVERY_DOMAIN_DENYLIST_FILE"
+    val path = pathOrNull(file)
+    if (path == null || !Files.isRegularFile(path) || !Files.isReadable(path)) {
+        errors += "$name must be a readable file, which '$file' is not"
+        return null
+    }
+    val limit = DISCOVERY_DOMAIN_DENYLIST_FILE_MAX_BYTES
+    val bytes = try {
+        Files.newInputStream(path).use { it.readNBytes(limit + 1) }
+    } catch (failure: java.io.IOException) {
+        errors += "$name could not be read: ${failure.javaClass.simpleName}"
+        return null
+    }
+    if (bytes.size > limit) {
+        errors += "$name must not be larger than $limit bytes"
+        return null
+    }
+    return parseDomainListFile(bytes.toString(Charsets.UTF_8))
+}
 
 /** A page that is really selling virtual servers says at least one of these, in one of two languages. */
 private val DEFAULT_DISCOVERY_REQUIRED_KEYWORDS = listOf(
@@ -485,11 +503,20 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
     val discoveryMaxKnownProviders = positiveInt("VDS_DISCOVERY_MAX_KNOWN_PROVIDERS", 5000, discoveryErrors)
     // Both lists are lower-cased here, once: every later comparison is case-insensitive by nature
     // (a domain is, and a keyword is matched against lower-cased page text). An explicitly empty
-    // value means "no denylist at all" rather than "use the default" -- clearing it is deliberate.
-    val discoveryDomainDenylist = env["VDS_DISCOVERY_DOMAIN_DENYLIST"]
+    // value or file means "no denylist at all" rather than "use the default".
+    val discoveryDomainDenylistInline = env["VDS_DISCOVERY_DOMAIN_DENYLIST"]
         ?.split(DISCOVERY_LIST_SEPARATOR)
         ?.map { it.trim().lowercase() }
         ?.filter { it.isNotEmpty() }
+    val discoveryDomainDenylistFile = optionalNonBlank("VDS_DISCOVERY_DOMAIN_DENYLIST_FILE")
+    if (discoveryDomainDenylistInline != null && discoveryDomainDenylistFile != null) {
+        discoveryErrors += "VDS_DISCOVERY_DOMAIN_DENYLIST and VDS_DISCOVERY_DOMAIN_DENYLIST_FILE are mutually exclusive"
+    }
+    // The file is opened only while discovery is enabled: with it off, no path is touched.
+    val discoveryDomainDenylist = discoveryDomainDenylistInline
+        ?: discoveryDomainDenylistFile
+            ?.takeIf { discoveryEnabled }
+            ?.let { readDomainDenylistFile(it, discoveryErrors) }
         ?: DEFAULT_DISCOVERY_DOMAIN_DENYLIST
     val discoveryRequiredKeywords = env["VDS_DISCOVERY_REQUIRED_KEYWORDS"]
         ?.split(DISCOVERY_LIST_SEPARATOR)

@@ -25,6 +25,8 @@ import org.a1tsign.vds.crawler.CRAWL_SHUTDOWN_GRACE_MS
 import org.a1tsign.vds.crawler.CrawlScheduler
 import org.a1tsign.vds.crawler.write.CatalogApiClient
 import org.a1tsign.vds.db.buildDataSource
+import org.a1tsign.vds.discovery.DISCOVERY_SHUTDOWN_GRACE_MS
+import org.a1tsign.vds.discovery.DiscoveryScheduler
 import org.a1tsign.vds.db.runMigrations
 import org.a1tsign.vds.fx.FxRefreshScheduler
 import org.flywaydb.core.api.FlywayException
@@ -104,6 +106,8 @@ fun main() {
     // null exactly when the crawler is disabled, following components.crawlerRunner (ADR-01: no
     // thread is started while VDS_CRAWLER_ENABLED is false).
     val crawlerScheduler = components.crawlerRunner?.let { runner -> CrawlScheduler.create(config.crawler, runner) }
+    // null exactly when discovery was not constructed (VDS_DISCOVERY_ENABLED=false): no thread then.
+    val discoveryScheduler = DiscoveryScheduler.create(config.discovery, components.discoveryRunner)
     Runtime.getRuntime().addShutdownHook(
         Thread {
             shutdownGracefully(
@@ -117,6 +121,12 @@ fun main() {
                 components.crawlerAdminRunJob,
                 components.crawlerCatalogClient,
                 components.crawlerFetchHttpClient,
+                DiscoveryShutdown(
+                    discoveryScheduler,
+                    components.discoveryScope,
+                    components.discoveryAdminPassJob,
+                    components.discoverySearchHttpClient,
+                ),
             )
         },
     )
@@ -190,6 +200,13 @@ private const val SHUTDOWN_POLL_INTERVAL_MILLIS = 50L
  * ([crawlerCatalogClient], [crawlerFetchHttpClient]) are closed last, once nothing can start a new
  * call on them, mirroring [fxHttpClient] below.
  *
+ * [discovery] (vds-004) is stopped **first**, before the request drain: once [shuttingDown] is set
+ * the pass's own loopback catalog calls are answered `503`, so a pass left running through the
+ * drain would keep paying one search credit per query for candidates it can no longer write. Its
+ * scheduler is closed and an in-flight admin-triggered pass gets a bounded grace period; each pass
+ * publishes its summary and flushes its credits while it unwinds (neither needs HTTP). Its scope
+ * and search client are closed later, before the crawler's catalog client.
+ *
  * The Hikari pool is closed last of all, after `server.stop()`, once nothing can issue a new query.
  */
 private fun shutdownGracefully(
@@ -203,8 +220,13 @@ private fun shutdownGracefully(
     crawlerAdminRunJob: AtomicReference<Job?>,
     crawlerCatalogClient: CatalogApiClient?,
     crawlerFetchHttpClient: io.ktor.client.HttpClient?,
+    discovery: DiscoveryShutdown,
 ) {
     shuttingDown.set(true)
+    // Before the drain, not after it: from here on the pass's own loopback catalog calls get a 503,
+    // so every further query would spend a credit on results that can no longer be written.
+    discovery.scheduler?.close()
+    joinBounded(discovery.adminPassJob.get(), DISCOVERY_SHUTDOWN_GRACE_MS, "admin-triggered discovery pass")
     val deadline = clock.nowUtc().plusMillis(SHUTDOWN_DRAIN_CAP_MILLIS)
     while (activeRequests.get() > 0 && clock.nowUtc().isBefore(deadline)) {
         Thread.sleep(SHUTDOWN_POLL_INTERVAL_MILLIS)
@@ -220,9 +242,29 @@ private fun shutdownGracefully(
             logger.warn("admin-triggered crawl run did not finish within {} ms of being cancelled", CRAWL_SHUTDOWN_GRACE_MS)
         }
     }
+    discovery.scope?.cancel()
+    discovery.searchHttpClient?.close()
     crawlerScope?.cancel()
     crawlerCatalogClient?.close()
     crawlerFetchHttpClient?.close()
     server.stop(gracePeriodMillis = 0, timeoutMillis = 1_000)
     dataSource.close()
+}
+
+/** What `shutdownGracefully` closes for vds-004 discovery; every field `null` while discovery is disabled. */
+private class DiscoveryShutdown(
+    val scheduler: DiscoveryScheduler?,
+    val scope: CoroutineScope?,
+    val adminPassJob: AtomicReference<Job?>,
+    val searchHttpClient: io.ktor.client.HttpClient?,
+)
+
+/** Cancels [job] and waits up to [graceMs] for it to unwind -- the admin-triggered crawl run's shape. */
+private fun joinBounded(job: Job?, graceMs: Long, what: String) {
+    if (job == null || !job.isActive) return
+    job.cancel()
+    val finished = runBlocking { withTimeoutOrNull(graceMs) { job.join() } }
+    if (finished == null) {
+        logger.warn("{} did not finish within {} ms of being cancelled", what, graceMs)
+    }
 }

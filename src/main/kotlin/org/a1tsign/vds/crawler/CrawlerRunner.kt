@@ -22,7 +22,6 @@ import java.time.Instant
 import java.util.ArrayDeque
 import java.util.UUID
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 
 /** How many run summaries the in-memory history keeps (spec req. 36). Nothing is persisted. */
 const val RUN_HISTORY_SIZE: Int = 20
@@ -71,7 +70,9 @@ class CrawlRunInProgressException(val runId: UUID?) :
  *
  * ### One run at a time, process-wide (spec req. 20)
  *
- * An [AtomicBoolean] owned by this instance. [tryReserve] takes the slot **without blocking** and
+ * A [RunSlot] -- by default this instance's own, in production the one `AppComponents` shares with
+ * the vds-004 discovery pass, so a crawl run and a discovery pass are never in flight together
+ * either. [tryReserve] takes the slot **without blocking** and
  * publishes a [RunStatus.RUNNING] summary, so the admin endpoint of task vds-002.7 can answer `202`
  * with a `runId` or `409`, and the scheduler can skip a tick with a WARN. [runOnce] is the
  * reserve-and-run convenience for a direct caller.
@@ -110,6 +111,11 @@ class CrawlerRunner(
     /** Defaults are the configured production budgets; parameters so a test needs no real minutes. */
     private val adapterTimeoutMs: Long = TimeUnit.MINUTES.toMillis(config.adapterTimeoutMinutes),
     private val runTimeoutMs: Long = TimeUnit.MINUTES.toMillis(config.runTimeoutMinutes),
+    /**
+     * The process-wide run slot. Defaults to a private one, which is exactly the pre-vds-004
+     * behaviour; `AppComponents` injects the instance it shares with `DiscoveryRunner`.
+     */
+    private val slot: RunSlot = RunSlot(),
 ) {
 
     init {
@@ -124,25 +130,25 @@ class CrawlerRunner(
         }
     }
 
-    private val running = AtomicBoolean(false)
     private val historyLock = Any()
     private val history = ArrayDeque<CrawlRunSummary>()
 
     @Volatile
     private var active: Active? = null
 
-    /** `true` while a run holds the slot -- a cheap pre-check; [tryReserve] is the decision. */
-    fun isRunning(): Boolean = running.get()
+    /** `true` while a crawl run holds the slot -- a cheap pre-check; [tryReserve] is the decision. */
+    fun isRunning(): Boolean = slot.holder()?.kind == RunKind.CRAWL
 
     /**
      * Takes the one run slot without blocking and publishes its [RunStatus.RUNNING] summary.
-     * Returns the new `runId`, or `null` when a run is already in progress.
+     * Returns the new `runId`, or `null` when a run -- or, with the shared slot, a discovery pass --
+     * is already in progress.
      */
     fun tryReserve(dryRun: Boolean): UUID? {
-        if (!running.compareAndSet(false, true)) return null
         val runId = UUID.randomUUID()
+        val holder = slot.tryTake(RunKind.CRAWL, runId) ?: return null
         val startedAt = clock.instant()
-        active = Active(runId, startedAt, System.nanoTime(), dryRun)
+        active = Active(runId, startedAt, System.nanoTime(), dryRun, holder)
         publish(CrawlRunSummary(runId = runId, startedAt = startedAt, status = RunStatus.RUNNING, dryRun = dryRun))
         return runId
     }
@@ -170,7 +176,7 @@ class CrawlerRunner(
             throw failure
         } finally {
             active = null
-            running.set(false)
+            slot.release(run.holder)
         }
     }
 
@@ -395,6 +401,8 @@ class CrawlerRunner(
         val startedAt: Instant,
         val startedNanos: Long,
         val dryRun: Boolean,
+        /** The [RunSlot] token [tryReserve] took; [runReserved] releases exactly this one. */
+        val holder: RunHolder,
     ) {
         val results = mutableListOf<AdapterRunResult>()
 

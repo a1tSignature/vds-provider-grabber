@@ -10,6 +10,7 @@ import org.a1tsign.vds.api.routes.authRoutes
 import org.a1tsign.vds.api.routes.adminUserRoutes
 import org.a1tsign.vds.api.routes.crawlerRoutes
 import org.a1tsign.vds.api.routes.dictionaryRoutes
+import org.a1tsign.vds.api.routes.discoveryRoutes
 import org.a1tsign.vds.api.routes.fxRoutes
 import org.a1tsign.vds.api.routes.providerRoutes
 import org.a1tsign.vds.api.routes.locationRoutes
@@ -37,6 +38,7 @@ fun Application.registerRoutes(components: AppComponents) {
                     components.config.crawler,
                     components.crawlerAdminRunJob,
                 )
+                discoveryRoutes(components.discoveryRunner, components.discoveryScope, components.discoverySources, components.discoveryAdminPassJob)
                 providerRoutes(components.providerService, components.catalogQueryService)
                 locationRoutes(components.locationService)
                 tariffRoutes(components.tariffService, components.catalogQueryService)

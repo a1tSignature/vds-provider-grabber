@@ -1,6 +1,7 @@
 package org.a1tsign.vds.api.routes
 
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.Parameters
 import io.ktor.server.request.receive
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
@@ -10,6 +11,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import org.a1tsign.vds.api.NotFoundException
+import org.a1tsign.vds.api.SortField
 import org.a1tsign.vds.api.Validation
 import org.a1tsign.vds.api.dto.TariffWriteRequest
 import org.a1tsign.vds.api.dto.toDto
@@ -106,36 +108,25 @@ fun Route.tariffRoutes(service: TariffService, queryService: CatalogQueryService
         val page = call.pageRequest(setOf("id", "priceUsd", "ramMb", "vcpuCount", "diskGb", "name"))
         val query = call.request.queryParameters
         val v = Validation()
-        val providerId = query["providerId"]?.let { raw ->
-            raw.toLongOrNull() ?: run { v.reject("providerId", "must be an integer"); null }
-        }
-        val country = query["country"]?.let { v.validateCountryCode("country", it) }
-        val minVcpu = query["minVcpu"]?.let { parseQueryInt(v, "minVcpu", it) }
-        val minRamMb = query["minRamMb"]?.let { parseQueryInt(v, "minRamMb", it) }
-        val minDiskGb = query["minDiskGb"]?.let { parseQueryInt(v, "minDiskGb", it) }
-        val diskType = query["diskType"]?.let { v.enumValue("diskType", it, DiskType.entries.toTypedArray()) }
+        val filter = parseTariffFilter(v, query)
         val billingPeriod = query["billingPeriod"]?.let { v.enumValue("billingPeriod", it, BillingPeriod.entries.toTypedArray()) }
             ?: BillingPeriod.MONTHLY
-        val maxPriceUsd = query["maxPriceUsd"]?.let { v.validateAmount("maxPriceUsd", it) }
-        val paymentMethod = query["paymentMethod"]?.let { v.enumValue("paymentMethod", it, PaymentMethod.entries.toTypedArray()) }
-        val unmeteredTraffic = parseOptionalBoolean(v, "unmeteredTraffic", query["unmeteredTraffic"])
-        val activeOnly = parseOptionalBoolean(v, "activeOnly", query["activeOnly"]) ?: true
-        val inStock = parseOptionalBoolean(v, "inStock", query["inStock"])
+        val hasPrice = parseOptionalBoolean(v, "hasPrice", query["hasPrice"])
         v.throwIfInvalid()
-        val filter = TariffSearchFilter(
-            providerId = providerId,
-            country = country,
-            minVcpu = minVcpu,
-            minRamMb = minRamMb,
-            minDiskGb = minDiskGb,
-            diskType = diskType,
-            paymentMethod = paymentMethod,
-            unmeteredTraffic = unmeteredTraffic,
-            activeOnly = activeOnly,
-            inStock = inStock,
-            maxPriceUsd = maxPriceUsd,
-        )
-        val (total, items) = queryService.searchTariffs(filter, billingPeriod, page.page, page.size, page.sort)
+        val (total, items) = queryService.searchTariffs(filter.copy(hasPrice = hasPrice), billingPeriod, page.page, page.size, page.sort)
+        call.respond(pageResponse(total, page.page, page.size, items))
+    }
+
+    get("/api/v1/tariffs/by-provider") {
+        call.requireRole(Role.VIEWER)
+        val page = call.pageRequest(setOf("priceUsd", "name", "id"))
+        val query = call.request.queryParameters
+        val v = Validation()
+        val filter = parseTariffFilter(v, query)
+        v.throwIfInvalid()
+        // pageRequest yields [id] for an absent sort, which here would hide the priceUsd default.
+        val sort = if (query["sort"] == null) SortField("priceUsd", descending = false) else page.sort.first()
+        val (total, items) = queryService.cheapestTariffByProvider(filter, page.page, page.size, sort)
         call.respond(pageResponse(total, page.page, page.size, items))
     }
 
@@ -192,6 +183,26 @@ private fun validateTariff(req: TariffWriteRequest): TariffFields {
     return TariffFields(
         externalId, name!!, url, vcpuCount!!.toShort(), cpuModel, ramMb!!, diskGb!!, diskType!!,
         bandwidthMbps, trafficLimitGb, ipv4Count!!.toShort(), virtualization!!,
+    )
+}
+
+/** The filters `GET /api/v1/tariffs` and `GET /api/v1/tariffs/by-provider` share; errors go to [v]. */
+private fun parseTariffFilter(v: Validation, query: Parameters): TariffSearchFilter {
+    val providerId = query["providerId"]?.let { raw ->
+        raw.toLongOrNull() ?: run { v.reject("providerId", "must be an integer"); null }
+    }
+    return TariffSearchFilter(
+        providerId = providerId,
+        country = query["country"]?.let { v.validateCountryCode("country", it) },
+        minVcpu = query["minVcpu"]?.let { parseQueryInt(v, "minVcpu", it) },
+        minRamMb = query["minRamMb"]?.let { parseQueryInt(v, "minRamMb", it) },
+        minDiskGb = query["minDiskGb"]?.let { parseQueryInt(v, "minDiskGb", it) },
+        diskType = query["diskType"]?.let { v.enumValue("diskType", it, DiskType.entries.toTypedArray()) },
+        maxPriceUsd = query["maxPriceUsd"]?.let { v.validateAmount("maxPriceUsd", it) },
+        paymentMethod = query["paymentMethod"]?.let { v.enumValue("paymentMethod", it, PaymentMethod.entries.toTypedArray()) },
+        unmeteredTraffic = parseOptionalBoolean(v, "unmeteredTraffic", query["unmeteredTraffic"]),
+        activeOnly = parseOptionalBoolean(v, "activeOnly", query["activeOnly"]) ?: true,
+        inStock = parseOptionalBoolean(v, "inStock", query["inStock"]),
     )
 }
 

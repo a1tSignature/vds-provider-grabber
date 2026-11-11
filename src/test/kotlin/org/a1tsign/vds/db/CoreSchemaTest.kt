@@ -220,6 +220,7 @@ class CoreSchemaTest : AbstractDbTest() {
                 "data_source" to false,
                 "recorded_by" to true,
                 "created_at" to false,
+                "last_confirmed_at" to false,
             ),
             "currency_rate" to mapOf(
                 "id" to false,
@@ -326,6 +327,7 @@ class CoreSchemaTest : AbstractDbTest() {
             "tariff_price.effective_from",
             "tariff_price.effective_to",
             "tariff_price.created_at",
+            "tariff_price.last_confirmed_at",
             "currency_rate.source_rate_at",
             "currency_rate.fetched_at",
             "app_user.created_at",

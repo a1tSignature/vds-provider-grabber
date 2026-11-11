@@ -204,14 +204,7 @@ class CatalogQueryService(
             val tariffById = tariffs.findByIds(ids).associateBy { it.id }
             val providerIds = tariffById.values.map { it.providerId }.distinct()
             val providerById = providers.findByIds(providerIds).associateBy { it.id }
-            val currentPriceByTariff = TariffPriceTable.selectAll()
-                .where {
-                    (TariffPriceTable.tariffId inList ids) and
-                        (TariffPriceTable.billingPeriod eq billingPeriod.name) and
-                        TariffPriceTable.effectiveTo.isNull()
-                }
-                .map { it.toTariffPrice() }
-                .associateBy { it.tariffId }
+            val currentPriceByTariff = currentPrices(ids, billingPeriod)
 
             // ids is already the correctly sorted/paginated order from searchPage -- preserve it.
             val items = ids.mapNotNull { id ->
@@ -226,6 +219,47 @@ class CatalogQueryService(
             total to items
         }
     }
+
+    /**
+     * `GET /api/v1/tariffs/by-provider`. Five SQL statements regardless of page size:
+     * [TariffRepository.headlinesByProvider]'s two, then one each for the page's providers,
+     * headline tariffs and their current MONTHLY prices.
+     */
+    suspend fun cheapestTariffByProvider(
+        filter: TariffSearchFilter,
+        page: Int,
+        size: Int,
+        sort: SortField,
+    ): Pair<Long, List<ProviderCheapestTariffDto>> = withContext(Dispatchers.IO) {
+        transaction(database) {
+            val (total, headlines) = tariffs.headlinesByProvider(filter, BillingPeriod.MONTHLY, sort, size, page * size)
+            if (headlines.isEmpty()) return@transaction total to emptyList()
+
+            val tariffIds = headlines.map { it.tariffId }
+            val providerById = providers.findByIds(headlines.map { it.providerId }).associateBy { it.id }
+            val tariffById = tariffs.findByIds(tariffIds).associateBy { it.id }
+            val priceByTariff = currentPrices(tariffIds, BillingPeriod.MONTHLY)
+
+            val items = headlines.mapNotNull { headline ->
+                ProviderCheapestTariffDto(
+                    provider = providerById[headline.providerId]?.toDto() ?: return@mapNotNull null,
+                    cheapestTariff = tariffById[headline.tariffId]?.toDto() ?: return@mapNotNull null,
+                    cheapestPrice = priceByTariff[headline.tariffId]?.toDto() ?: return@mapNotNull null,
+                    matchingTariffCount = headline.matchingTariffCount,
+                )
+            }
+            total to items
+        }
+    }
+
+    private fun currentPrices(tariffIds: List<Long>, billingPeriod: BillingPeriod) = TariffPriceTable.selectAll()
+        .where {
+            (TariffPriceTable.tariffId inList tariffIds) and
+                (TariffPriceTable.billingPeriod eq billingPeriod.name) and
+                TariffPriceTable.effectiveTo.isNull()
+        }
+        .map { it.toTariffPrice() }
+        .associateBy { it.tariffId }
 
     /** `GET /api/v1/tariffs/{id}` -- `404` if the tariff does not exist. */
     suspend fun getTariffDetail(id: Long): TariffDetailDto = withContext(Dispatchers.IO) {

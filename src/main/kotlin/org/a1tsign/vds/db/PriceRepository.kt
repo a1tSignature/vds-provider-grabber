@@ -25,8 +25,8 @@ import java.time.Instant
  * always locks the tariff row first (see [lockTariff]) -- that lock is what serialises every writer
  * of a given tariff's prices, including the very first price when no current row exists yet.
  *
- * Every price row is append-only: the only `UPDATE`s here touch `effective_to` ([close]/[reopen]);
- * `amount`/`currency`/the USD snapshot of an existing row are never rewritten.
+ * Value fields of a price row are never rewritten; the only mutable columns are `effective_to`
+ * ([close]/[reopen]) and `last_confirmed_at` ([confirm]).
  */
 class PriceRepository {
     /** `true` if the tariff exists -- the row is locked `FOR UPDATE` either way. */
@@ -82,11 +82,19 @@ class PriceRepository {
             it[TariffPriceTable.dataSource] = dataSource.name
             it[TariffPriceTable.recordedBy] = recordedBy
             it[TariffPriceTable.createdAt] = now.toUtcOffset()
+            it[TariffPriceTable.lastConfirmedAt] = now.toUtcOffset()
         }[TariffPriceTable.id]
         return findById(id)!!
     }
 
-    /** Sets `effective_to` of [id] -- the only legal update of a price row besides [reopen]. */
+    /** Moves `last_confirmed_at` of [id] forward to [now]; a [now] that is not later leaves it as it is. */
+    fun confirm(id: Long, now: Instant) {
+        TariffPriceTable.update({ (TariffPriceTable.id eq id) and (TariffPriceTable.lastConfirmedAt less now.toUtcOffset()) }) {
+            it[TariffPriceTable.lastConfirmedAt] = now.toUtcOffset()
+        }
+    }
+
+    /** Sets `effective_to` of [id]. */
     fun close(id: Long, effectiveTo: Instant) {
         TariffPriceTable.update({ TariffPriceTable.id eq id }) {
             it[TariffPriceTable.effectiveTo] = effectiveTo.toUtcOffset()

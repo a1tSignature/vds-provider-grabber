@@ -329,4 +329,62 @@ class PriceWriteApiTest : AbstractDbTest() {
             assertEquals(cClosedAt, cAfterDeletion.effectiveTo)
         }
     }
+
+    @Test
+    fun lastConfirmedAtAdvancesOnlyOnUnchangedResubmission() = runBlocking {
+        org.a1tsign.vds.support.testAppDb(clock) {
+            val token = loginForToken("bootstrap-admin", "bootstrap-password-1")
+            val fixture = CatalogFixture(PostgresSupport.database)
+            val provider = fixture.createProvider("price-confirm", clock.instant())
+            val tariff = fixture.createTariff(provider.id, "Basic", clock.instant())
+            val repo = PriceRepository()
+            fun row(id: Long) = transaction(PostgresSupport.database) { repo.findById(id)!! }
+
+            val writtenAt = clock.instant()
+            val created = putPrice(tariff.id, token, priceBody(effectiveFrom = writtenAt.minus(Duration.ofDays(1))))
+            assertEquals(HttpStatusCode.Created, created.status)
+            val id = json(created).getValue("id").jsonPrimitive.long
+            val original = row(id)
+            assertEquals(writtenAt, original.lastConfirmedAt, "a back-dated effectiveFrom is not the confirmation time")
+
+            val confirmedAt = clock.advance(Duration.ofHours(2))
+            val confirmed = putPrice(
+                tariff.id, token,
+                priceBody(amount = "10.0000", effectiveFrom = confirmedAt, dataSource = PriceDataSource.CRAWLER.name),
+            )
+            assertEquals(HttpStatusCode.OK, confirmed.status)
+            assertEquals(id, json(confirmed).getValue("id").jsonPrimitive.long)
+            assertEquals(confirmedAt, Instant.parse(json(confirmed).getValue("lastConfirmedAt").jsonPrimitive.content))
+            assertEquals(1L, rowCount(tariff.id, BillingPeriod.MONTHLY))
+            assertEquals(original.copy(lastConfirmedAt = confirmedAt), row(id), "only the stamp moved")
+
+            suspend fun get(path: String) = client.get("$root$path") { bearerAuth(token) }.bodyAsText()
+            val stamp = "\"lastConfirmedAt\":\"${isoInstant(confirmedAt)}\""
+            listOf(
+                "/providers/${provider.id}",
+                "/tariffs/${tariff.id}",
+                "/tariffs?providerId=${provider.id}",
+                "/tariffs/${tariff.id}/price-history",
+            ).forEach { path -> assertTrue(stamp in get(path), "$path must carry $stamp") }
+
+            // Still after the login, so the token stays valid, but before the stored stamp.
+            clock.set(confirmedAt.minus(Duration.ofHours(1)))
+            assertEquals(HttpStatusCode.OK, putPrice(tariff.id, token, priceBody()).status)
+            assertEquals(confirmedAt, row(id).lastConfirmedAt, "a clock that went backwards must not lower the stamp")
+
+            clock.set(confirmedAt.plus(Duration.ofHours(1)))
+            assertEquals(HttpStatusCode.OK, closePrice(tariff.id, token, closeBody()).status)
+            assertEquals(confirmedAt, row(id).lastConfirmedAt, "closing is not a confirmation")
+
+            val previous = putPrice(tariff.id, token, priceBody(billingPeriod = BillingPeriod.ANNUAL, amount = "100"))
+            val previousId = json(previous).getValue("id").jsonPrimitive.long
+            val previousStamp = row(previousId).lastConfirmedAt
+            clock.advance(Duration.ofHours(1))
+            val replacement = putPrice(tariff.id, token, priceBody(billingPeriod = BillingPeriod.ANNUAL, amount = "110"))
+            clock.advance(Duration.ofHours(1))
+            assertEquals(HttpStatusCode.NoContent, correctPrice(tariff.id, json(replacement).getValue("id").jsonPrimitive.long, token).status)
+            assertNull(row(previousId).effectiveTo)
+            assertEquals(previousStamp, row(previousId).lastConfirmedAt, "a reopened row keeps its own stamp")
+        }
+    }
 }

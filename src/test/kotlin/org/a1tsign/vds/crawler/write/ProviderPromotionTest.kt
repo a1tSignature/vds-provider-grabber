@@ -12,13 +12,18 @@ import org.a1tsign.vds.crawler.support.validTariff
 import org.a1tsign.vds.crawler.support.withoutLocationLinks
 import org.a1tsign.vds.db.ProviderListFilter
 import org.a1tsign.vds.db.ProviderRepository
+import org.a1tsign.vds.db.TariffPriceTable
+import org.a1tsign.vds.db.toTariffPrice
 import org.a1tsign.vds.domain.ProviderStatus
 import org.a1tsign.vds.domain.SystemStatus
 import org.a1tsign.vds.support.AbstractDbTest
 import org.a1tsign.vds.support.PostgresSupport
+import org.jetbrains.exposed.v1.core.isNull
+import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import java.math.BigDecimal
 import java.time.Duration
+import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -60,8 +65,10 @@ class ProviderPromotionTest : AbstractDbTest() {
             assertEquals(0, ctx.systemStatusCalls(providerId), "an already-CONFIGURED row is never written to")
 
             // A successful run that wrote nothing promotes nothing: the same snapshot again submits
-            // six unchanged prices (which the catalog answers 200, storing nothing) and no mutation.
+            // four unchanged prices (which the catalog answers 200, only advancing lastConfirmedAt)
+            // and no mutation.
             setSystemStatus(providerId, SystemStatus.CANDIDATE)
+            val priceRowsBefore = priceRowCount()
             clock.advance(Duration.ofHours(1))
             ctx.harness.clearRecordedCalls()
 
@@ -74,6 +81,12 @@ class ProviderPromotionTest : AbstractDbTest() {
             )
             assertEquals(0, ctx.systemStatusCalls(providerId))
             assertEquals(SystemStatus.CANDIDATE, systemStatusOf(providerId), "nothing was written, so nothing is promoted")
+            assertEquals(priceRowsBefore, priceRowCount(), "a confirmation appends no price row")
+            assertEquals(
+                List(4) { clock.instant() },
+                currentPriceConfirmations(),
+                "the unchanged prices were confirmed by this run, which still is not a write",
+            )
         }
     }
 
@@ -153,6 +166,12 @@ class ProviderPromotionTest : AbstractDbTest() {
 
     private fun systemStatusOf(providerId: Long): SystemStatus = transaction(PostgresSupport.database) {
         ProviderRepository().find(providerId)!!.systemStatus
+    }
+
+    private fun priceRowCount(): Long = transaction(PostgresSupport.database) { TariffPriceTable.selectAll().count() }
+
+    private fun currentPriceConfirmations(): List<Instant> = transaction(PostgresSupport.database) {
+        TariffPriceTable.selectAll().where { TariffPriceTable.effectiveTo.isNull() }.map { it.toTariffPrice().lastConfirmedAt }
     }
 
     private fun providerIds(statuses: List<SystemStatus>): List<Long> = transaction(PostgresSupport.database) {

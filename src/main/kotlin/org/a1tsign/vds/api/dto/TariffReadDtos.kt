@@ -18,6 +18,19 @@ data class TariffSearchItemDto(
 )
 
 /**
+ * One row of `GET /api/v1/tariffs/by-provider`: a provider with at least one matching tariff that
+ * has a current MONTHLY price. [cheapestTariff] is the first of them by `amountUsd` (absent last),
+ * then by id; [matchingTariffCount] includes it.
+ */
+@Serializable
+data class ProviderCheapestTariffDto(
+    val provider: ProviderDto,
+    val cheapestTariff: TariffDto,
+    val cheapestPrice: PriceDto,
+    val matchingTariffCount: Int,
+)
+
+/**
  * `GET /api/v1/tariffs/{id}`: the tariff, its provider, its locations, and the current price of each
  * billing period that has one (at most one per period, by `uq_tariff_price_current`).
  */
@@ -45,6 +58,7 @@ data class PriceHistoryItemDto(
     @Contextual val effectiveFrom: Instant,
     @Contextual val effectiveTo: Instant? = null,
     val dataSource: String,
+    @Contextual val lastConfirmedAt: Instant,
 )
 
 fun TariffPrice.toHistoryDto() = PriceHistoryItemDto(
@@ -58,4 +72,5 @@ fun TariffPrice.toHistoryDto() = PriceHistoryItemDto(
     effectiveFrom = effectiveFrom,
     effectiveTo = effectiveTo,
     dataSource = dataSource.name,
+    lastConfirmedAt = lastConfirmedAt,
 )

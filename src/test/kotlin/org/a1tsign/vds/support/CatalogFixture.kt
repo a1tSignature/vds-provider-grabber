@@ -86,6 +86,7 @@ class CatalogFixture(private val database: Database, private val providers: Prov
             it[TariffPriceTable.dataSource] = dataSource.name
             it[TariffPriceTable.recordedBy] = null
             it[TariffPriceTable.createdAt] = effectiveFrom.toUtcOffset()
+            it[TariffPriceTable.lastConfirmedAt] = effectiveFrom.toUtcOffset()
         }
     }
 }

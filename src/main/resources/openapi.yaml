@@ -539,6 +539,12 @@ paths:
           in: query
           schema: { type: boolean }
           description: No default; absent means no filter on stock status.
+        - name: hasPrice
+          in: query
+          schema: { type: boolean }
+          description: >-
+            true keeps only tariffs that have a current price for the requested billingPeriod, false
+            only those that have none; absent means no filter.
         - { $ref: "#/components/parameters/PageParam" }
         - { $ref: "#/components/parameters/SizeParam" }
         - name: sort
@@ -551,6 +557,72 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TariffSearchItemPage" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+
+  /api/v1/tariffs/by-provider:
+    get:
+      tags: [Tariffs]
+      summary: Cheapest matching monthly tariff per provider
+      description: >-
+        Required role: VIEWER. One element per provider that has at least one tariff matching the
+        filters with a current price. The billing period is fixed to MONTHLY: other periods are
+        never converted or used as a fallback, and billingPeriod/hasPrice are not parameters here.
+        cheapestTariff is the matching tariff with the smallest amountUsd (a price without amountUsd
+        ranks last), ties broken by the smaller tariff id; matchingTariffCount includes it.
+        totalElements counts providers. activeOnly defaults to true. Sortable fields: priceUsd (the
+        cheapest price's amountUsd; absent values last in both directions), name (provider name),
+        id (provider id). An absent sort means priceUsd,asc.
+      parameters:
+        - name: providerId
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: country
+          in: query
+          schema: { type: string, pattern: "^[A-Z]{2}$" }
+          description: Matches a linked location's country code.
+        - name: minVcpu
+          in: query
+          schema: { type: integer }
+        - name: minRamMb
+          in: query
+          schema: { type: integer }
+        - name: minDiskGb
+          in: query
+          schema: { type: integer }
+        - name: diskType
+          in: query
+          schema: { $ref: "#/components/schemas/DiskType" }
+        - name: maxPriceUsd
+          in: query
+          schema: { type: string, pattern: "^\\d{1,8}(\\.\\d{1,4})?$" }
+        - name: paymentMethod
+          in: query
+          schema: { $ref: "#/components/schemas/PaymentMethod" }
+          description: Single value (not repeatable here, unlike GET /api/v1/providers).
+        - name: unmeteredTraffic
+          in: query
+          schema: { type: boolean }
+        - name: activeOnly
+          in: query
+          schema: { type: boolean, default: true }
+        - name: inStock
+          in: query
+          schema: { type: boolean }
+          description: No default; absent means no filter on stock status.
+        - { $ref: "#/components/parameters/PageParam" }
+        - { $ref: "#/components/parameters/SizeParam" }
+        - name: sort
+          in: query
+          schema: { type: string }
+          description: "field or field,asc|desc. Allowed fields: priceUsd, name, id. Default: priceUsd,asc."
+      responses:
+        "200":
+          description: A page of providers, each with its cheapest matching monthly tariff.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderCheapestTariffPage" }
         "400": { $ref: "#/components/responses/BadRequestError" }
         "401": { $ref: "#/components/responses/UnauthorizedError" }
         "403": { $ref: "#/components/responses/ForbiddenError" }
@@ -697,8 +769,9 @@ paths:
       tags: [Prices]
       summary: Set the current price for a billing period
       description: >-
-        Required role: EDITOR. 200 = idempotent no-op when amount and currency equal the current
-        row (effectiveFrom is ignored in that case). 201 = a new row is inserted and the previous
+        Required role: EDITOR. 200 = amount and currency equal the current row: no row is added and
+        no value changes (effectiveFrom and dataSource are ignored), only that row's lastConfirmedAt
+        advances to the time of the request. 201 = a new row is inserted and the previous
         current row for this billing period is closed at the new row's effectiveFrom. 409 = the
         requested effectiveFrom is back-dated or equal to the current row's effectiveFrom. 400 =
         effectiveFrom is more than 60 seconds in the future. The response carries
@@ -710,7 +783,7 @@ paths:
             schema: { $ref: "#/components/schemas/PriceWriteRequest" }
       responses:
         "200":
-          description: Idempotent no-op -- the submitted amount/currency already is the current price.
+          description: The submitted amount/currency already is the current price; only lastConfirmedAt advanced.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PriceDto" }
@@ -1509,6 +1582,20 @@ components:
           allOf: [{ $ref: "#/components/schemas/PriceDto" }]
           description: Absent when there is no current price for the requested billingPeriod.
 
+    ProviderCheapestTariffDto:
+      type: object
+      required: [provider, cheapestTariff, cheapestPrice, matchingTariffCount]
+      properties:
+        provider: { $ref: "#/components/schemas/ProviderDto" }
+        cheapestTariff: { $ref: "#/components/schemas/TariffDto" }
+        cheapestPrice:
+          allOf: [{ $ref: "#/components/schemas/PriceDto" }]
+          description: The current MONTHLY price of cheapestTariff; amountUsd is absent when it was written without an FX rate.
+        matchingTariffCount:
+          type: integer
+          minimum: 1
+          description: How many of the provider's tariffs match the filters and have a current MONTHLY price, cheapestTariff included.
+
     TariffDetailDto:
       type: object
       required: [tariff, provider, locations, currentPrices]
@@ -1523,9 +1610,16 @@ components:
           items: { $ref: "#/components/schemas/PriceDto" }
           description: At most one row per billingPeriod.
 
+    LastConfirmedAt:
+      type: string
+      format: date-time
+      description: >-
+        When a client with write access last submitted this row's amount and currency: the time the
+        row was written, moved forward by every later unchanged PUT .../price. Never set by a client.
+
     PriceHistoryItemDto:
       type: object
-      required: [id, billingPeriod, amount, currency, effectiveFrom, dataSource]
+      required: [id, billingPeriod, amount, currency, effectiveFrom, dataSource, lastConfirmedAt]
       properties:
         id: { type: integer, format: int64 }
         billingPeriod: { $ref: "#/components/schemas/BillingPeriod" }
@@ -1537,6 +1631,7 @@ components:
         effectiveFrom: { type: string, format: date-time }
         effectiveTo: { type: string, format: date-time, description: Absent while this row is the current price. }
         dataSource: { $ref: "#/components/schemas/PriceDataSource" }
+        lastConfirmedAt: { $ref: "#/components/schemas/LastConfirmedAt" }
 
     PriceWriteRequest:
       type: object
@@ -1565,7 +1660,7 @@ components:
 
     PriceDto:
       type: object
-      required: [id, tariffId, billingPeriod, amount, currency, effectiveFrom, dataSource, createdAt, warnings]
+      required: [id, tariffId, billingPeriod, amount, currency, effectiveFrom, dataSource, createdAt, lastConfirmedAt, warnings]
       properties:
         id: { type: integer, format: int64 }
         tariffId: { type: integer, format: int64 }
@@ -1580,6 +1675,7 @@ components:
         dataSource: { $ref: "#/components/schemas/PriceDataSource" }
         recordedBy: { type: integer, format: int64, description: Absent for a row with no recording user. }
         createdAt: { type: string, format: date-time }
+        lastConfirmedAt: { $ref: "#/components/schemas/LastConfirmedAt" }
         warnings:
           type: array
           items: { type: string, enum: [NO_FX_RATE] }
@@ -1932,6 +2028,16 @@ components:
             content:
               type: array
               items: { $ref: "#/components/schemas/TariffSearchItemDto" }
+
+    ProviderCheapestTariffPage:
+      allOf:
+        - $ref: "#/components/schemas/PageMeta"
+        - type: object
+          required: [content]
+          properties:
+            content:
+              type: array
+              items: { $ref: "#/components/schemas/ProviderCheapestTariffDto" }
 
     UserPage:
       allOf:

@@ -155,6 +155,7 @@ object TariffPriceTable : Table("tariff_price") {
     val dataSource = varchar("data_source", 32)
     val recordedBy = long("recorded_by").references(AppUserTable.id, onDelete = ReferenceOption.SET_NULL).nullable()
     val createdAt = timestampWithTimeZone("created_at")
+    val lastConfirmedAt = timestampWithTimeZone("last_confirmed_at")
 
     override val primaryKey = PrimaryKey(id)
 }

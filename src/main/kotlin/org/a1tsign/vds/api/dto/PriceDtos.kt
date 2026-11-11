@@ -41,6 +41,7 @@ data class PriceDto(
     val dataSource: String,
     val recordedBy: Long? = null,
     @Contextual val createdAt: Instant,
+    @Contextual val lastConfirmedAt: Instant,
     val warnings: List<String> = emptyList(),
 )
 
@@ -58,5 +59,6 @@ fun TariffPrice.toDto(warnings: List<String> = emptyList()) = PriceDto(
     dataSource = dataSource.name,
     recordedBy = recordedBy,
     createdAt = createdAt,
+    lastConfirmedAt = lastConfirmedAt,
     warnings = warnings,
 )

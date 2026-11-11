@@ -96,7 +96,7 @@ class ProviderSystemStatusMigrationTest {
             .cleanDisabled(true)
             .load()
             .migrate()
-        assertEquals(1, result.migrationsExecuted, "exactly V2 was pending")
+        assertTrue(result.migrationsExecuted >= 1, "V2 and everything after it was pending")
     }
 
     /** Plain JDBC, V1 columns only -- a row written before `system_status` existed. */

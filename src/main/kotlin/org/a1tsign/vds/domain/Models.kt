@@ -92,6 +92,8 @@ data class TariffPrice(
     val dataSource: PriceDataSource,
     val recordedBy: Long?,
     val createdAt: Instant,
+    /** When a writer last asserted this row's amount and currency; never earlier than a previous value. */
+    val lastConfirmedAt: Instant,
 )
 
 data class CurrencyRate(

@@ -377,8 +377,8 @@ class CatalogApiClient(
 
     /**
      * `PUT /api/v1/tariffs/{id}/price`, already idempotent on the vds-001 side: `200` means the
-     * current row equals the submitted price and nothing was written, `201` means a row was
-     * appended. Both facts, plus the `NO_FX_RATE` warning, are reported in [PriceWriteOutcome].
+     * current row equals the submitted price and only its `lastConfirmedAt` advanced, `201` means a
+     * row was appended. Both facts, plus the `NO_FX_RATE` warning, are reported in [PriceWriteOutcome].
      */
     suspend fun putPrice(tariffId: Long, request: PriceWrite): PriceWriteOutcome {
         val result = call(

@@ -300,6 +300,7 @@ class SchemaEnumParityTest : AbstractDbTest() {
                 it[dataSource] = PriceDataSource.MANUAL.name
                 it[recordedBy] = userId
                 it[TariffPriceTable.createdAt] = now.toUtcOffset()
+                it[TariffPriceTable.lastConfirmedAt] = now.toUtcOffset()
             }[TariffPriceTable.id]
 
             val price = TariffPriceTable.selectAll().where { TariffPriceTable.id eq priceId }.single().toTariffPrice()

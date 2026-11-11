@@ -43,7 +43,8 @@ class PriceService(
 
     /**
      * `PUT .../price`. An idempotent re-submission (same amount + currency as the current row)
-     * writes nothing and ignores a supplied `effectiveFrom`; otherwise the current row (if any) is
+     * only advances that row's `lastConfirmedAt` and ignores a supplied `effectiveFrom`/`dataSource`;
+     * it is reported as `created = false`. Otherwise the current row (if any) is
      * closed at the new row's `effectiveFrom` and a new row is inserted -- never an in-place update
      * of `amount`/`currency`/the USD snapshot.
      */
@@ -63,7 +64,8 @@ class PriceService(
                 val current = prices.findCurrent(tariffId, billingPeriod)
                 val idempotent = current != null && current.amount.compareTo(amount) == 0 && current.currency == currency
                 if (idempotent) {
-                    PriceWriteResult(current!!, created = false, warnings = emptyList())
+                    prices.confirm(current!!.id, now)
+                    PriceWriteResult(prices.findById(current.id)!!, created = false, warnings = emptyList())
                 } else {
                     val effectiveFrom = requestedEffectiveFrom ?: now
                     if (effectiveFrom.isAfter(now.plus(FUTURE_SKEW))) {

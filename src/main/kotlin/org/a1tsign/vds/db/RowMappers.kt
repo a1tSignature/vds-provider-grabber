@@ -108,6 +108,7 @@ fun ResultRow.toTariffPrice(): TariffPrice =
         dataSource = parseDbEnum("tariff_price", "data_source", this[TariffPriceTable.dataSource]),
         recordedBy = this[TariffPriceTable.recordedBy],
         createdAt = this[TariffPriceTable.createdAt].toInstant(),
+        lastConfirmedAt = this[TariffPriceTable.lastConfirmedAt].toInstant(),
     )
 
 fun ResultRow.toCurrencyRate(): CurrencyRate =

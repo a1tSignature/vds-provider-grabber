@@ -7,9 +7,8 @@ import java.math.BigDecimal
 import java.time.Instant
 
 /**
- * One row of `GET /api/v1/tariffs` -- the tariff, a provider summary (reusing [ProviderDto], which
- * already carries at least `id`/`slug`/`name`) and the *current* price for the requested
- * `billingPeriod` ([currentPrice], absent -- not `null` -- when there is none for that period).
+ * One row of `GET /api/v1/tariffs`: the tariff, its provider and the current price for the requested
+ * `billingPeriod`. [currentPrice] is omitted when there is none.
  */
 @Serializable
 data class TariffSearchItemDto(
@@ -19,9 +18,8 @@ data class TariffSearchItemDto(
 )
 
 /**
- * `GET /api/v1/tariffs/{id}` -- the tariff, its provider, every linked location and **one current
- * price per billing period that has one** (never more than one per period, by the
- * `uq_tariff_price_current` constraint).
+ * `GET /api/v1/tariffs/{id}`: the tariff, its provider, its locations, and the current price of each
+ * billing period that has one (at most one per period, by `uq_tariff_price_current`).
  */
 @Serializable
 data class TariffDetailDto(
@@ -32,9 +30,8 @@ data class TariffDetailDto(
 )
 
 /**
- * One row of `GET /api/v1/tariffs/{id}/price-history` -- deliberately a narrower field set than
- * [PriceDto] (no `tariffId`, `recordedBy` or `warnings`): the task fixes this exact set, and `/
- * price-history` is purely a read of raw rows, not a mirror of the write response.
+ * One row of `GET /api/v1/tariffs/{id}/price-history`: a raw price row, without the `tariffId`,
+ * `recordedBy` and `warnings` of [PriceDto].
  */
 @Serializable
 data class PriceHistoryItemDto(

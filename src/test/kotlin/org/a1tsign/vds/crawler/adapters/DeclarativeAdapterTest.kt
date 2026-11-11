@@ -131,7 +131,7 @@ class DeclarativeAdapterTest : AbstractDbTest() {
     fun `a required value that is missing or unreadable fails the source, an optional absent one is null`() {
         val cases = mapOf(
             "tariffs.name" to acmePage(planRows = planRow().replace("""<td class="name">VPS 1</td>""", "")),
-            "tariffs.ramMb" to acmePage(planRows = planRow(ram = "2 GB")),
+            "tariffs.ramMb" to acmePage(planRows = planRow(ram = "plenty")),
             "tariffs.diskType" to acmePage(planRows = planRow().replace("""data-disk="NVMe SSD"""", """data-disk="Optane"""")),
             "tariffs.prices[0]" to acmePage(planRows = planRow(month = "ask us")),
         )
@@ -142,8 +142,8 @@ class DeclarativeAdapterTest : AbstractDbTest() {
         }
         assertTrue(
             assertFailsWith<AdapterFailureException> {
-                snapshot(acmeConfig(tariffsSection()), acmePage(planRows = planRow(ram = "2 GB")))
-            }.message!!.contains("2 GB"),
+                snapshot(acmeConfig(tariffsSection()), acmePage(planRows = planRow(ram = "plenty")))
+            }.message!!.contains("plenty"),
             "the message has to name the value that broke, so an operator can fix the config",
         )
 
@@ -208,6 +208,110 @@ class DeclarativeAdapterTest : AbstractDbTest() {
                 acmeConfig(tariffsSection() + LOCATIONS_SECTION),
                 acmePage(extra = LOCATIONS_MARKUP),
             ).locations!!.single().longitude,
+        )
+    }
+
+    @Test
+    fun `a real-world plans page is read through units, suffixes and constants`() {
+        val page = """
+            <html><body><table><tbody>
+              <tr><td>512 MiB</td><td>1 vCPU</td><td>500 GiB</td><td>10 GiB</td><td>$0.00595</td><td>$ 4.00 /mo</td></tr>
+              <tr><td>2 GB</td><td>2 vCPUs</td><td>3 TB</td><td>1 TB NVMe</td><td>$0.02679</td><td>From $1,018.50/mo</td></tr>
+            </tbody></table></body></html>
+        """.trimIndent()
+        val json = """
+            {
+              "schemaVersion": 1, "id": "real-example", "providerSlug": "real-example-test",
+              "baseUrl": "https://real-example.test", "enabled": true,
+              "provider": {"name": {"value": "Real Example"}, "websiteUrl": {"value": "https://real-example.test/"}},
+              "tariffs": {
+                "rootSelector": "table", "rowSelector": "tbody tr",
+                "name": {"selector": "td:nth-child(1)", "text": true},
+                "vcpuCount": {"selector": "td:nth-child(2)", "text": true},
+                "ramMb": {"selector": "td:nth-child(1)", "text": true},
+                "diskGb": {"selector": "td:nth-child(4)", "text": true},
+                "trafficLimitGb": {"selector": "td:nth-child(3)", "text": true},
+                "diskType": {"value": "NVME"},
+                "ipv4Count": {"value": "1"},
+                "virtualization": {"value": "KVM"},
+                "ipv6Supported": {"value": "true"},
+                "prices": [{
+                  "billingPeriod": "MONTHLY", "selector": "td:nth-child(6)", "text": true,
+                  "grouping": ",", "currency": {"bySymbol": {"${'$'}": "USD"}}
+                }]
+              }
+            }
+        """.trimIndent()
+
+        val tariffs = snapshot(json, page).tariffs!!
+
+        assertEquals(listOf(512, 2048), tariffs.map { it.ramMb }, "MiB is kept, GB becomes MB")
+        assertEquals(listOf(1, 2), tariffs.map { it.vcpuCount })
+        assertEquals(listOf(10, 1000), tariffs.map { it.diskGb }, "a decimal TB of disk is 1000 GB")
+        assertEquals(listOf(500, 3000), tariffs.map { it.trafficLimitGb })
+        assertEquals(listOf(DiskType.NVME, DiskType.NVME), tariffs.map { it.diskType })
+        assertEquals(listOf(1, 1), tariffs.map { it.ipv4Count })
+        assertEquals(listOf(true, true), tariffs.map { it.ipv6Supported })
+        assertEquals(listOf(BigDecimal("4.00"), BigDecimal("1018.50")), tariffs.map { it.prices.single().amount })
+        assertEquals("Real Example", snapshot(json, page).provider.name)
+    }
+
+    @Test
+    fun `a size with no unit is read in the config's unit, and a fractional result is refused`() {
+        fun ram(cell: String, unit: String?): Int {
+            val unitKey = unit?.let { ""","unit": "$it"""" } ?: ""
+            val page = "<html><body><table><tbody><tr><td>$cell</td><td>$5</td></tr></tbody></table></body></html>"
+            val json = """
+                {
+                  "schemaVersion": 1, "id": "u", "providerSlug": "u-test", "baseUrl": "https://u.test",
+                  "provider": {"name": {"value": "U"}, "websiteUrl": {"value": "https://u.test/"}},
+                  "tariffs": {
+                    "rootSelector": "table", "rowSelector": "tr",
+                    "name": {"value": "plan"}, "vcpuCount": {"value": "1"}, "diskGb": {"value": "10"},
+                    "ramMb": {"selector": "td:nth-child(1)", "text": true$unitKey},
+                    "diskType": {"value": "SSD"}, "ipv4Count": {"value": "1"}, "virtualization": {"value": "KVM"}
+                  }
+                }
+            """.trimIndent()
+            return snapshot(json, page).tariffs!!.single().ramMb
+        }
+
+        assertEquals(2048, ram("2048", null), "no unit anywhere: the field's own unit")
+        assertEquals(4096, ram("4", "GB"))
+        assertEquals(512, ram("0.5 GB", null))
+        assertEquals(8192, ram("8GB RAM", "MB"), "the unit on the page wins over the config's")
+        assertFailsWith<AdapterFailureException> { ram("0.3 GB", null) }
+    }
+
+    @Test
+    fun `a constant may not be combined with a selector, and must fit its field`() {
+        fun problems(field: String): List<String> {
+            val json = """
+                {
+                  "schemaVersion": 1, "id": "c", "providerSlug": "c-test", "baseUrl": "https://c.test",
+                  "provider": {"name": {"value": "C"}, "websiteUrl": {"value": "https://c.test/"}},
+                  "tariffs": {
+                    "rootSelector": "table", "rowSelector": "tr",
+                    "name": {"value": "plan"}, "vcpuCount": {"value": "1"}, "diskGb": {"value": "10"},
+                    "ramMb": {"value": "1024"}, "diskType": {"value": "SSD"}, "ipv4Count": {"value": "1"},
+                    "virtualization": {"value": "KVM"}, $field
+                  }
+                }
+            """.trimIndent()
+            return when (val parsed = SourceConfigFormat.parse("c.json", json)) {
+                is SourceConfigParse.Valid -> emptyList()
+                is SourceConfigParse.Invalid -> parsed.problems
+            }
+        }
+
+        assertEquals(emptyList(), problems(""""cpuModel": {"value": "EPYC"}"""))
+        assertTrue(problems(""""cpuModel": {"value": "EPYC", "selector": "td", "text": true}""").single().contains("not both"))
+        assertTrue(problems(""""bandwidthMbps": {"value": "fast"}""").single().contains("whole number"))
+        assertTrue(problems(""""bandwidthMbps": {"selector": "td", "text": true, "unit": "GB"}""").single().contains("only allowed"))
+        assertTrue(problems(""""trafficLimitGb": {"selector": "td", "text": true, "unit": "KB"}""").single().contains("must be one of"))
+        assertTrue(
+            problems(""""prices": [{"billingPeriod": "MONTHLY", "value": "5", "currency": {"fixed": "USD"}}]""")
+                .single().contains("'selector' is required"),
         )
     }
 

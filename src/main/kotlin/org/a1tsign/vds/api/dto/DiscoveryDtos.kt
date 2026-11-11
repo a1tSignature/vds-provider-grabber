@@ -76,9 +76,9 @@ data class DiscoverySourceFailureDto(
 )
 
 /**
- * `GET /api/v1/admin/discovery/sources`: the **startup snapshot** of `VDS_DISCOVERY_SOURCES_DIR`
- * (restart-to-apply, vds-004 ADR-01). [problems] are directory-level refusals; [directory] is
- * absent when no directory was read.
+ * `GET /api/v1/admin/discovery/sources`: `VDS_DISCOVERY_SOURCES_DIR` as read at startup; edits apply
+ * after a restart. [problems] are directory-level refusals; [directory] is absent when no directory
+ * was read.
  */
 @Serializable
 data class DiscoverySourcesDto(

@@ -89,24 +89,40 @@ interface FieldSpec {
     val text: Boolean
     val attr: String?
     val required: Boolean
+
+    /**
+     * A constant used instead of reading the page, for what a plans page states once or not at
+     * all ("every plan is KVM with 1 IPv4"). Mutually exclusive with [selector]/[text]/[attr].
+     */
+    val value: String?
 }
 
 /** A string value, exactly as jsoup's `text()`/`attr()` returns it (whitespace already collapsed). */
 @Serializable
 data class TextSpec(
-    override val selector: String,
+    override val selector: String = "",
     override val text: Boolean = false,
     override val attr: String? = null,
     override val required: Boolean = true,
+    override val value: String? = null,
 ) : FieldSpec
 
-/** A whole number. A cell that is not one fails the source instead of becoming `0`. */
+/**
+ * A whole number: the first number in the value, so `2 vCPU Cores` reads as 2. A value with no
+ * number, or with a fractional one, fails the source instead of becoming `0`.
+ *
+ * On a size field (`ramMb`, `diskGb`, `trafficLimitGb`) the unit written after the number -- `MB`,
+ * `MiB`, `GB`, `GiB`, `TB`, `TiB` -- is converted to the field's own unit; [unit] names the unit
+ * of a page that writes none, and defaults to the field's own.
+ */
 @Serializable
 data class IntSpec(
-    override val selector: String,
+    override val selector: String = "",
     override val text: Boolean = false,
     override val attr: String? = null,
     override val required: Boolean = true,
+    override val value: String? = null,
+    val unit: String? = null,
 ) : FieldSpec
 
 /**
@@ -117,23 +133,25 @@ data class IntSpec(
  */
 @Serializable
 data class EnumSpec(
-    override val selector: String,
-    val values: Map<String, String>,
+    override val selector: String = "",
+    val values: Map<String, String> = emptyMap(),
     val default: String? = null,
     override val text: Boolean = false,
     override val attr: String? = null,
     override val required: Boolean = true,
+    override val value: String? = null,
 ) : FieldSpec
 
 /** A boolean, through the same explicit map as [EnumSpec] -- never a guess from a value's shape. */
 @Serializable
 data class FlagSpec(
-    override val selector: String,
-    val values: Map<String, Boolean>,
+    override val selector: String = "",
+    val values: Map<String, Boolean> = emptyMap(),
     val default: Boolean? = null,
     override val text: Boolean = false,
     override val attr: String? = null,
     override val required: Boolean = true,
+    override val value: String? = null,
 ) : FieldSpec
 
 /**
@@ -149,11 +167,14 @@ data class DecimalSpec(
     override val text: Boolean = false,
     override val attr: String? = null,
     override val required: Boolean = true,
+    override val value: String? = null,
 ) : FieldSpec
 
 /**
  * One advertised price: which [billingPeriod] it is, where to read it, which currency its symbol
- * stands for and how the page writes its number.
+ * stands for and how the page writes its number. The amount is the first number after the currency
+ * symbol (the first number in the value when the currency is `fixed`), so `From $8.50 /month`
+ * reads as 8.50.
  *
  * [maxFractionDigits] is bounded by [SourceConfigFormat.MONEY_SCALE] -- the `NUMERIC(12, 4)` the
  * catalog stores. An amount with more fraction digits than that is refused rather than rounded: the
@@ -172,6 +193,7 @@ data class PriceSpec(
     override val text: Boolean = false,
     override val attr: String? = null,
     override val required: Boolean = true,
+    override val value: String? = null,
 ) : FieldSpec
 
 /**
@@ -310,6 +332,9 @@ object SourceConfigFormat {
     const val LOCATIONS_NOT_OBSERVED: String = "NOT_OBSERVED"
 
     const val LOCATIONS_ALL: String = "ALL_LOCATIONS"
+
+    /** The units an [IntSpec.unit] may name. */
+    val SIZE_UNITS: List<String> = listOf("MB", "GB", "TB")
 
     /** `NUMERIC(12, 4)` on `tariff_price.amount`. */
     const val MONEY_SCALE: Int = 4
@@ -531,8 +556,8 @@ object SourceConfigFormat {
             minRows("tariffs.minRows", section.minRows)
             field("tariffs.name", section.name, mandatory = true)
             field("tariffs.vcpuCount", section.vcpuCount, mandatory = true)
-            field("tariffs.ramMb", section.ramMb, mandatory = true)
-            field("tariffs.diskGb", section.diskGb, mandatory = true)
+            field("tariffs.ramMb", section.ramMb, mandatory = true, sized = true)
+            field("tariffs.diskGb", section.diskGb, mandatory = true, sized = true)
             field("tariffs.ipv4Count", section.ipv4Count, mandatory = true)
             enumField("tariffs.diskType", section.diskType, DiskType.entries.map { it.name }, mandatory = true)
             enumField("tariffs.virtualization", section.virtualization, Virtualization.entries.map { it.name }, mandatory = true)
@@ -540,7 +565,7 @@ object SourceConfigFormat {
             section.url?.let { field("tariffs.url", it) }
             section.cpuModel?.let { field("tariffs.cpuModel", it) }
             section.bandwidthMbps?.let { field("tariffs.bandwidthMbps", it) }
-            section.trafficLimitGb?.let { field("tariffs.trafficLimitGb", it) }
+            section.trafficLimitGb?.let { field("tariffs.trafficLimitGb", it, sized = true) }
             section.ipv6Supported?.let { field("tariffs.ipv6Supported", it) }
             section.inStock?.let { field("tariffs.inStock", it) }
             constant("tariffs.locationKeys", section.locationKeys, listOf(LOCATIONS_NOT_OBSERVED, LOCATIONS_ALL))
@@ -560,11 +585,23 @@ object SourceConfigFormat {
          * carries. The one thing a type cannot decide is **which** enum an [EnumSpec] targets --
          * that is the call site's knowledge, so [enumField] adds it.
          */
-        fun field(key: String, spec: FieldSpec, mandatory: Boolean = false) {
-            selector(key, spec.selector)
-            val sources = listOfNotNull(spec.text.takeIf { it }, spec.attr?.takeIf { it.isNotBlank() })
-            if (sources.size != 1) {
-                fail(key, "must set exactly one of \"text\": true and \"attr\": \"<name>\"")
+        fun field(key: String, spec: FieldSpec, mandatory: Boolean = false, sized: Boolean = false) {
+            val constant = spec.value
+            if (constant != null) {
+                constantValue(key, spec, constant)
+            } else {
+                selector(key, spec.selector)
+                val sources = listOfNotNull(spec.text.takeIf { it }, spec.attr?.takeIf { it.isNotBlank() })
+                if (sources.size != 1) {
+                    fail(key, "must set exactly one of \"text\": true and \"attr\": \"<name>\"")
+                }
+            }
+            if (spec is IntSpec && spec.unit != null) {
+                if (!sized) {
+                    fail("$key.unit", "is only allowed on ramMb, diskGb and trafficLimitGb", spec.unit)
+                } else if (spec.unit !in SIZE_UNITS) {
+                    fail("$key.unit", "must be one of ${SIZE_UNITS.joinToString()}", spec.unit)
+                }
             }
             // The snapshot has no place for a missing value here, so "optional" would only mean
             // "fail later, in the interpreter, after the page was already fetched".
@@ -572,7 +609,7 @@ object SourceConfigFormat {
                 fail(key, "must not set \"required\": false: this field has no optional form")
             }
             when (spec) {
-                is FlagSpec -> if (spec.values.isEmpty()) fail(key, "needs a non-empty \"values\" map")
+                is FlagSpec -> if (constant == null && spec.values.isEmpty()) fail(key, "needs a non-empty \"values\" map")
                 is DecimalSpec -> {
                     separators(key, spec.grouping, spec.decimal)
                     fractionDigits(key, spec.maxFractionDigits, COORDINATE_SCALE)
@@ -587,8 +624,26 @@ object SourceConfigFormat {
             }
         }
 
+        /** A `"value"` replaces the page read entirely, so it may not be combined with one. */
+        fun constantValue(key: String, spec: FieldSpec, constant: String) {
+            if (spec.selector.isNotEmpty() || spec.text || spec.attr != null) {
+                fail(key, "must set either \"value\" or a selector with \"text\"/\"attr\", not both")
+            }
+            when (spec) {
+                is PriceSpec, is DecimalSpec -> fail(key, "must be read from the page: \"value\" is not allowed here")
+                is IntSpec -> if (constant.toIntOrNull() == null) fail("$key.value", "must be a whole number", constant)
+                is FlagSpec -> if (constant.toBooleanStrictOrNull() == null) fail("$key.value", "must be true or false", constant)
+                else -> if (constant.isBlank()) fail("$key.value", "must not be blank")
+            }
+        }
+
         fun enumField(key: String, spec: EnumSpec, constants: List<String>, mandatory: Boolean = false) {
             field(key, spec, mandatory)
+            val constant = spec.value
+            if (constant != null) {
+                constant("$key.value", constant, constants)
+                return
+            }
             if (spec.values.isEmpty()) {
                 fail(key, "needs a non-empty \"values\" map of page value -> constant")
             }

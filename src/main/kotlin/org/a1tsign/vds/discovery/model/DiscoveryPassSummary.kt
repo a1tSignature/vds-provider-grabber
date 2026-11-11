@@ -19,7 +19,7 @@ enum class PassStatus { RUNNING, COMPLETED, CANCELLED }
 
 /** Why one search hit did not become a candidate. Every rejection is counted under exactly one. */
 enum class RejectionReason {
-    /** The normalized domain is on `VDS_DISCOVERY_DOMAIN_DENYLIST` (or is a subdomain of an entry). */
+    /** The normalized domain is on the configured denylist (or is a subdomain of an entry). */
     DENYLIST,
 
     /** Neither title nor snippet contains any of `VDS_DISCOVERY_REQUIRED_KEYWORDS`. */

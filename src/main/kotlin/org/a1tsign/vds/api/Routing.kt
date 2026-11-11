@@ -18,10 +18,7 @@ import org.a1tsign.vds.api.routes.tariffRoutes
 import org.a1tsign.vds.api.routes.priceRoutes
 import org.a1tsign.vds.api.routes.openApiRoutes
 
-/**
- * The single place every route group is registered. Keep it one line per group -- a later task
- * adds its own `xxxRoutes(components.yyy)` line here and nothing else.
- */
+/** Registers every route group, one line per group. */
 fun Application.registerRoutes(components: AppComponents) {
     if (components.isConfigured) installBearerJwtAuth(components.authService)
     routing {
@@ -45,7 +42,6 @@ fun Application.registerRoutes(components: AppComponents) {
                 priceRoutes(components.priceService)
                 dictionaryRoutes()
                 openApiRoutes()
-                // All protected API route groups are registered inside this block in later tasks.
             }
         }
     }

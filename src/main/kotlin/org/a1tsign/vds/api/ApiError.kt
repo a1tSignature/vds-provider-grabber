@@ -23,11 +23,10 @@ import io.ktor.server.plugins.PayloadTooLargeException as KtorPayloadTooLargeExc
 data class ApiErrorDetail(val field: String, val message: String)
 
 /**
- * The single error body of every non-2xx response: `400, 401, 403, 404, 409, 413, 415, 429, 500,
- * 503` all look like this, so a client needs one parser.
+ * The body of every non-2xx response, so a client needs one parser.
  *
- * [details] is present (possibly empty) only for a validation failure and omitted otherwise --
- * `explicitNulls = false` on [ApiJson] is what drops the key rather than sending `"details":null`.
+ * [details] is present (possibly empty) only for a validation failure. Otherwise the key is omitted,
+ * not sent as `null`, because [ApiJson] has `explicitNulls = false`.
  */
 @Serializable
 data class ApiError(
@@ -40,13 +39,11 @@ data class ApiError(
 )
 
 /**
- * Every failure a handler raises deliberately. Carrying the status on the exception is what lets
- * [installApiErrorHandling] map the whole hierarchy with one `exception<ApiException>` branch, so
- * a later task adding an endpoint cannot forget to register its status.
+ * An expected failure raised by a handler. The status travels with the exception, so
+ * [installApiErrorHandling] maps the whole hierarchy in one branch and new endpoints need no
+ * registration.
  *
- * Being `sealed`, it can only be extended from inside `org.a1tsign.vds.api` -- route files live in
- * `org.a1tsign.vds.api.routes`, so a later task that needs a new failure type adds it to **this
- * file** rather than next to its endpoint.
+ * Sealed: subtypes must be declared in package `org.a1tsign.vds.api`, not in `api.routes`.
  */
 sealed class ApiException(
     val status: HttpStatusCode,
@@ -58,7 +55,7 @@ sealed class ApiException(
 class ValidationException(details: List<ApiErrorDetail>) :
     ApiException(HttpStatusCode.BadRequest, "Request validation failed", details)
 
-/** `401` -- no or invalid credentials. The message is deliberately uninformative. */
+/** `401`: missing or invalid credentials. The message does not say which. */
 class UnauthorizedException : ApiException(HttpStatusCode.Unauthorized, "Authentication required")
 
 /** `403` -- authenticated but not permitted. */
@@ -88,31 +85,20 @@ private val logger = LoggerFactory.getLogger("org.a1tsign.vds.api.ApiError")
 
 private const val INTERNAL_ERROR_MESSAGE = "Internal error"
 
-/**
- * What the client is told when a request body could not be read. Deliberately fixed: Ktor's own
- * message for a deserialization failure names the DTO class
- * ("Failed to convert request body to class org.a1tsign.vds.api.XxxRequest"), which is internal
- * structure the client has no business seeing.
- */
+/** Fixed, because Ktor's own deserialization message names the internal DTO class. */
 private const val MALFORMED_BODY_MESSAGE = "Malformed request body"
 
-/** `415`. What a client that forgot `-H 'Content-Type: application/json'` is told. */
 private const val UNSUPPORTED_MEDIA_TYPE_MESSAGE = "Content-Type must be application/json"
 
 /**
- * Maps every failure onto [ApiError]. Install as `install(StatusPages) { installApiErrorHandling(clock) }`.
+ * Maps every failure to [ApiError]. Install as `install(StatusPages) { installApiErrorHandling(clock) }`.
  *
- * `StatusPages` dispatches to the most specific registered supertype, so the five branches below
- * partition every throwable: our own hierarchy; Ktor's `ContentTransformationException` family,
- * which extends `java.io.IOException` and **not** `BadRequestException` (verified with `javap` on
- * `ktor-server-core-jvm-3.6.0`) -- its body-size member registered separately as a `413`, the rest
- * as a `415`; Ktor's `BadRequestException` (what `ContentNegotiation` wraps *all* deserialization
- * failures in); and everything else.
+ * `StatusPages` picks the most specific registered supertype. Ktor's
+ * `ContentTransformationException` extends `IOException`, not `BadRequestException`, so it needs its
+ * own `415` branch; its payload-too-large subtype gets a separate `413` branch.
  *
- * The catch-all is the security-relevant one: a `500` body must never carry a stack trace, an
- * exception class name, a SQL fragment or a JDBC URL. It gets a fixed generic message plus a short
- * correlation ref that is also logged at ERROR next to the real exception, so a user-reported
- * `Internal error (ref: 7f3a2c91)` can be grepped straight to the log line.
+ * A `500` body must never carry a stack trace, class name, SQL or JDBC URL. It gets a fixed message
+ * and a short ref, which is logged at ERROR next to the real exception.
  */
 fun StatusPagesConfig.installApiErrorHandling(clock: Clock) {
     exception<ApiException> { call, cause ->
@@ -122,23 +108,12 @@ fun StatusPagesConfig.installApiErrorHandling(clock: Clock) {
         call.respondApiError(clock, cause.status, cause.message, cause.details)
     }
     exception<KtorPayloadTooLargeException> { call, _ ->
-        // Same message as our own PayloadTooLargeException carries on the Content-Length path, so
-        // a client cannot tell which of the two body-limit paths rejected it.
+        // Same message as the Content-Length path, so both limit paths look identical to a client.
         call.respondApiError(clock, HttpStatusCode.PayloadTooLarge, BODY_TOO_LARGE_MESSAGE)
     }
     exception<ContentTransformationException> { call, cause ->
-        // A missing or non-JSON Content-Type on a receive<Dto>() endpoint: a client mistake, so a
-        // 4xx and a WARN -- never the catch-all's 500 + ERROR, which would mislead the client and
-        // inflate the server-error rate the later dashboards are built on.
-        //
-        // 415 is Ktor's own verdict on this family, not a guess: DefaultEnginePipeline answers
-        // UnsupportedMediaType for both UnsupportedMediaTypeException and
-        // CannotTransformContentToTypeException (3.6.0 bytecode). This branch exists because
-        // StatusPages' catch-all intercepts first and shadowed that default into a 500.
-        // Measured, both for a request with no Content-Type header at all and for text/plain and
-        // application/xml: all three raise CannotTransformContentToTypeException (no converter
-        // claims them), never UnsupportedMediaTypeException -- which 3.6.0 only ever throws on the
-        // multipart paths -- so one branch on the family covers them all.
+        // A missing or non-JSON Content-Type is a client mistake: 415 and WARN, not 500 and ERROR.
+        // Ktor would answer 415 by itself, but the Throwable branch below intercepts first.
         logger.warn("Rejected an unsupported Content-Type on ${call.request.path()}: ${cause.message}")
         call.respondApiError(clock, HttpStatusCode.UnsupportedMediaType, UNSUPPORTED_MEDIA_TYPE_MESSAGE)
     }
@@ -149,8 +124,7 @@ fun StatusPagesConfig.installApiErrorHandling(clock: Clock) {
         call.respondApiError(clock, HttpStatusCode.BadRequest, MALFORMED_BODY_MESSAGE)
     }
     exception<Throwable> { call, cause ->
-        // The first group of a UUID is 8 hex digits -- short enough to read over the phone, wide
-        // enough not to collide within a log retention window.
+        // 8 hex digits: easy to read out, unlikely to collide within the log retention window.
         val ref = UUID.randomUUID().toString().take(8)
         logger.error(
             "Unhandled exception (ref: $ref) on ${call.request.httpMethod.value} ${call.request.path()}",
@@ -172,7 +146,7 @@ private suspend fun ApplicationCall.respondApiError(
 ) = respond(
     status,
     ApiError(
-        // The injected Clock, never Instant.now(): a test can then assert the envelope exactly.
+        // The injected Clock, not Instant.now(), so tests can assert the exact envelope.
         timestamp = clock.nowUtc(),
         status = status.value,
         error = status.description,

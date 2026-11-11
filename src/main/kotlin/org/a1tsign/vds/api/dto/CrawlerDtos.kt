@@ -7,14 +7,12 @@ import org.a1tsign.vds.crawler.model.CrawlRunSummary
 import java.time.Instant
 
 /**
- * Body of `POST /api/v1/admin/crawl/run`. Every field is optional: an absent [adapterIds] means
- * "the configured default selection" (the registry's `includedByDefault` entries, or exactly the
- * ids of `VDS_CRAWLER_ADAPTERS`), an absent [dryRun] means the configured
- * `VDS_CRAWLER_DRY_RUN_DEFAULT`, and an absent [maxOutOfStockRatio] means the configured
- * `VDS_CRAWLER_MAX_OUT_OF_STOCK_RATIO`. [maxOutOfStockRatio] is a plain-decimal **string**, like
- * every decimal on this API's wire -- `Validation.validateRatio` parses it into a `BigDecimal` in
- * `[0, 1]`; a JSON number here is a 400 before this class is even reached (the field is typed
- * `String`, and the shared `ApiJson` is not lenient).
+ * Body of `POST /api/v1/admin/crawl/run`. Absent fields fall back to configuration: [adapterIds] to
+ * the default selection (`VDS_CRAWLER_ADAPTERS`, or the registry's `includedByDefault` entries),
+ * [dryRun] to `VDS_CRAWLER_DRY_RUN_DEFAULT`, [maxOutOfStockRatio] to
+ * `VDS_CRAWLER_MAX_OUT_OF_STOCK_RATIO`.
+ *
+ * [maxOutOfStockRatio] is a plain-decimal string in `[0, 1]`; a JSON number is a `400`.
  */
 @Serializable
 data class CrawlRunTriggerRequest(
@@ -27,7 +25,7 @@ data class CrawlRunTriggerRequest(
 @Serializable
 data class CrawlRunTriggerResponse(val runId: String)
 
-/** Mirrors `crawler.model.AdapterRunResult`, kept as a separate wire type by ADR-03 convention. */
+/** Wire form of `crawler.model.AdapterRunResult`. */
 @Serializable
 data class AdapterRunResultDto(
     val adapterId: String,
@@ -60,9 +58,9 @@ data class CrawlRunSummaryDto(
 )
 
 /**
- * One row of `GET /api/v1/admin/crawl/adapters`. [enabled] means "selected by the current
- * configuration"; [origin] tells a compiled adapter from one described by a JSON file (vds-004
- * ADR-01) and [file] names that file, present exactly when [origin] is `CONFIG`.
+ * One row of `GET /api/v1/admin/crawl/adapters`. [enabled] means selected by the current
+ * configuration. [origin] tells a compiled adapter from a JSON-described one; [file] names that
+ * JSON file and is present only when [origin] is `CONFIG`.
  */
 @Serializable
 data class AdapterInfoDto(

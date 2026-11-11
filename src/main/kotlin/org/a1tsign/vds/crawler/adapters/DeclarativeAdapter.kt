@@ -168,11 +168,11 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
                 url = section.url?.let { text(row, it, "tariffs.url") },
                 vcpuCount = present(int(row, section.vcpuCount, "tariffs.vcpuCount"), "tariffs.vcpuCount"),
                 cpuModel = section.cpuModel?.let { text(row, it, "tariffs.cpuModel") },
-                ramMb = present(int(row, section.ramMb, "tariffs.ramMb"), "tariffs.ramMb"),
-                diskGb = present(int(row, section.diskGb, "tariffs.diskGb"), "tariffs.diskGb"),
+                ramMb = present(size(row, section.ramMb, SizeUnit.MB, "tariffs.ramMb"), "tariffs.ramMb"),
+                diskGb = present(size(row, section.diskGb, SizeUnit.GB, "tariffs.diskGb"), "tariffs.diskGb"),
                 diskType = present(enum(row, section.diskType, DiskType.entries, "tariffs.diskType"), "tariffs.diskType"),
                 bandwidthMbps = section.bandwidthMbps?.let { int(row, it, "tariffs.bandwidthMbps") },
-                trafficLimitGb = section.trafficLimitGb?.let { int(row, it, "tariffs.trafficLimitGb") },
+                trafficLimitGb = section.trafficLimitGb?.let { size(row, it, SizeUnit.GB, "tariffs.trafficLimitGb") },
                 ipv4Count = present(int(row, section.ipv4Count, "tariffs.ipv4Count"), "tariffs.ipv4Count"),
                 ipv6Supported = section.ipv6Supported?.let { flag(row, it, "tariffs.ipv6Supported") },
                 virtualization = present(
@@ -227,6 +227,7 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
      * [SourceConfigFormat.VALUE_IN_MESSAGE_LIMIT] characters of anything it quotes.
      */
     private fun raw(root: Element, spec: FieldSpec, key: String): String? {
+        spec.value?.let { return it }
         val element = root.selectFirst(spec.selector)
             ?: return absent(spec, "$key: the page has no element matching '${spec.selector}'")
         val attribute = spec.attr
@@ -251,12 +252,37 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
 
     private fun int(root: Element, spec: IntSpec, key: String): Int? {
         val value = raw(root, spec, key) ?: return null
-        return value.toIntOrNull() ?: throw AdapterFailureException("$key is not a whole number: '${cut(value)}'")
+        val number = FIRST_NUMBER.find(value)?.groupValues?.get(1)
+            ?: throw AdapterFailureException("$key is not a whole number: '${cut(value)}'")
+        return whole(BigDecimal(number.replace(",", "")), key, value)
     }
+
+    /**
+     * A size in [target] units. The unit written after the number wins; a page that writes none
+     * is read in the config's `unit`, or in [target] itself.
+     */
+    private fun size(root: Element, spec: IntSpec, target: SizeUnit, key: String): Int? {
+        val value = raw(root, spec, key) ?: return null
+        val match = FIRST_NUMBER.find(value)
+            ?: throw AdapterFailureException("$key is not a size this source can read: '${cut(value)}'")
+        val unit = SizeUnit.written(match.groupValues[2])
+            ?: spec.unit?.let { name -> SizeUnit.entries.firstOrNull { it.name == name } }
+            ?: target
+        val amount = BigDecimal(match.groupValues[1].replace(",", ""))
+        return whole(amount.multiply(unit.megabytes(target)).divide(target.megabytes(target)), key, value)
+    }
+
+    private fun whole(number: BigDecimal, key: String, value: String): Int =
+        try {
+            number.intValueExact()
+        } catch (notWhole: ArithmeticException) {
+            throw AdapterFailureException("$key is not a whole number: '${cut(value)}'")
+        }
 
     private fun <T : Enum<T>> enum(root: Element, spec: EnumSpec, constants: List<T>, key: String): T? {
         val value = raw(root, spec, key) ?: return null
-        val name = spec.values[value]
+        val name = spec.value
+            ?: spec.values[value]
             ?: spec.default
             ?: throw AdapterFailureException(
                 "$key is not a value this source maps (${spec.values.keys.joinToString { cut(it) }}): '${cut(value)}'",
@@ -269,7 +295,8 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
 
     private fun flag(root: Element, spec: FlagSpec, key: String): Boolean? {
         val value = raw(root, spec, key) ?: return null
-        return spec.values[value]
+        return spec.value?.toBooleanStrictOrNull()
+            ?: spec.values[value]
             ?: spec.default
             ?: throw AdapterFailureException(
                 "$key is not a value this source maps (${spec.values.keys.joinToString { cut(it) }}): '${cut(value)}'",
@@ -299,12 +326,30 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
                 "$key carries no currency symbol this source knows " +
                     "(${symbols.keys.joinToString { cut(it) }}): '${cut(value)}'",
             )
-        val digits = if (fixed == null && symbol != null) value.replace(symbol, "") else value
+        // After the symbol first, so "Save 20% - $5.00/mo" reads 5.00 and not 20; a page that
+        // writes the symbol last ("1.234,56 EUR") has its number before it.
+        val candidates = if (fixed == null && symbol != null) {
+            listOf(value.substringAfter(symbol), value.substringBefore(symbol))
+        } else {
+            listOf(value)
+        }
+        val digits = candidates.firstNotNullOfOrNull { firstAmount(it, spec) }
+            ?: throw AdapterFailureException("$key is not a number this source can read: '${cut(value)}'")
         return PriceSnapshot(
             billingPeriod = constant(BillingPeriod.entries, spec.billingPeriod, "$key.billingPeriod"),
-            amount = number(digits, spec.grouping, spec.decimal, spec.maxFractionDigits, signed = false, key = key),
+            amount = number(digits, null, ".", spec.maxFractionDigits, signed = false, key = key),
             currency = currency,
         )
+    }
+
+    /** The first unsigned number in [text] under the config's separators; a minus sign before it is refused. */
+    private fun firstAmount(text: String, spec: PriceSpec): String? {
+        var normalized = text
+        spec.grouping?.let { normalized = normalized.replace(it, "") }
+        if (spec.decimal != ".") normalized = normalized.replace(spec.decimal, ".")
+        val match = FIRST_NUMBER_PLAIN.find(normalized) ?: return null
+        val negative = normalized.substring(0, match.range.first).trimEnd().endsWith("-")
+        return match.value.takeUnless { negative }
     }
 
     /**
@@ -362,5 +407,33 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
         val UNSIGNED_NUMBER = Regex("^[0-9]+(\\.[0-9]+)?$")
 
         val SIGNED_NUMBER = Regex("^-?[0-9]+(\\.[0-9]+)?$")
+
+        /** The first number in a value (`,` groups thousands) and the word right after it. Code-owned. */
+        val FIRST_NUMBER = Regex("([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*([A-Za-z]*)")
+        val FIRST_NUMBER_PLAIN = Regex("[0-9]+(\\.[0-9]+)?")
+    }
+
+    /**
+     * Memory is binary (1 GB = 1024 MB); disk and traffic are sold in decimal units (1 TB = 1000 GB).
+     */
+    private enum class SizeUnit {
+        MB, GB, TB;
+
+        fun megabytes(target: SizeUnit): BigDecimal {
+            val step = if (target == MB) BINARY_STEP else DECIMAL_STEP
+            return step.pow(ordinal)
+        }
+
+        companion object {
+            private val BINARY_STEP = BigDecimal(1024)
+            private val DECIMAL_STEP = BigDecimal(1000)
+
+            fun written(word: String): SizeUnit? = when (word.lowercase()) {
+                "mb", "mib" -> MB
+                "gb", "gib" -> GB
+                "tb", "tib" -> TB
+                else -> null
+            }
+        }
     }
 }

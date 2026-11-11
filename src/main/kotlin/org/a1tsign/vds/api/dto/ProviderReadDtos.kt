@@ -8,9 +8,8 @@ import org.a1tsign.vds.domain.SystemStatus
 import java.math.BigDecimal
 
 /**
- * One row of `GET /api/v1/providers`. `registrationCountry`/`minMonthlyPriceUsd` are omitted on the
- * wire when absent (`ApiJson.explicitNulls = false`) -- a missing `minMonthlyPriceUsd` key means
- * "no current MONTHLY price among this provider's active tariffs", never a JSON `null`.
+ * One row of `GET /api/v1/providers`. `registrationCountry` and `minMonthlyPriceUsd` are omitted
+ * when absent; a missing `minMonthlyPriceUsd` means no current MONTHLY price among active tariffs.
  */
 @Serializable
 data class ProviderSummaryDto(

@@ -749,6 +749,44 @@ class AppConfigTest {
         assertFalse(config.toString().contains(DISCOVERY_API_KEY))
     }
 
+    @Test
+    fun `the default denylist is the bundled file, and a denylist file replaces it`(@TempDir dir: Path) {
+        val defaults = loadConfig(minimalRequiredEnv()).discovery.domainDenylist
+        assertTrue(defaults.size > 100, "the bundled list ships more than a token handful: ${defaults.size}")
+        assertTrue(defaults.containsAll(listOf("hostadvice.com", "news.ycombinator.com", "cloudflare.com")))
+        assertTrue(defaults.none { it.contains('#') || it.contains(' ') })
+
+        val file = dir.resolve("denylist.txt").also {
+            it.writeText("# mine\nForum.Example   # trailing comment\n\nreddit.com\nforum.example\n")
+        }
+        val custom = loadConfig(discoveryEnv(dir, mapOf("VDS_DISCOVERY_DOMAIN_DENYLIST_FILE" to file.toString())))
+        assertEquals(listOf("forum.example", "reddit.com"), custom.discovery.domainDenylist)
+
+        val empty = dir.resolve("empty.txt").also { it.writeText("# nothing\n") }
+        val cleared = loadConfig(discoveryEnv(dir, mapOf("VDS_DISCOVERY_DOMAIN_DENYLIST_FILE" to empty.toString())))
+        assertTrue(cleared.discovery.domainDenylist.isEmpty())
+    }
+
+    @Test
+    fun `an unusable denylist file fails startup only while discovery is enabled`(@TempDir dir: Path) {
+        val file = dir.resolve("denylist.txt").also { it.writeText("reddit.com\n") }
+        val oversized = dir.resolve("big.txt").also { it.writeText("a.example\n".repeat(7000)) }
+        val missing = dir.resolve("absent.txt").toString()
+        val cases = listOf(
+            mapOf("VDS_DISCOVERY_DOMAIN_DENYLIST_FILE" to missing) to "VDS_DISCOVERY_DOMAIN_DENYLIST_FILE must be a readable file",
+            mapOf("VDS_DISCOVERY_DOMAIN_DENYLIST_FILE" to oversized.toString()) to "must not be larger than 65536 bytes",
+            mapOf("VDS_DISCOVERY_DOMAIN_DENYLIST_FILE" to file.toString(), "VDS_DISCOVERY_DOMAIN_DENYLIST" to "x.example") to
+                "are mutually exclusive",
+        )
+        for ((extra, expected) in cases) {
+            val failure = assertFailsWith<ConfigurationException> { loadConfig(discoveryEnv(dir, extra)) }
+            assertTrue(failure.message!!.contains(expected), failure.message)
+        }
+
+        val disabled = loadConfig(minimalRequiredEnv() + mapOf("VDS_DISCOVERY_DOMAIN_DENYLIST_FILE" to missing))
+        assertTrue(disabled.discovery.domainDenylist.contains("reddit.com"))
+    }
+
     private companion object {
         const val DISCOVERY_API_KEY = "tvly-secret-key-never-logged"
     }

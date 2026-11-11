@@ -6,10 +6,8 @@ import org.a1tsign.vds.domain.Tariff
 import java.time.Instant
 
 /**
- * `vcpuCount`/`ipv4Count` are `Short` in the domain/table but modelled as `Int` on the wire --
- * plain JSON numbers are simpler for a client than a type that silently wraps above 32767. The
- * route layer validates the range explicitly (`api/Validation.validateIntRange`) and narrows to
- * `Short` only after that check passes.
+ * `vcpuCount` and `ipv4Count` are `Short` in the table but `Int` on the wire; routes check the range
+ * with `Validation.validateIntRange` before narrowing.
  */
 @Serializable
 data class TariffWriteRequest(

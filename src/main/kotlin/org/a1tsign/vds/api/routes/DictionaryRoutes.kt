@@ -17,14 +17,11 @@ import org.a1tsign.vds.domain.SystemStatus
 import org.a1tsign.vds.domain.Virtualization
 
 /**
- * `GET /api/v1/dictionaries` -- every enum value set a future frontend needs, generated from
- * `EnumClass.entries` (never a hand-written copy, which would silently drift from the schema).
+ * `GET /api/v1/dictionaries`: every enum value set, built from `entries` so it cannot drift from the
+ * enums.
  *
- * There are two unrelated `data_source` enums in `domain/Enums.kt`: [LegalDataSource] (how
- * `provider_legal_info` was sourced) and [PriceDataSource] (how a `tariff_price` row was sourced).
- * They are kept as two separate keys ([legalDataSources]/[priceDataSources]) rather than merged
- * into one `dataSources` set -- collapsing them would silently imply they share one value space,
- * which they do not (`MANUAL`/`CRAWLER` mean different things depending which entity they tag).
+ * [legalDataSources] and [priceDataSources] stay separate keys: `MANUAL`/`CRAWLER` mean different
+ * things for `provider_legal_info` and `tariff_price`.
  */
 @Serializable
 data class DictionariesDto(
@@ -33,7 +30,7 @@ data class DictionariesDto(
     val diskTypes: List<String>,
     val virtualizationTypes: List<String>,
     val providerStatuses: List<String>,
-    /** The second, independent provider axis (vds-004): our own relationship to the row. */
+    /** Our own relationship to the provider, independent of [providerStatuses]. */
     val systemStatuses: List<String>,
     val confidenceLevels: List<String>,
     val legalDataSources: List<String>,

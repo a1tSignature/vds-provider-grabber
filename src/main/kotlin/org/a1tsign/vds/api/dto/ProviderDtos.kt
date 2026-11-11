@@ -6,9 +6,8 @@ import org.a1tsign.vds.domain.*
 import java.time.Instant
 
 /**
- * `systemStatus` is optional and additive (the precedent is vds-002's `dataSource` on the price
- * write): absent means `CONFIGURED` on `POST` and **leave unchanged** on `PUT`, so no vds-001/vds-002
- * request body has to change and an ordinary update cannot promote a candidate by omission.
+ * `systemStatus` is optional: absent means `CONFIGURED` on `POST` and unchanged on `PUT`, so an
+ * ordinary update cannot promote a candidate by omission.
  */
 @Serializable data class ProviderWriteRequest(val slug: String, val name: String, val websiteUrl: String, val description: String? = null, val status: String, val systemStatus: String? = null)
 @Serializable data class ProviderSystemStatusWriteRequest(val systemStatus: String)

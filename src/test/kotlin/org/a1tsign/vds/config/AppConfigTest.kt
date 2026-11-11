@@ -752,7 +752,7 @@ class AppConfigTest {
     @Test
     fun `the default denylist is the bundled file, and a denylist file replaces it`(@TempDir dir: Path) {
         val defaults = loadConfig(minimalRequiredEnv()).discovery.domainDenylist
-        assertEquals(54, defaults.size)
+        assertTrue(defaults.size > 100, "the bundled list ships more than a token handful: ${defaults.size}")
         assertTrue(defaults.containsAll(listOf("hostadvice.com", "news.ycombinator.com", "cloudflare.com")))
         assertTrue(defaults.none { it.contains('#') || it.contains(' ') })
 

@@ -1,0 +1,18 @@
+{
+	admin off
+}
+
+# A domain name gets an automatic Let's Encrypt certificate (ports 80/443 must be reachable from
+# the internet); ":80" serves plain HTTP for a stand behind another TLS-terminating proxy.
+{$VDS_SITE_ADDRESS} {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	reverse_proxy app:8080
+}

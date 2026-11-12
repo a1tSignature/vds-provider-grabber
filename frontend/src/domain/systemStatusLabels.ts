@@ -1,5 +1,5 @@
 /**
- * The one other module allowed a bare backend enum literal (besides `api/types.ts`'s `MONTHLY`):
+ * Whitelisted for bare backend enum literals (with `api/types.ts` and `paymentMethods.tsx`):
  * `SystemStatus` has no dictionary entry a generic `DictionarySelect` could read instead, because
  * it is a relationship to a provider, not a provider-supplied fact.
  */

@@ -2,7 +2,7 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
-const BACKEND_ORIGIN = "http://localhost:8080";
+const BACKEND_ORIGIN = process.env.VITE_BACKEND_ORIGIN ?? "http://localhost:8080";
 
 export default defineConfig({
   plugins: [react()],

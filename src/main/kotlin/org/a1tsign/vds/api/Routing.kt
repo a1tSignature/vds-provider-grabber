@@ -25,7 +25,7 @@ fun Application.registerRoutes(components: AppComponents, staticBasePackage: Str
     routing {
         opsRoutes(components.dataSource)
         if (components.isConfigured) {
-            authRoutes(components.authService)
+            authRoutes(components.authService, components.config.http.trustForwardedFor)
             staticRoutes(staticBasePackage)
             authenticate("bearer-jwt") {
                 adminUserRoutes(components.userService)

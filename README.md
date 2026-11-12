@@ -11,9 +11,8 @@
   `VDS_DISCOVERY_ENABLED=true`, сервис не обращается ни к одному чужому сайту и ни к одному
   поисковому API: каждая строка попадает через write API (или, для локальной разработки, через
   `dev-seed.sql`). Как их включить — в разделе 7.
-- **Фронтенд реализован частично.** `frontend/` собирается и раздаётся тем же процессом (см.
-  раздел 8): вход, список и карточка провайдера работают; список и карточка тарифа — пока
-  заглушки, форм создания/редактирования нет.
+- **Фронтенд собирается и раздаётся тем же процессом** (см. раздел 8): просмотр каталога для
+  всех ролей, формы создания/редактирования и обновление курсов — для `EDITOR`/`ADMIN`.
 - **Нет анонимного доступа.** Каждый маршрут `/api/v1/*`, кроме `POST /api/v1/auth/login`,
   требует bearer-токен; публичного/неавторизованного пути для чтения не существует.
 - **Нет TLS.** Сервис работает по обычному HTTP. См. раздел «Эксплуатационные заметки» ниже о том,
@@ -35,13 +34,45 @@
 
 **ktlint в этом проекте не настроен** — отдельной Gradle-задачи для линтинга/форматирования нет.
 
-## 1. Запуск PostgreSQL
+## 0. Быстрый старт: весь проект в Docker
+
+Нужен только Docker — JDK и Node ставить не обязательно: `Dockerfile` сам собирает фронтенд и
+fat jar.
 
 ```bash
-docker compose up -d
+docker compose up -d --build --wait   # PostgreSQL + приложение (API и SPA) на http://localhost:8080
+docker compose run --rm seed          # необязательно: тестовые данные из dev-seed.sql (раздел 5)
 ```
 
-Это поднимает PostgreSQL 17 на `localhost:5432` с постоянным volume. Миграции Flyway
+Откройте <http://localhost:8080> и войдите bootstrap-администратором (раздел 4). Логин и пароль
+берутся из `VDS_BOOTSTRAP_ADMIN_USERNAME`/`VDS_BOOTSTRAP_ADMIN_PASSWORD` в `.env` рядом с
+`docker-compose.yml`, если он есть, иначе — `admin` / `admin-local-dev`. Bootstrap срабатывает
+только на пустой таблице пользователей: если volume уже содержит пользователей, действуют они.
+
+| Сервис | Как запустить | Что делает |
+|---|---|---|
+| `postgres` | по умолчанию | PostgreSQL 17 на `localhost:${VDS_DB_PORT:-5432}`, volume `postgres-data` |
+| `app` | по умолчанию | приложение на `localhost:${VDS_APP_PORT:-8080}`; healthcheck — `/health/ready` |
+| `seed` | `docker compose run --rm seed` | применяет `dev-seed.sql` после миграций; если провайдеры уже есть — ничего не делает |
+| `frontend` | `docker compose --profile dev up -d` | Vite dev server с hot reload на <http://localhost:5173>, проксирует API в `app` |
+
+Compose читает `.env` только для подстановки переменных из таблицы выше и
+`VDS_DB_NAME`/`VDS_DB_USER`/`VDS_DB_PASSWORD`/`VDS_JWT_SECRET`/`VDS_BOOTSTRAP_ADMIN_*`. В
+контейнер `app` не передаётся ни одна переменная краулера и discovery, поэтому оба выключены,
+что бы ни стояло в `.env`; `VDS_DB_URL` из `.env` тоже игнорируется — контейнер ходит в
+`postgres` по имени сервиса.
+
+Пересобрать после изменений в коде — `docker compose up -d --build --wait`; начать с пустой
+базы — `docker compose down -v`.
+
+## 1. Запуск PostgreSQL (для запуска jar с хоста)
+
+```bash
+docker compose up -d postgres
+```
+
+Это поднимает PostgreSQL 17 на `localhost:5432` с постоянным volume. Если поднят и сервис `app`,
+остановите его (`docker compose stop app`), чтобы jar с хоста мог занять порт 8080. Миграции Flyway
 выполняются автоматически при следующем запуске приложения (см. ниже) — отдельной команды
 «migrate» не существует.
 
@@ -70,6 +101,7 @@ fail-fast в `config/AppConfig.kt`: отсутствующая или некор
 | `VDS_BOOTSTRAP_ADMIN_USERNAME` | нет* | *(нет)* | требуется вместе с паролем ниже, либо не задаётся вовсе |
 | `VDS_BOOTSTRAP_ADMIN_PASSWORD` | нет* | *(нет)* | требуется вместе с именем пользователя выше; **от 12 символов и не более 72 байт UTF-8** (собственное ограничение bcrypt на длину входных данных) |
 | `VDS_CORS_ALLOWED_ORIGINS` | нет | *(пусто)* | список через запятую; **пустое значение означает полное отсутствие кросс-доменного доступа** — CORS включается явно, а не разрешён по умолчанию |
+| `VDS_HTTP_TRUST_FORWARDED_FOR` | нет | `false` | `true`/`false`; `true` — троттлинг входа берёт адрес клиента из последней записи `X-Forwarded-For`. Включайте **только** если до приложения можно достучаться исключительно через обратный прокси, перезаписывающий этот заголовок (раздел 9) |
 
 \* `VDS_BOOTSTRAP_ADMIN_USERNAME`/`VDS_BOOTSTRAP_ADMIN_PASSWORD` — это пара **«всё или ничего»**:
 задать только одну из них — ошибка конфигурации.
@@ -134,10 +166,12 @@ curl -s -X POST http://localhost:8080/api/v1/auth/login \
 данных, например:
 
 ```bash
-docker compose down -v && docker compose up -d
+docker compose down -v && docker compose up -d postgres
 ```
 
-Примените его через контейнер PostgreSQL в Docker (локального `psql` нет):
+При запуске через Docker (раздел 0) достаточно `docker compose run --rm seed`: сервис дождётся
+готовности приложения (значит, и миграций) и пропустит seed, если провайдеры уже есть. Вручную —
+через контейнер PostgreSQL в Docker (локального `psql` нет):
 
 ```bash
 docker compose exec -T postgres psql -U vds -d vds < src/main/resources/db/dev-seed.sql
@@ -150,7 +184,7 @@ docker compose exec -T postgres psql -U vds -d vds < src/main/resources/db/dev-s
 
 ```bash
 ./gradlew shadowJar
-docker compose up -d                                                      # если ещё не запущено
+docker compose up -d postgres                                             # если ещё не запущено
 docker compose exec -T postgres psql -U vds -d vds < src/main/resources/db/dev-seed.sql  # если ещё не применено
 ./scripts/measure-footprint.sh
 ```
@@ -462,6 +496,48 @@ API никогда не перекрывается SPA: путь с первым
 конверте (`ApiError`), а не `index.html`. `GET /` и любой непойманный путь (например,
 `/providers/42`) отдают `index.html`, чтобы клиентский роутинг SPA работал по прямой ссылке.
 
+## 9. Деплой на стенд
+
+`deploy/stand/` — конфигурация, близкая к production: Caddy (TLS) → приложение → PostgreSQL, наружу
+открыты только порты Caddy. Нужны Docker с Compose v2 и `openssl`; на стенде достаточно копии
+репозитория.
+
+```bash
+cd deploy/stand
+./init-env.sh                 # .env из .env.example со случайными паролями и JWT-секретом
+$EDITOR .env                  # VDS_SITE_ADDRESS: домен стенда (или ":80", см. ниже)
+docker compose up -d --build --wait
+```
+
+- **TLS.** Если `VDS_SITE_ADDRESS` — доменное имя, Caddy сам получает и продлевает сертификат
+  Let's Encrypt; для этого DNS домена должен указывать на стенд, а порты 80 и 443 — быть доступны
+  из интернета. `VDS_SITE_ADDRESS=:80` — обычный HTTP, когда TLS терминирует другой прокси перед
+  стендом; тогда троттлинг входа видит адрес этого прокси, а не клиента.
+- **Вход.** Логин и пароль администратора — `VDS_BOOTSTRAP_ADMIN_USERNAME`/`..._PASSWORD` из
+  `.env`; создаётся при первом старте на пустой базе. Пользователей `EDITOR`/`VIEWER` заводит
+  администратор через `POST /api/v1/admin/users`.
+- **Что отличается от локального запуска:** секреты обязательны (без них `docker compose`
+  откажется стартовать), PostgreSQL наружу не публикуется, `restart: unless-stopped`, лимиты
+  памяти (`VDS_APP_MEM_LIMIT`, `VDS_DB_MEM_LIMIT`; heap JVM — 75% лимита), ротация логов Docker
+  (5 × 10 МБ), корневая ФС приложения только для чтения, без Linux capabilities, заголовки
+  `X-Content-Type-Options`/`X-Frame-Options`/`Referrer-Policy`, сжатие ответов.
+- **Краулер и discovery выключены** — их переменные в контейнер не передаются.
+- **`.env` не теряйте:** пароль БД из него уже записан в volume; `init-env.sh` не перезапишет
+  существующий файл.
+
+Обновление — `git pull && docker compose up -d --build --wait` (миграции Flyway применятся при
+старте). Готовый образ из registry: укажите его в `VDS_IMAGE` и выполните `docker compose pull &&
+docker compose up -d --wait`.
+
+Резервная копия и восстановление (файлы — в `deploy/stand/backups/`, он в `.gitignore`):
+
+```bash
+docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f /backups/vds-$(date +%F).dump'
+docker compose stop app
+docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists /backups/vds-YYYY-MM-DD.dump'
+docker compose start app
+```
+
 ## Эксплуатационные заметки
 
 - **Логи идут только в stdout.** `CallLogging` никогда не включает заголовок `Authorization`
@@ -474,8 +550,9 @@ API никогда не перекрывается SPA: путь с первым
   **таймаут остановки контейнера не должен быть меньше** (у Docker по умолчанию он 10 секунд).
 - **Не выставляйте этот сервис публично, пока он не стоит за обратным проксом с TLS-терминацией.**
   Он работает по обычному HTTP: bearer-токены и пароли будут пересекать интернет
-  незашифрованными, а источник IP клиента для троттлинга входа (сейчас это адрес прямого
-  пира) тоже придётся пересмотреть, когда перед сервисом появится прокси.
-- Вне рамок этого инкремента (намеренно, на будущее): production Dockerfile, systemd-unit,
-  CI-пайплайн, автоматизация деплоя, TLS-терминация, бэкапы и тюнинг PostgreSQL.
-</content>
+  незашифрованными. За прокси троттлинг входа по умолчанию видит адрес прокси, а не клиента —
+  см. `VDS_HTTP_TRUST_FORWARDED_FOR` (раздел 2) и стенд в разделе 9.
+- Корневой `docker-compose.yml` рассчитан на локальный запуск (дефолтный JWT-секрет и пароль
+  администратора, открытый порт PostgreSQL); для стенда — `deploy/stand/` (раздел 9). Вне рамок
+  этого инкремента (намеренно, на будущее): systemd-unit,
+  CI-пайплайн, автоматический деплой, плановые бэкапы и тюнинг PostgreSQL.

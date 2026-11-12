@@ -2,7 +2,7 @@ services:
   postgres:
     image: postgres:17-alpine
     ports:
-      - "5432:5432"
+      - "${VDS_DB_PORT:-5432}:5432"
     environment:
       POSTGRES_DB: ${VDS_DB_NAME:-vds}
       POSTGRES_USER: ${VDS_DB_USER:-vds}
@@ -15,5 +15,79 @@ services:
       timeout: 5s
       retries: 5
 
+  # API and the bundled SPA on one port. Crawler and discovery stay off: none of their variables
+  # are passed through, whatever the local .env holds.
+  app:
+    build: .
+    image: vds-provider-grabber:local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${VDS_APP_PORT:-8080}:8080"
+    environment:
+      VDS_DB_URL: jdbc:postgresql://postgres:5432/${VDS_DB_NAME:-vds}
+      VDS_DB_USER: ${VDS_DB_USER:-vds}
+      VDS_DB_PASSWORD: ${VDS_DB_PASSWORD:-vds}
+      VDS_HTTP_PORT: "8080"
+      VDS_JWT_SECRET: ${VDS_JWT_SECRET:-local-dev-jwt-secret-not-for-production}
+      VDS_BOOTSTRAP_ADMIN_USERNAME: ${VDS_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      VDS_BOOTSTRAP_ADMIN_PASSWORD: ${VDS_BOOTSTRAP_ADMIN_PASSWORD:-admin-local-dev}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8080/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    # Shutdown drains requests and background passes for up to ~20 s; Docker's default is 10 s.
+    stop_grace_period: 30s
+
+  # One-off: `docker compose run --rm seed`. Skips itself when the catalogue already has providers,
+  # because dev-seed.sql is not re-runnable.
+  seed:
+    image: postgres:17-alpine
+    profiles: ["seed"]
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${VDS_DB_NAME:-vds}
+      PGUSER: ${VDS_DB_USER:-vds}
+      PGPASSWORD: ${VDS_DB_PASSWORD:-vds}
+    volumes:
+      - ./src/main/resources/db/dev-seed.sql:/seed/dev-seed.sql:ro
+    entrypoint:
+      - sh
+      - -ec
+      - |
+        count=$$(psql -tAc 'SELECT count(*) FROM provider')
+        if [ "$$count" != "0" ]; then
+          echo "dev-seed skipped: the catalogue already has $$count providers"
+          exit 0
+        fi
+        psql -v ON_ERROR_STOP=1 -q -f /seed/dev-seed.sql
+        echo "dev-seed applied"
+
+  # Vite dev server with hot reload, proxying the API to the `app` container:
+  # `docker compose --profile dev up -d`, then http://localhost:5173.
+  frontend:
+    image: node:22.22.0-bookworm-slim
+    profiles: ["dev"]
+    depends_on:
+      app:
+        condition: service_healthy
+    working_dir: /frontend
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
+    environment:
+      VITE_BACKEND_ORIGIN: http://app:8080
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/frontend
+      # Linux node_modules inside the container, never mixed with the host's.
+      - frontend-node-modules:/frontend/node_modules
+
 volumes:
   postgres-data:
+  frontend-node-modules:

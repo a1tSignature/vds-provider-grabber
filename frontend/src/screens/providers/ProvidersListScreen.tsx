@@ -5,9 +5,10 @@ import type { PageResponse, ProviderSummaryDto } from "../../api/types";
 import { Pagination } from "../../components/Pagination";
 import { Empty, ErrorView, Loading } from "../../components/StateViews";
 import { DictionarySelect } from "../../dictionaries/DictionarySelect";
+import { PaymentMethodIcon, paymentMethodLabel } from "../../domain/paymentMethods";
 import { EditorOnly } from "../../forms/FormParts";
 import { useDictionaries } from "../../dictionaries/DictionariesContext";
-import { formatMoney } from "../../lib/format";
+import { formatMoney, websiteHost } from "../../lib/format";
 import { parseUrlState, serializeUrlState, useDebouncedValue } from "../../lib/urlState";
 import {
   buildProviderFiltersSchema,
@@ -146,13 +147,14 @@ export function ProvidersListScreen() {
         <fieldset className="payment-methods-filter">
           <legend>Способы оплаты</legend>
           {dictionaries.paymentMethods.map((method) => (
-            <label key={method}>
+            <label key={method} className="pm-option">
               <input
                 type="checkbox"
                 checked={filters.paymentMethod.includes(method)}
                 onChange={() => togglePaymentMethod(method)}
               />
-              {method}
+              <PaymentMethodIcon method={method} decorative />
+              {paymentMethodLabel(method)}
             </label>
           ))}
         </fieldset>
@@ -172,6 +174,12 @@ export function ProvidersListScreen() {
                       Название / slug{sortIndicator("name")}
                     </button>
                   </th>
+                  <th>Сайт</th>
+                  <th className="num">
+                    <button type="button" className="th-sort" onClick={() => toggleSort("minMonthlyPriceUsd")}>
+                      Минимальная цена{sortIndicator("minMonthlyPriceUsd")}
+                    </button>
+                  </th>
                   <th>
                     <button type="button" className="th-sort" onClick={() => toggleSort("status")}>
                       Статус{sortIndicator("status")}
@@ -181,11 +189,6 @@ export function ProvidersListScreen() {
                   <th>Способы оплаты</th>
                   <th>Страны размещения</th>
                   <th className="num">Активных тарифов</th>
-                  <th className="num">
-                    <button type="button" className="th-sort" onClick={() => toggleSort("minMonthlyPriceUsd")}>
-                      Цена, $/мес{sortIndicator("minMonthlyPriceUsd")}
-                    </button>
-                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -195,14 +198,25 @@ export function ProvidersListScreen() {
                       <Link to={`/providers/${provider.id}`}>{provider.name}</Link>
                       <div className="muted">{provider.slug}</div>
                     </td>
+                    <td className="cell-link">
+                      <a href={provider.websiteUrl} target="_blank" rel="noopener noreferrer" title={provider.websiteUrl}>
+                        {websiteHost(provider.websiteUrl)} ↗
+                      </a>
+                    </td>
+                    <td className="num">
+                      {provider.minMonthlyPriceUsd !== undefined ? `$${formatMoney(provider.minMonthlyPriceUsd)}/мес` : "—"}
+                    </td>
                     <td>{provider.status}</td>
                     <td>{provider.registrationCountry ?? "—"}</td>
-                    <td>{provider.paymentMethods.join(", ")}</td>
+                    <td>
+                      <span className="pm-icons">
+                        {provider.paymentMethods.map((method) => (
+                          <PaymentMethodIcon key={method} method={method} />
+                        ))}
+                      </span>
+                    </td>
                     <td>{provider.locationCountryCodes.join(", ")}</td>
                     <td className="num">{provider.activeTariffCount}</td>
-                    <td className="num">
-                      {provider.minMonthlyPriceUsd !== undefined ? `$${formatMoney(provider.minMonthlyPriceUsd)}` : "—"}
-                    </td>
                   </tr>
                 ))}
               </tbody>

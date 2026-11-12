@@ -48,6 +48,12 @@ data class DbConfig(
 data class HttpConfig(
     val port: Int,
     val corsAllowedOrigins: List<String>,
+    /**
+     * Take the login throttle's client address from the last `X-Forwarded-For` entry instead of the
+     * TCP peer. Safe only when every connection comes through a reverse proxy that overwrites the
+     * header; otherwise a client picks its own throttle key.
+     */
+    val trustForwardedFor: Boolean = false,
 )
 
 data class JwtConfig(
@@ -381,6 +387,7 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
         ?.map { it.trim() }
         ?.filter { it.isNotEmpty() }
         ?: emptyList()
+    val trustForwardedFor = booleanFlag("VDS_HTTP_TRUST_FORWARDED_FOR", false)
 
     // --- jwt ---
     val jwtSecretRaw = requiredNonBlank("VDS_JWT_SECRET")
@@ -575,6 +582,7 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
         http = HttpConfig(
             port = httpPort,
             corsAllowedOrigins = corsAllowedOrigins,
+            trustForwardedFor = trustForwardedFor,
         ),
         jwt = JwtConfig(
             secret = Secret(jwtSecretRaw),

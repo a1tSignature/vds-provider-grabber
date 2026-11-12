@@ -28,3 +28,12 @@ export function formatDateTime(iso: string): string {
 export function formatDate(iso: string): string {
   return datePart(new Date(iso));
 }
+
+/** "https://www.example.com/vps" -> "example.com"; anything unparsable is shown as is. */
+export function websiteHost(url: string): string {
+  try {
+    return new URL(url).host.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}

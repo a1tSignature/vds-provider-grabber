@@ -18,6 +18,10 @@ npm run dev
 backend there first (`./gradlew run` or the packaged jar) and open the printed `localhost` URL.
 Same-origin in dev, same as in production — no CORS configuration is ever needed.
 
+`VITE_BACKEND_ORIGIN` overrides the proxy target. Without Node on the host:
+`docker compose --profile dev up -d` from the repository root runs this dev server in a container
+on `http://localhost:5173`, proxying to the `app` service.
+
 ## Build and test
 
 ```bash

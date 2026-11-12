@@ -56,9 +56,9 @@ const RULES: Rule[] = [
     pattern: /dangerouslySetInnerHTML/,
   },
   {
-    name: "no backend enum literal outside the two whitelisted modules",
+    name: "no backend enum literal outside the whitelisted modules",
     pattern: new RegExp(`(['"\`])(?:${BACKEND_ENUM_LITERALS.join("|")})\\1`),
-    whitelist: ["api/types.ts", "domain/systemStatusLabels.ts"],
+    whitelist: ["api/types.ts", "domain/systemStatusLabels.ts", "domain/paymentMethods.tsx"],
   },
   {
     name: "no parseFloat/Number(",
@@ -118,7 +118,7 @@ describe("source guards", () => {
     ["no literal hex colour outside tokens.css", "const colour = '#ff00ff';"],
     ["no absolute URL pointing at the API", "fetch('http://localhost:8080/api/v1/providers')"],
     ["no dangerouslySetInnerHTML", "<div dangerouslySetInnerHTML={{ __html: value }} />"],
-    ["no backend enum literal outside the two whitelisted modules", "const period = \"MONTHLY\";"],
+    ["no backend enum literal outside the whitelisted modules", "const period = \"MONTHLY\";"],
     ["no parseFloat/Number(", "const amount = Number(raw);"],
   ])("%s: fires on a planted violation", (ruleName, violatingSnippet) => {
     const rule = RULES.find((candidate) => candidate.name === ruleName);

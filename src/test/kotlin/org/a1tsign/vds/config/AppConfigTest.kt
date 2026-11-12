@@ -31,6 +31,7 @@ class AppConfigTest {
         "VDS_BOOTSTRAP_ADMIN_USERNAME" to "admin",
         "VDS_BOOTSTRAP_ADMIN_PASSWORD" to "change-me-please",
         "VDS_CORS_ALLOWED_ORIGINS" to "https://a.example, https://b.example",
+        "VDS_HTTP_TRUST_FORWARDED_FOR" to "true",
     )
 
     /** The minimal set of variables that have no default: required and nothing else. */
@@ -55,6 +56,7 @@ class AppConfigTest {
 
         assertEquals(9090, config.http.port)
         assertEquals(listOf("https://a.example", "https://b.example"), config.http.corsAllowedOrigins)
+        assertTrue(config.http.trustForwardedFor)
 
         assertEquals("0".repeat(32), config.jwt.secret.reveal())
         assertEquals(48L, config.jwt.ttlHours)
@@ -78,6 +80,7 @@ class AppConfigTest {
 
         assertEquals(8080, config.http.port)
         assertEquals(emptyList(), config.http.corsAllowedOrigins)
+        assertFalse(config.http.trustForwardedFor)
 
         assertEquals(24L, config.jwt.ttlHours)
 

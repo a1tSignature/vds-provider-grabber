@@ -47,6 +47,36 @@
   --r-3: 10px;
 
   --transition: 120ms ease;
+
+  /* Payment method chips: brand colours, the same in every theme. */
+  --pm-icon-w: 28px;
+  --pm-icon-h: 18px;
+  --pm-ink: #ffffff;
+  --pm-light-bg: #ffffff;
+  --pm-neutral: #6b7280;
+  --pm-card-bg: #1a1f71;
+  --pm-mc-red: #eb001b;
+  --pm-mc-orange: #f79e1b;
+  --pm-amex: #2e77bc;
+  --pm-up-red: #e21836;
+  --pm-up-blue: #00447c;
+  --pm-up-teal: #007b84;
+  --pm-mir: #0f754e;
+  --pm-sbp: #5b2d90;
+  --pm-rub: #2f5aa8;
+  --pm-wire: #4b5563;
+  --pm-paypal: #003087;
+  --pm-paypal-light: #009cde;
+  --pm-alipay: #1677ff;
+  --pm-wechat: #07c160;
+  --pm-apple: #000000;
+  --pm-google: #4285f4;
+  --pm-btc: #f7931a;
+  --pm-eth: #627eea;
+  --pm-usdt: #26a17b;
+  --pm-webmoney: #036cb5;
+  --pm-perfect: #df0000;
+  --pm-cash: #3f8f4f;
 }
 
 @media (prefers-color-scheme: light) {

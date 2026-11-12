@@ -212,6 +212,30 @@ th.num {
   padding: var(--sp-2) var(--sp-3);
 }
 
+.pm-icon {
+  width: var(--pm-icon-w);
+  height: var(--pm-icon-h);
+  flex: none;
+  vertical-align: middle;
+}
+
+.pm-icon text {
+  font-family: var(--f-body);
+  font-weight: 700;
+  fill: var(--pm-ink);
+}
+
+.pm-icons {
+  display: inline-flex;
+  gap: var(--sp-1);
+}
+
+.pm-option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
 .table-scroll {
   overflow-x: auto;
   overflow-y: auto;
@@ -231,6 +255,16 @@ td {
   border-bottom: 1px solid var(--line);
   text-align: left;
   white-space: nowrap;
+}
+
+/* The whole cell is the link target, not just its text. */
+td.cell-link {
+  padding: 0;
+}
+
+td.cell-link > a {
+  display: block;
+  padding: var(--sp-2) var(--sp-3);
 }
 
 thead th {

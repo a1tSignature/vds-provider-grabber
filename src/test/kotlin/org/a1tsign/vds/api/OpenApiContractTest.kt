@@ -99,6 +99,24 @@ class OpenApiContractTest : AbstractDbTest() {
     }
 
     @Test
+    fun `the walk excludes the static SPA subtree but still sees a real API route`() = kotlinx.coroutines.runBlocking {
+        testAppDb(clock) {
+            client.get("/health")
+            val root = application.plugin(RoutingRoot.Plugin)
+            val actual = collectRoutes(root)
+
+            assertTrue(
+                "GET" to "/api/v1/dictionaries" in actual,
+                "the walk must still see a real, declared API route: $actual",
+            )
+            assertTrue(
+                actual.none { (_, path) -> path == "/" },
+                "the SPA's static-content tailcard route must be excluded from the walk: $actual",
+            )
+        }
+    }
+
+    @Test
     fun `the error envelope is referenced by the standard statuses of a sampled endpoint, and 413, 415, 502 are declared`() {
         val document = parsedDocument()
         val priceOperation = navigate(document, "paths", "/api/v1/tariffs/{id}/price", "put") as Map<*, *>
@@ -189,9 +207,18 @@ class OpenApiContractTest : AbstractDbTest() {
         }.toSet()
     }
 
-    /** Walks the real routing tree, normalising `{paramName}` path-parameter syntax. */
+    /**
+     * Walks the real routing tree, normalising `{paramName}` path-parameter syntax.
+     *
+     * Excludes the SPA static-content subtree (`api/routes/StaticRoutes.kt`'s `staticResources`):
+     * it is never declared in `openapi.yaml`, and the walk cannot otherwise describe it --
+     * `staticResources` registers a tailcard route whose selector this test has no public type to
+     * match against, only the `"(static-content)"` string Ktor's own (package-private)
+     * `TailcardSelector.toString()` produces.
+     */
     private fun collectRoutes(node: RoutingNode, pathSegments: List<String> = emptyList()): Set<Pair<String, String>> {
         val selector = node.selector
+        if (selector.toString() == "(static-content)") return emptySet()
         val nextSegments = when (selector) {
             is PathSegmentConstantRouteSelector -> pathSegments + selector.value
             is PathSegmentParameterRouteSelector -> pathSegments + "{${selector.name}}"

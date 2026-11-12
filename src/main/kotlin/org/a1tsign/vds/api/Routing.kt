@@ -17,14 +17,16 @@ import org.a1tsign.vds.api.routes.locationRoutes
 import org.a1tsign.vds.api.routes.tariffRoutes
 import org.a1tsign.vds.api.routes.priceRoutes
 import org.a1tsign.vds.api.routes.openApiRoutes
+import org.a1tsign.vds.api.routes.staticRoutes
 
-/** Registers every route group, one line per group. */
-fun Application.registerRoutes(components: AppComponents) {
+/** Registers every route group, one line per group. [staticBasePackage] lets tests point the SPA fallback at a fixture. */
+fun Application.registerRoutes(components: AppComponents, staticBasePackage: String = "static") {
     if (components.isConfigured) installBearerJwtAuth(components.authService)
     routing {
         opsRoutes(components.dataSource)
         if (components.isConfigured) {
             authRoutes(components.authService)
+            staticRoutes(staticBasePackage)
             authenticate("bearer-jwt") {
                 adminUserRoutes(components.userService)
                 fxRoutes(components.fxRefreshService)

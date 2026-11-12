@@ -1,5 +1,9 @@
+import java.io.File
 import java.time.Instant
 import java.time.format.DateTimeFormatter
+import org.gradle.api.tasks.Exec
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.Sync
 
 plugins {
     kotlin("jvm") version "2.3.10"
@@ -99,4 +103,96 @@ tasks.shadowJar {
             duplicatesStrategy = DuplicatesStrategy.INCLUDE
         }
     }
+}
+
+// `-PskipFrontend` builds the backend alone, with no Node/npm required -- see buildFrontend's
+// onlyIf below, mirrored on syncFrontendDist and testFrontend.
+val skipFrontend = providers.gradleProperty("skipFrontend")
+
+val requiredNodeMessage =
+    "Node.js (see frontend/.nvmrc for the exact version) and npm are required to build the " +
+        "frontend. Install them, or pass -PskipFrontend to build the backend without the bundled UI."
+
+/** No `Project` access: safe to call from a task action under the configuration cache. */
+fun npmAvailable(): Boolean {
+    val path = System.getenv("PATH") ?: return false
+    val isWindows = System.getProperty("os.name").lowercase().contains("win")
+    val candidates = if (isWindows) listOf("npm.cmd", "npm.exe") else listOf("npm")
+    return path.splitToSequence(File.pathSeparatorChar)
+        .any { dir -> candidates.any { name -> File(dir, name).canExecute() } }
+}
+
+// Captured once, at configuration time, into a plain local: referencing the script's implicit
+// `Project` receiver (e.g. an unqualified `providers`/`exec` call) from inside `doLast` below is
+// execution-time `Project` access, unsupported under Gradle 9's configuration cache.
+// `ProviderFactory.exec` is the sanctioned replacement for `project.exec` there.
+val execProviders = providers
+val frontendDir = layout.projectDirectory.dir("frontend")
+val frontendDistDir = layout.projectDirectory.dir("frontend/dist")
+
+/** `npm ci` then `npm run build`, as one task so its up-to-date check covers both -- a plain [Exec] only runs a single command line. */
+val buildFrontend = tasks.register("buildFrontend") {
+    onlyIf("skipFrontend is not set") { !skipFrontend.isPresent }
+    inputs.files(
+        frontendDir.file("package.json"),
+        frontendDir.file("package-lock.json"),
+        frontendDir.file("vite.config.ts"),
+        frontendDir.file("tsconfig.json"),
+        frontendDir.file("index.html"),
+        frontendDir.file(".nvmrc"),
+    ).withPropertyName("frontendConfig").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir(frontendDir.dir("src")).withPropertyName("frontendSrc").withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.dir(frontendDistDir).withPropertyName("frontendDist")
+    doFirst {
+        if (!npmAvailable()) throw GradleException(requiredNodeMessage)
+    }
+    doLast {
+        val cwd = frontendDir.asFile
+        execProviders.exec {
+            workingDir(cwd)
+            commandLine("npm", "ci")
+        }.result.get()
+        execProviders.exec {
+            workingDir(cwd)
+            commandLine("npm", "run", "build")
+        }.result.get()
+    }
+}
+
+val syncFrontendDist = tasks.register<Sync>("syncFrontendDist") {
+    // No `onlyIf` here: `Sync` (unlike `Copy`) deletes anything in `into` that the current `from`
+    // doesn't produce, which is exactly what clears out a *previous*, non-skipped run's bundle --
+    // skipping this task outright would leave that stale output on the classpath instead. The
+    // empty list on the skipped branch is what makes `from` produce nothing to sync.
+    dependsOn(buildFrontend)
+    from(providers.provider { if (skipFrontend.isPresent) emptyList<Any>() else listOf(frontendDistDir) })
+    into(layout.buildDirectory.dir("generated/frontend/static"))
+}
+
+sourceSets {
+    main {
+        // Registers the parent of syncFrontendDist's "static" output dir, not that dir itself,
+        // so the bundle lands on the classpath AS "static/..." -- matching the "static" basePackage
+        // api/routes/StaticRoutes.kt serves in production, instead of spilling index.html/assets
+        // straight into the resources root.
+        resources.srcDir(layout.buildDirectory.dir("generated/frontend"))
+    }
+}
+
+tasks.processResources {
+    dependsOn(syncFrontendDist)
+}
+
+val testFrontend = tasks.register<Exec>("testFrontend") {
+    onlyIf("skipFrontend is not set") { !skipFrontend.isPresent }
+    dependsOn(buildFrontend)
+    workingDir = layout.projectDirectory.dir("frontend").asFile
+    commandLine("npm", "test")
+    doFirst {
+        if (!npmAvailable()) throw GradleException(requiredNodeMessage)
+    }
+}
+
+tasks.check {
+    dependsOn(testFrontend)
 }

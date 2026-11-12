@@ -61,6 +61,7 @@ fun testAppDb(
     passwordHasher: PasswordHasher = PasswordHasher(),
     currencyRateProvider: CurrencyRateProvider? = null,
     authenticatedRoutes: Route.() -> Unit = {},
+    staticBasePackage: String = "static",
     block: suspend ApplicationTestBuilder.() -> Unit,
 ) {
     var fxHttpClient: io.ktor.client.HttpClient? = null
@@ -78,7 +79,7 @@ fun testAppDb(
             fxHttpClient = components.fxHttpClient
             BootstrapAdmin(components.database, components.userRepository, passwordHasher)
                 .ensure(appConfig.bootstrapAdmin, clock.instant())
-            module(components)
+            module(components, staticBasePackage)
             routing { authenticate("bearer-jwt") { authenticatedRoutes() } }
         }
         block()

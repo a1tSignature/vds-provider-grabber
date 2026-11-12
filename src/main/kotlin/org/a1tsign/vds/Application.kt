@@ -133,7 +133,7 @@ fun main() {
     server.start(wait = true)
 }
 
-fun Application.module(components: AppComponents) {
+fun Application.module(components: AppComponents, staticBasePackage: String = "static") {
     // The whole HTTP contract -- error envelope, shared Json, body-size limit, CORS, CallLogging --
     // lives in api/HttpPlugins.kt so tests install exactly what production does.
     installApiPlugins(components.config.http, components.clock)
@@ -158,7 +158,7 @@ fun Application.module(components: AppComponents) {
             activeRequests.decrementAndGet()
         }
     }
-    registerRoutes(components)
+    registerRoutes(components, staticBasePackage)
 }
 
 private const val SHUTDOWN_DRAIN_CAP_MILLIS = 10_000L

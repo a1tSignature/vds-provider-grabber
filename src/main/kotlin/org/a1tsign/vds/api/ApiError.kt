@@ -90,6 +90,9 @@ private const val MALFORMED_BODY_MESSAGE = "Malformed request body"
 
 private const val UNSUPPORTED_MEDIA_TYPE_MESSAGE = "Content-Type must be application/json"
 
+/** `404` for a request no route matched at all -- see [installApiErrorHandling]'s `unhandled` registration. */
+private const val NOT_FOUND_MESSAGE = "Not found"
+
 /**
  * Maps every failure to [ApiError]. Install as `install(StatusPages) { installApiErrorHandling(clock) }`.
  *
@@ -101,6 +104,14 @@ private const val UNSUPPORTED_MEDIA_TYPE_MESSAGE = "Content-Type must be applica
  * and a short ref, which is logged at ERROR next to the real exception.
  */
 fun StatusPagesConfig.installApiErrorHandling(clock: Clock) {
+    // `unhandled` fires only when nothing responded at all (`call.isHandled` is false) -- unlike
+    // `status(HttpStatusCode.NotFound) { ... }`, which would also re-wrap a 404 a handler already
+    // produced with its own message (e.g. "Tariff not found"). This is what gives an unmatched
+    // `/api/**` path, and `GET /` with no SPA bundle on the classpath, the standard JSON envelope
+    // instead of Ktor's bare empty 404.
+    unhandled { call ->
+        call.respondApiError(clock, HttpStatusCode.NotFound, NOT_FOUND_MESSAGE)
+    }
     exception<ApiException> { call, cause ->
         if (cause is TooManyRequestsException) {
             call.response.header(HttpHeaders.RetryAfter, cause.retryAfterSeconds.toString())

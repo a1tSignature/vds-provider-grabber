@@ -1,0 +1,96 @@
+/*
+ * The only file where a literal colour or size may appear; every rule elsewhere reads var(--…).
+ * Dark ("night") is the default; a system light preference overrides it only while no explicit
+ * choice has been made (html carries no [data-theme]); the toggle's explicit choice always wins.
+ */
+:root {
+  --bg: #0f141b;
+  --s1: #161c25;
+  --s2: #1b222c;
+  --s3: #212938;
+  --line: #2a3342;
+  --line2: #343f52;
+  --edge: #5b6f93;
+  --t1: #e8edf3;
+  --t2: #aab4c4;
+  --t3: #76829a;
+  --acc: #8fb4ff;
+  --accbg: #1e2b47;
+  --onacc: #0b1220;
+  --up: #2dd4bf;
+  --dn: #fb923c;
+  --upbg: #113230;
+  --dnbg: #3a2615;
+  --focus: 0 0 0 3px rgba(143, 180, 255, 0.55);
+  --backdrop: rgba(5, 8, 12, 0.7);
+
+  --f-body: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --f-num: "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+
+  --fs-1: 12px;
+  --fs-2: 13px;
+  --fs-3: 14px;
+  --fs-4: 16px;
+  --fs-5: 20px;
+  --fs-6: 28px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+
+  --r-1: 8px;
+  --r-2: 8px;
+  --r-3: 10px;
+
+  --transition: 120ms ease;
+}
+
+@media (prefers-color-scheme: light) {
+  html:not([data-theme]) {
+    --bg: #f2f4f7;
+    --s1: #ffffff;
+    --s2: #eef1f5;
+    --s3: #e4e8ee;
+    --line: #d6dce5;
+    --line2: #c3cad6;
+    --edge: #798498;
+    --t1: #111827;
+    --t2: #44526a;
+    --t3: #5b6680;
+    --acc: #1e40af;
+    --accbg: #dbe6fb;
+    --onacc: #ffffff;
+    --up: #0f766e;
+    --dn: #ad3409;
+    --upbg: #d8f5f1;
+    --dnbg: #fee9db;
+    --focus: 0 0 0 3px rgba(30, 64, 175, 0.45);
+    --backdrop: rgba(17, 24, 39, 0.45);
+  }
+}
+
+html[data-theme="day"] {
+  --bg: #f2f4f7;
+  --s1: #ffffff;
+  --s2: #eef1f5;
+  --s3: #e4e8ee;
+  --line: #d6dce5;
+  --line2: #c3cad6;
+  --edge: #798498;
+  --t1: #111827;
+  --t2: #44526a;
+  --t3: #5b6680;
+  --acc: #1e40af;
+  --accbg: #dbe6fb;
+  --onacc: #ffffff;
+  --up: #0f766e;
+  --dn: #ad3409;
+  --upbg: #d8f5f1;
+  --dnbg: #fee9db;
+  --focus: 0 0 0 3px rgba(30, 64, 175, 0.45);
+  --backdrop: rgba(17, 24, 39, 0.45);
+}

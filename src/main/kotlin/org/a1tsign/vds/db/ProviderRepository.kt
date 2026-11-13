@@ -20,6 +20,7 @@ import org.jetbrains.exposed.v1.core.lowerCase
 import org.jetbrains.exposed.v1.core.not
 import org.jetbrains.exposed.v1.core.or
 import org.jetbrains.exposed.v1.core.statements.StatementType
+import org.jetbrains.exposed.v1.core.statements.UpdateBuilder
 import org.jetbrains.exposed.v1.core.vendors.ForUpdateOption
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
@@ -101,22 +102,56 @@ class ProviderRepository {
         }
     }
     fun delete(id: Long) { ProviderTable.deleteWhere { ProviderTable.id eq id } }
+    /** Keeps the stored field origins; use [writeLegalInfo] to set them. */
     fun upsertLegalInfo(id: Long, entity: String?, country: String?, number: String?, address: String?, source: LegalDataSource, confidence: Confidence, sourceUrl: String?, verifiedAt: Instant?, now: Instant) {
-        val values = ProviderLegalInfoTable.selectAll().where { ProviderLegalInfoTable.providerId eq id }.firstOrNull()
-        if (values == null) ProviderLegalInfoTable.insert {
-            it[ProviderLegalInfoTable.providerId] = id; it[ProviderLegalInfoTable.legalEntityName] = entity; it[ProviderLegalInfoTable.registrationCountry] = country; it[ProviderLegalInfoTable.registrationNumber] = number
-            it[ProviderLegalInfoTable.legalAddress] = address; it[ProviderLegalInfoTable.dataSource] = source.name; it[ProviderLegalInfoTable.confidence] = confidence.name
-            it[ProviderLegalInfoTable.sourceUrl] = sourceUrl; it[ProviderLegalInfoTable.verifiedAt] = verifiedAt?.toUtcOffset(); it[ProviderLegalInfoTable.updatedAt] = now.toUtcOffset()
-        } else ProviderLegalInfoTable.update({ ProviderLegalInfoTable.providerId eq id }) {
-            it[ProviderLegalInfoTable.legalEntityName] = entity; it[ProviderLegalInfoTable.registrationCountry] = country; it[ProviderLegalInfoTable.registrationNumber] = number
-            it[ProviderLegalInfoTable.legalAddress] = address; it[ProviderLegalInfoTable.dataSource] = source.name; it[ProviderLegalInfoTable.confidence] = confidence.name
-            it[ProviderLegalInfoTable.sourceUrl] = sourceUrl; it[ProviderLegalInfoTable.verifiedAt] = verifiedAt?.toUtcOffset(); it[ProviderLegalInfoTable.updatedAt] = now.toUtcOffset()
+        val current = legalInfo(id)
+        writeLegalInfo(
+            LegalInfo(
+                id, entity, country, number, address, source, confidence, sourceUrl, verifiedAt, now,
+                current?.legalEntityNameOrigin, current?.registrationCountryOrigin,
+            ),
+            now,
+        )
+    }
+
+    /** Inserts or fully overwrites the row, origins included; `updated_at` is [now]. */
+    fun writeLegalInfo(info: LegalInfo, now: Instant) {
+        val exists = ProviderLegalInfoTable.select(ProviderLegalInfoTable.providerId)
+            .where { ProviderLegalInfoTable.providerId eq info.providerId }.any()
+        val assign: (UpdateBuilder<*>) -> Unit = {
+            it[ProviderLegalInfoTable.legalEntityName] = info.legalEntityName
+            it[ProviderLegalInfoTable.registrationCountry] = info.registrationCountry
+            it[ProviderLegalInfoTable.registrationNumber] = info.registrationNumber
+            it[ProviderLegalInfoTable.legalAddress] = info.legalAddress
+            it[ProviderLegalInfoTable.dataSource] = info.dataSource.name
+            it[ProviderLegalInfoTable.confidence] = info.confidence.name
+            it[ProviderLegalInfoTable.sourceUrl] = info.sourceUrl
+            it[ProviderLegalInfoTable.verifiedAt] = info.verifiedAt?.toUtcOffset()
+            it[ProviderLegalInfoTable.legalEntityNameOrigin] = info.legalEntityNameOrigin?.name
+            it[ProviderLegalInfoTable.registrationCountryOrigin] = info.registrationCountryOrigin?.name
+            it[ProviderLegalInfoTable.updatedAt] = now.toUtcOffset()
+        }
+        if (exists) {
+            ProviderLegalInfoTable.update({ ProviderLegalInfoTable.providerId eq info.providerId }) { assign(it) }
+        } else {
+            ProviderLegalInfoTable.insert { it[ProviderLegalInfoTable.providerId] = info.providerId; assign(it) }
         }
     }
     fun legalInfo(id: Long): LegalInfo? = ProviderLegalInfoTable.selectAll().where { ProviderLegalInfoTable.providerId eq id }.firstOrNull()?.toLegalInfo()
+    /** Methods that were already present keep their origin; new ones are `MANUAL`. */
     fun replacePaymentMethods(id: Long, methods: List<Pair<PaymentMethod, String?>>) {
+        val origins = paymentMethods(id).associate { it.method to it.origin }
+        replacePaymentMethodRows(id, methods.map { (method, note) -> ProviderPaymentMethod(id, method, note, origins[method] ?: RowOrigin.MANUAL) })
+    }
+    fun replacePaymentMethodRows(id: Long, rows: List<ProviderPaymentMethod>) {
         ProviderPaymentMethodTable.deleteWhere { providerId eq id }
-        methods.forEach { (method, note) -> ProviderPaymentMethodTable.insert { it[ProviderPaymentMethodTable.providerId] = id; it[ProviderPaymentMethodTable.method] = method.name; it[ProviderPaymentMethodTable.note] = note } }
+        rows.forEach { row -> addPaymentMethod(id, row.method, row.note, row.origin) }
+    }
+    fun addPaymentMethod(id: Long, method: PaymentMethod, note: String?, origin: RowOrigin) {
+        ProviderPaymentMethodTable.insert {
+            it[ProviderPaymentMethodTable.providerId] = id; it[ProviderPaymentMethodTable.method] = method.name
+            it[ProviderPaymentMethodTable.note] = note; it[ProviderPaymentMethodTable.origin] = origin.name
+        }
     }
     fun paymentMethods(id: Long): List<ProviderPaymentMethod> = ProviderPaymentMethodTable.selectAll().where { ProviderPaymentMethodTable.providerId eq id }.map { it.toProviderPaymentMethod() }
 
@@ -161,10 +196,10 @@ class ProviderRepository {
             .mapValues { it.value.toSet() }
     }
 
-    fun registrationCountriesByProvider(ids: Collection<Long>): Map<Long, String?> {
+    fun legalInfoByProvider(ids: Collection<Long>): Map<Long, LegalInfo> {
         if (ids.isEmpty()) return emptyMap()
         return ProviderLegalInfoTable.selectAll().where { ProviderLegalInfoTable.providerId inList ids }
-            .associate { it[ProviderLegalInfoTable.providerId] to it[ProviderLegalInfoTable.registrationCountry] }
+            .associate { it[ProviderLegalInfoTable.providerId] to it.toLegalInfo() }
     }
 
     fun locationCountriesByProvider(ids: Collection<Long>): Map<Long, Set<String>> {

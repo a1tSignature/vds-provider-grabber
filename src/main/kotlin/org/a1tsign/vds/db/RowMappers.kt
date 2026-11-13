@@ -5,6 +5,7 @@ import org.a1tsign.vds.domain.CurrencyRate
 import org.a1tsign.vds.domain.LegalInfo
 import org.a1tsign.vds.domain.Location
 import org.a1tsign.vds.domain.Provider
+import org.a1tsign.vds.domain.ProviderEnrichment
 import org.a1tsign.vds.domain.ProviderPaymentMethod
 import org.a1tsign.vds.domain.Tariff
 import org.a1tsign.vds.domain.TariffPrice
@@ -47,6 +48,10 @@ fun ResultRow.toLegalInfo(): LegalInfo =
         sourceUrl = this[ProviderLegalInfoTable.sourceUrl],
         verifiedAt = this[ProviderLegalInfoTable.verifiedAt]?.toInstant(),
         updatedAt = this[ProviderLegalInfoTable.updatedAt].toInstant(),
+        legalEntityNameOrigin = this[ProviderLegalInfoTable.legalEntityNameOrigin]
+            ?.let { parseDbEnum("provider_legal_info", "legal_entity_name_origin", it) },
+        registrationCountryOrigin = this[ProviderLegalInfoTable.registrationCountryOrigin]
+            ?.let { parseDbEnum("provider_legal_info", "registration_country_origin", it) },
     )
 
 fun ResultRow.toProviderPaymentMethod(): ProviderPaymentMethod =
@@ -54,6 +59,7 @@ fun ResultRow.toProviderPaymentMethod(): ProviderPaymentMethod =
         providerId = this[ProviderPaymentMethodTable.providerId],
         method = parseDbEnum("provider_payment_method", "method", this[ProviderPaymentMethodTable.method]),
         note = this[ProviderPaymentMethodTable.note],
+        origin = parseDbEnum("provider_payment_method", "origin", this[ProviderPaymentMethodTable.origin]),
     )
 
 fun ResultRow.toLocation(): Location =
@@ -68,6 +74,18 @@ fun ResultRow.toLocation(): Location =
         longitude = this[LocationTable.longitude],
         createdAt = this[LocationTable.createdAt].toInstant(),
         updatedAt = this[LocationTable.updatedAt].toInstant(),
+        origin = parseDbEnum("location", "origin", this[LocationTable.origin]),
+    )
+
+fun ResultRow.toProviderEnrichment(): ProviderEnrichment =
+    ProviderEnrichment(
+        providerId = this[ProviderEnrichmentTable.providerId],
+        lastAttemptAt = this[ProviderEnrichmentTable.lastAttemptAt].toInstant(),
+        lastOutcome = parseDbEnum("provider_enrichment", "last_outcome", this[ProviderEnrichmentTable.lastOutcome]),
+        lastMessage = this[ProviderEnrichmentTable.lastMessage],
+        lastPagesFetched = this[ProviderEnrichmentTable.lastPagesFetched],
+        lastSuccessAt = this[ProviderEnrichmentTable.lastSuccessAt]?.toInstant(),
+        evidenceJson = this[ProviderEnrichmentTable.evidence],
     )
 
 fun ResultRow.toTariff(): Tariff =

@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.a1tsign.vds.api.ConflictException
 import org.a1tsign.vds.api.NotFoundException
+import org.a1tsign.vds.db.EnrichmentRepository
 import org.a1tsign.vds.db.ProviderRepository
 import org.a1tsign.vds.domain.*
 import org.jetbrains.exposed.v1.jdbc.Database
@@ -16,7 +17,12 @@ import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("org.a1tsign.vds.service.ProviderService")
 
-class ProviderService(private val database: Database, private val providers: ProviderRepository, private val clock: Clock) {
+class ProviderService(
+    private val database: Database,
+    private val providers: ProviderRepository,
+    private val clock: Clock,
+    private val enrichment: EnrichmentRepository = EnrichmentRepository(),
+) {
     suspend fun create(slug: String, name: String, websiteUrl: String, description: String?, status: ProviderStatus, systemStatus: SystemStatus = SystemStatus.CONFIGURED): Provider = withContext(Dispatchers.IO) {
         mapSlugConflict { transaction(database) { providers.insert(slug, name, websiteUrl, description, status, clock.nowUtc(), systemStatus) } }
     }
@@ -46,15 +52,49 @@ class ProviderService(private val database: Database, private val providers: Pro
         }
     }
     suspend fun delete(id: Long) = withContext(Dispatchers.IO) { transaction(database) { requireProvider(id); providers.delete(id) } }
-    suspend fun putLegalInfo(id: Long, entity: String?, country: String?, number: String?, address: String?, source: LegalDataSource, confidence: Confidence, sourceUrl: String?, verifiedAt: java.time.Instant?): LegalInfo = withContext(Dispatchers.IO) {
+    suspend fun putLegalInfo(id: Long, entity: String?, country: String?, number: String?, address: String?, source: LegalDataSource, confidence: Confidence, sourceUrl: String?, verifiedAt: java.time.Instant?): LegalInfo =
+        putLegalInfo(id, LegalInfoWrite(entity, country, number, address, source, confidence, sourceUrl, verifiedAt, null, null), WriteMode.HUMAN)
+
+    /** See [LegalInfoRules.applyHumanWrite] and [LegalInfoRules.applyAutomaticWrite]. */
+    suspend fun putLegalInfo(id: Long, write: LegalInfoWrite, mode: WriteMode): LegalInfo = withContext(Dispatchers.IO) {
         transaction(database) {
             providers.lockProvider(id) ?: throw NotFoundException("Provider not found")
-            providers.upsertLegalInfo(id, entity, country, number, address, source, confidence, sourceUrl, verifiedAt, clock.nowUtc())
+            val current = providers.legalInfo(id)
+            val now = clock.nowUtc()
+            val next = when (mode) {
+                WriteMode.HUMAN -> LegalInfoRules.applyHumanWrite(id, current, write, now)
+                WriteMode.AUTOMATIC -> LegalInfoRules.applyAutomaticWrite(id, current, write, now)
+            }
+            providers.writeLegalInfo(next, now)
             providers.legalInfo(id)!!
         }
     }
-    suspend fun putPaymentMethods(id: Long, methods: List<Pair<PaymentMethod, String?>>): List<ProviderPaymentMethod> = withContext(Dispatchers.IO) {
-        transaction(database) { requireProvider(id); providers.replacePaymentMethods(id, methods); providers.paymentMethods(id) }
+
+    suspend fun putPaymentMethods(id: Long, methods: List<Pair<PaymentMethod, String?>>): List<ProviderPaymentMethod> =
+        putPaymentMethods(id, methods, WriteMode.HUMAN)
+
+    /**
+     * Replaces the whole set. Rows that already existed keep their origin; new rows are `MANUAL`
+     * ([WriteMode.HUMAN]) or `AUTO`. Only a human request remembers removed `AUTO` methods as
+     * dismissals and forgets the dismissal of a method it adds back.
+     */
+    suspend fun putPaymentMethods(id: Long, methods: List<Pair<PaymentMethod, String?>>, mode: WriteMode): List<ProviderPaymentMethod> = withContext(Dispatchers.IO) {
+        transaction(database) {
+            providers.lockProvider(id) ?: throw NotFoundException("Provider not found")
+            val now = clock.nowUtc()
+            val current = providers.paymentMethods(id).associateBy { it.method }
+            val newOrigin = if (mode == WriteMode.HUMAN) RowOrigin.MANUAL else RowOrigin.AUTO
+            val rows = methods.map { (method, note) -> ProviderPaymentMethod(id, method, note, current[method]?.origin ?: newOrigin) }
+            if (mode == WriteMode.HUMAN) {
+                val requested = methods.map { it.first }.toSet()
+                current.values
+                    .filter { it.origin == RowOrigin.AUTO && it.method !in requested }
+                    .forEach { enrichment.addDismissal(id, DismissalFacet.PAYMENT_METHOD, it.method.name, now) }
+                requested.forEach { enrichment.removeDismissal(id, DismissalFacet.PAYMENT_METHOD, it.name) }
+            }
+            providers.replacePaymentMethodRows(id, rows)
+            providers.paymentMethods(id)
+        }
     }
     private fun requireProvider(id: Long): Provider = providers.find(id) ?: throw NotFoundException("Provider not found")
     private inline fun <T> mapSlugConflict(block: () -> T): T = try { block() } catch (e: Exception) {

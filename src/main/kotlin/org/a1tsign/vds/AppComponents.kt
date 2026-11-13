@@ -15,6 +15,8 @@ import org.a1tsign.vds.service.ProviderService
 import org.a1tsign.vds.service.CatalogQueryService
 import org.a1tsign.vds.db.LocationRepository
 import org.a1tsign.vds.service.LocationService
+import org.a1tsign.vds.service.EnrichmentService
+import org.a1tsign.vds.db.EnrichmentRepository
 import org.a1tsign.vds.db.TariffRepository
 import org.a1tsign.vds.service.TariffService
 import org.a1tsign.vds.db.PriceRepository
@@ -85,6 +87,8 @@ class AppComponents(val dataSource: DataSource) {
     lateinit var providerService: ProviderService
         private set
     lateinit var locationService: LocationService
+        private set
+    lateinit var enrichmentService: EnrichmentService
         private set
     lateinit var tariffService: TariffService
         private set
@@ -179,6 +183,7 @@ class AppComponents(val dataSource: DataSource) {
         userService: UserService,
         providerService: ProviderService,
         locationService: LocationService,
+        enrichmentService: EnrichmentService,
         tariffService: TariffService,
         priceService: PriceService,
         catalogQueryService: CatalogQueryService,
@@ -208,6 +213,7 @@ class AppComponents(val dataSource: DataSource) {
         this.userService = userService
         this.providerService = providerService
         this.locationService = locationService
+        this.enrichmentService = enrichmentService
         this.tariffService = tariffService
         this.priceService = priceService
         this.catalogQueryService = catalogQueryService
@@ -242,10 +248,12 @@ fun buildComponents(
     val authService = AuthService(database, repository, jwt, passwordHasher, clock, LoginThrottle(clock))
     val userService = UserService(database, repository, passwordHasher, clock)
     val providerRepository = ProviderRepository()
-    val providerService = ProviderService(database, providerRepository, clock)
-    val catalogQueryService = CatalogQueryService(database, providerRepository, TariffRepository(), PriceRepository())
+    val enrichmentRepository = EnrichmentRepository()
+    val providerService = ProviderService(database, providerRepository, clock, enrichmentRepository)
+    val catalogQueryService = CatalogQueryService(database, providerRepository, TariffRepository(), PriceRepository(), enrichmentRepository)
     val locationRepository = LocationRepository()
-    val locationService = LocationService(database, locationRepository, ProviderRepository(), clock)
+    val locationService = LocationService(database, locationRepository, ProviderRepository(), clock, enrichmentRepository)
+    val enrichmentService = EnrichmentService(database, providerRepository, locationRepository, enrichmentRepository, clock)
     val tariffService = TariffService(database, TariffRepository(), ProviderRepository(), locationRepository, clock)
     val currencyRateRepository = CurrencyRateRepository()
     val fxProvider = currencyRateProvider ?: ErApiCurrencyRateProvider(config)
@@ -396,7 +404,7 @@ fun buildComponents(
 
     return AppComponents(dataSource).apply {
         configure(
-            config, database, clock, repository, jwt, passwordHasher, authService, userService, providerService, locationService,
+            config, database, clock, repository, jwt, passwordHasher, authService, userService, providerService, locationService, enrichmentService,
             tariffService, priceService, catalogQueryService, currencyRateRepository, currencyConverter, fxRefreshService, fxClient,
             crawlerRegistry, crawlerRunner, crawlerScope, crawlerCatalogClient, crawlerFetchHttpClient,
             discoverySources, discoverySearchProvider, discoverySearchHttpClient, discoveryLedger, discoveryRunner, discoveryScope,

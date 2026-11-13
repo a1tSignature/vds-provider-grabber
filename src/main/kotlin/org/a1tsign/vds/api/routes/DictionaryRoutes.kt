@@ -8,6 +8,10 @@ import org.a1tsign.vds.auth.requireRole
 import org.a1tsign.vds.domain.BillingPeriod
 import org.a1tsign.vds.domain.Confidence
 import org.a1tsign.vds.domain.DiskType
+import org.a1tsign.vds.domain.DismissalFacet
+import org.a1tsign.vds.domain.EnrichmentOutcome
+import org.a1tsign.vds.domain.FieldOrigin
+import org.a1tsign.vds.domain.RowOrigin
 import org.a1tsign.vds.domain.LegalDataSource
 import org.a1tsign.vds.domain.PaymentMethod
 import org.a1tsign.vds.domain.PriceDataSource
@@ -35,6 +39,10 @@ data class DictionariesDto(
     val confidenceLevels: List<String>,
     val legalDataSources: List<String>,
     val priceDataSources: List<String>,
+    val fieldOrigins: List<String>,
+    val rowOrigins: List<String>,
+    val enrichmentOutcomes: List<String>,
+    val dismissalFacets: List<String>,
 )
 
 fun Route.dictionaryRoutes() {
@@ -51,6 +59,10 @@ fun Route.dictionaryRoutes() {
                 confidenceLevels = Confidence.entries.map { it.name },
                 legalDataSources = LegalDataSource.entries.map { it.name },
                 priceDataSources = PriceDataSource.entries.map { it.name },
+                fieldOrigins = FieldOrigin.entries.map { it.name },
+                rowOrigins = RowOrigin.entries.map { it.name },
+                enrichmentOutcomes = EnrichmentOutcome.entries.map { it.name },
+                dismissalFacets = DismissalFacet.entries.map { it.name },
             ),
         )
     }

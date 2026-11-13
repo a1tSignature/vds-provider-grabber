@@ -18,6 +18,7 @@ import org.a1tsign.vds.auth.requireRole
 import org.a1tsign.vds.db.ProviderListFilter
 import org.a1tsign.vds.domain.*
 import org.a1tsign.vds.service.CatalogQueryService
+import org.a1tsign.vds.service.LegalInfoWrite
 import org.a1tsign.vds.service.ProviderService
 
 fun Route.providerRoutes(service: ProviderService, queryService: CatalogQueryService) {
@@ -73,6 +74,7 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
         call.requireRole(Role.EDITOR)
         val req = call.receive<LegalInfoWriteRequest>()
         val v = Validation()
+        val mode = parseWriteMode(v, req.writeMode)
         val entity = req.legalEntityName?.also { v.requireNonBlank("legalEntityName", it); v.maxLength("legalEntityName", it, 255) }
         val country = req.registrationCountry?.let { v.validateCountryCode("registrationCountry", it) }
         val number = req.registrationNumber?.let { v.maxLength("registrationNumber", it, 128) }
@@ -80,20 +82,26 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
         val source = v.enumValue("dataSource", req.dataSource, LegalDataSource.entries.toTypedArray())
         val confidence = v.enumValue("confidence", req.confidence, Confidence.entries.toTypedArray())
         val url = req.sourceUrl?.let { v.validateUrl("sourceUrl", it) }
+        val entityOrigin = parseFieldOrigin(v, "legalEntityNameOrigin", req.legalEntityNameOrigin, req.legalEntityName, mode)
+        val countryOrigin = parseFieldOrigin(v, "registrationCountryOrigin", req.registrationCountryOrigin, req.registrationCountry, mode)
+        if (mode == WriteMode.AUTOMATIC && req.verifiedAt != null) v.reject("verifiedAt", "must be absent when writeMode is AUTOMATIC")
         v.throwIfInvalid()
         val id = providerId(call.parameters["id"])
-        call.respond(service.putLegalInfo(id, entity, country, number, address, source!!, confidence!!, url, req.verifiedAt).toDto())
+        val write = LegalInfoWrite(entity, country, number, address, source!!, confidence!!, url, req.verifiedAt, entityOrigin, countryOrigin)
+        call.respond(service.putLegalInfo(id, write, mode!!).toDto())
     }
 
+    // The body is a JSON array, so the write mode travels as `?writeMode=`.
     put("/api/v1/providers/{id}/payment-methods") {
         call.requireRole(Role.EDITOR)
         val req = call.receive<List<PaymentMethodWriteRequest>>()
         val v = Validation()
+        val mode = parseWriteMode(v, call.request.queryParameters["writeMode"])
         val methods = req.mapNotNull { row -> v.enumValue("method", row.method, PaymentMethod.entries.toTypedArray())?.let { it to row.note } }
         v.rejectDuplicates("method", req.map { it.method })
         v.throwIfInvalid()
         val id = providerId(call.parameters["id"])
-        call.respond(service.putPaymentMethods(id, methods).map { it.toDto() })
+        call.respond(service.putPaymentMethods(id, methods, mode!!).map { it.toDto() })
     }
 
     get("/api/v1/providers") {
@@ -164,4 +172,16 @@ private fun parseOptionalBoolean(v: Validation, field: String, raw: String?): Bo
     "true" -> true
     "false" -> false
     else -> { v.reject(field, "must be true or false"); null }
+}
+
+/** Absent means [WriteMode.HUMAN]. */
+internal fun parseWriteMode(v: Validation, raw: String?): WriteMode? =
+    if (raw == null) WriteMode.HUMAN else v.enumValue("writeMode", raw, WriteMode.entries.toTypedArray())
+
+/** An `AUTO_*` origin needs a value to describe, and only a human may claim `MANUAL`. */
+private fun parseFieldOrigin(v: Validation, field: String, raw: String?, value: String?, mode: WriteMode?): FieldOrigin? {
+    val origin = raw?.let { v.enumValue(field, it, FieldOrigin.entries.toTypedArray()) } ?: return null
+    if (origin != FieldOrigin.MANUAL && value == null) v.reject(field, "must be MANUAL or absent when the field has no value")
+    if (origin == FieldOrigin.MANUAL && mode == WriteMode.AUTOMATIC) v.reject(field, "must not be MANUAL when writeMode is AUTOMATIC")
+    return origin
 }

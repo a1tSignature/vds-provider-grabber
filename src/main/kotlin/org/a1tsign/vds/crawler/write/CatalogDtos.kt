@@ -1,5 +1,7 @@
 package org.a1tsign.vds.crawler.write
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Serializable
@@ -16,30 +18,18 @@ import java.time.format.DateTimeParseException
 import java.time.temporal.ChronoUnit
 
 /*
- * The crawler's **own** wire mirrors of the vds-001 request/response bodies (ADR-02). They
- * deliberately do not reuse vds-001's own `api/dto` package:
- *
- * - the crawler is a **tolerant reader** ([CATALOG_JSON] has `ignoreUnknownKeys = true`, vds-001's
- *   `ApiJson` has it `false`), so an additive field in a future vds-001 response must not break a
- *   crawl -- sharing the DTOs would share the strict `Json` behaviour expectations too;
- * - every enum-valued field is a **`String`** here for the same reason: `ignoreUnknownKeys` does
- *   nothing about an unknown *enum constant*, and a new `PaymentMethod` in the catalog must not
- *   make a provider unreadable. The reconciler (task 5) converts `…domain` enums to/from these
- *   strings with `.name`;
- * - a separate mirror is what makes the "crawler imports nothing out of vds-001's db, service or
- *   dto packages" grep guard enforceable.
- *
- * Money and coordinates are [BigDecimal] in Kotlin and a plain-decimal **string** on the wire
- * ([PlainDecimalSerializer]); `Double`/`Float` appear nowhere.
+ * The crawler's own mirrors of the catalog API bodies, not the server's `api/dto`: the crawler is a
+ * tolerant reader ([CATALOG_JSON]) and must keep working when a response gains fields. Enum-valued
+ * fields are `String` because `ignoreUnknownKeys` does not cover an unknown enum constant, and a
+ * new `PaymentMethod` must not make a provider unreadable.
  */
 
-/** Money/coordinates: plain-decimal JSON **string** ⇄ [BigDecimal], like vds-001's `BigDecimalSerializer`. */
+/** Money and coordinates: a plain-decimal JSON string to and from [BigDecimal]. */
 object PlainDecimalSerializer : KSerializer<BigDecimal> {
     override val descriptor: SerialDescriptor =
         PrimitiveSerialDescriptor("org.a1tsign.vds.crawler.write.PlainDecimal", PrimitiveKind.STRING)
 
-    // toPlainString(), never toString(): the latter emits scientific notation at some scales, and
-    // vds-001 rejects an exponent (api/Serializers.kt `parsePlainDecimal`).
+    // toString() emits scientific notation at some scales, and the server rejects an exponent.
     override fun serialize(encoder: Encoder, value: BigDecimal) = encoder.encodeString(value.toPlainString())
 
     override fun deserialize(decoder: Decoder): BigDecimal {
@@ -53,9 +43,8 @@ object PlainDecimalSerializer : KSerializer<BigDecimal> {
 }
 
 /**
- * vds-001 writes ISO-8601 with an explicit offset truncated to whole seconds and accepts only an
- * offset-carrying timestamp, so both directions are pinned here instead of relying on
- * `Instant.parse`.
+ * The server writes ISO-8601 with an explicit offset, truncated to seconds, and accepts only a
+ * timestamp with an offset, so both directions are pinned instead of relying on `Instant.parse`.
  */
 object OffsetInstantSerializer : KSerializer<Instant> {
     override val descriptor: SerialDescriptor =
@@ -74,7 +63,11 @@ object OffsetInstantSerializer : KSerializer<Instant> {
     }
 }
 
-// ---------- auth ----------
+/**
+ * Every crawler write is automatic: the catalog then never lets it overwrite a `MANUAL` legal field
+ * or touch `verified_at`, and its rows are tagged `AUTO`.
+ */
+const val AUTOMATIC_WRITE_MODE = "AUTOMATIC"
 
 @Serializable
 data class LoginRequestBody(val username: String, val password: String)
@@ -87,15 +80,12 @@ data class LoginResponseBody(
     val roles: List<String> = emptyList(),
 )
 
-// ---------- the error envelope ----------
-
 @Serializable
 data class CatalogErrorDetail(val field: String = "", val message: String = "")
 
 /**
- * vds-001's error envelope. Every field has a default: this type is parsed off a **failed**
- * response, where a proxy or a non-route failure may answer with something that is not the
- * envelope at all.
+ * Every field has a default: a failed response may come from a proxy or a non-route failure and
+ * not be the envelope at all.
  */
 @Serializable
 data class CatalogErrorEnvelope(
@@ -106,8 +96,6 @@ data class CatalogErrorEnvelope(
     val details: List<CatalogErrorDetail>? = null,
 )
 
-// ---------- pagination ----------
-
 @Serializable
 data class CatalogPage<T>(
     val content: List<T> = emptyList(),
@@ -117,9 +105,7 @@ data class CatalogPage<T>(
     val totalPages: Int = 0,
 )
 
-// ---------- reads ----------
-
-/** One row of `GET /api/v1/providers` -- only the fields slug matching needs. */
+/** One row of `GET /api/v1/providers`. */
 @Serializable
 data class CatalogProviderSummary(
     val id: Long,
@@ -127,7 +113,6 @@ data class CatalogProviderSummary(
     val name: String,
     val websiteUrl: String = "",
     val status: String = "",
-    /** vds-004's second provider axis; a `String` like every other enum-valued field here. */
     val systemStatus: String = "",
 )
 
@@ -139,11 +124,7 @@ data class CatalogProvider(
     val websiteUrl: String,
     val description: String? = null,
     val status: String,
-    /**
-     * vds-004's second provider axis. Defaulted (and never sent back on an update) so the crawler
-     * reads it without ever rewriting it: the only deliberate change it may make is the promotion
-     * through `CrawlWriter.promoteProviderToConfigured`.
-     */
+    /** Read-only for the crawler except through [CrawlWriter.promoteProviderToConfigured]. */
     val systemStatus: String = "",
 )
 
@@ -156,6 +137,8 @@ data class CatalogLegalInfo(
     val dataSource: String = "",
     val confidence: String = "",
     val sourceUrl: String? = null,
+    val legalEntityNameOrigin: String? = null,
+    val registrationCountryOrigin: String? = null,
 )
 
 @Serializable
@@ -173,11 +156,6 @@ data class CatalogLocation(
     @Serializable(with = PlainDecimalSerializer::class) val longitude: BigDecimal? = null,
 )
 
-/**
- * `isActive` is read-only state for the crawler: the reconciler echoes it back verbatim on every
- * update, because `TariffWriteRequest.isActive` defaults to `true` on the vds-001 side and an
- * omitted value would silently re-activate a deactivated tariff.
- */
 @Serializable
 data class CatalogTariff(
     val id: Long,
@@ -218,10 +196,7 @@ data class CatalogTariffWithPrices(
     val prices: List<CatalogPrice> = emptyList(),
 )
 
-/**
- * `GET /api/v1/providers/{id}`. [tariffs] carries the **active** tariffs only -- which is why
- * `CatalogApiClient.listAllTariffs` exists as a separate call.
- */
+/** `GET /api/v1/providers/{id}`. [tariffs] holds active tariffs only; see [CatalogApiClient.listAllTariffs]. */
 @Serializable
 data class CatalogProviderDetail(
     val provider: CatalogProvider,
@@ -230,8 +205,6 @@ data class CatalogProviderDetail(
     val locations: List<CatalogLocation> = emptyList(),
     val tariffs: List<CatalogTariffWithPrices> = emptyList(),
 )
-
-// ---------- writes ----------
 
 /** Body of `PUT /api/v1/providers/{id}/system-status`. */
 @Serializable
@@ -246,11 +219,7 @@ data class ProviderWrite(
     val description: String? = null,
 )
 
-/**
- * Body of the discovery pass's `POST /api/v1/providers` (vds-004): [ProviderWrite] plus an explicit
- * [systemStatus], which the pass always sets to `CANDIDATE`. No legal info, payment methods,
- * locations or tariffs ever accompany it.
- */
+/** Discovery's `POST /api/v1/providers`: [ProviderWrite] plus an explicit [systemStatus]. */
 @Serializable
 data class CandidateProviderWrite(
     val slug: String,
@@ -262,9 +231,10 @@ data class CandidateProviderWrite(
 )
 
 /**
- * `dataSource` is a caller-supplied string, but the only value the crawler may ever send is
- * `CRAWLER` (spec req. 30); `verifiedAt` is deliberately absent -- the crawler verifies nothing.
+ * The crawler only ever sends `dataSource = CRAWLER`. There is no `verifiedAt`: the catalog rejects
+ * it in an automatic write.
  */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class LegalInfoWrite(
     val dataSource: String,
@@ -274,11 +244,15 @@ data class LegalInfoWrite(
     val registrationNumber: String? = null,
     val legalAddress: String? = null,
     val sourceUrl: String? = null,
+    val legalEntityNameOrigin: String? = null,
+    val registrationCountryOrigin: String? = null,
+    @EncodeDefault val writeMode: String = AUTOMATIC_WRITE_MODE,
 )
 
 @Serializable
 data class PaymentMethodWrite(val method: String, val note: String? = null)
 
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class LocationWrite(
     val countryCode: String,
@@ -287,14 +261,13 @@ data class LocationWrite(
     val datacenterName: String? = null,
     @Serializable(with = PlainDecimalSerializer::class) val latitude: BigDecimal? = null,
     @Serializable(with = PlainDecimalSerializer::class) val longitude: BigDecimal? = null,
+    @EncodeDefault val writeMode: String = AUTOMATIC_WRITE_MODE,
 )
 
 /**
- * [isActive] and [inStock] have **no defaults on purpose**: vds-001's `TariffWriteRequest` defaults
- * both to `true`, so a caller that forgets `isActive` resurrects a deactivated tariff. Here the
- * caller is forced to pass a value, and the only value it may pass for [isActive] is the one it
- * just read from the catalog ([CatalogTariff.isActive]) -- the crawler never deactivates anything
- * (ADR-02/ADR-03).
+ * [isActive] and [inStock] have no defaults because the server defaults both to `true`, and an
+ * omitted `isActive` would resurrect a deactivated tariff. [isActive] must be the value just read
+ * from [CatalogTariff.isActive]: the crawler never deactivates anything.
  */
 @Serializable
 data class TariffWrite(
@@ -315,10 +288,7 @@ data class TariffWrite(
     val ipv6Supported: Boolean? = null,
 )
 
-/**
- * `effectiveFrom` is deliberately absent: the crawler never back-dates a price row, so the server
- * always stamps it with its own "now" (spec req. 29/34).
- */
+/** No `effectiveFrom`: the crawler never back-dates a price, so the server stamps its own "now". */
 @Serializable
 data class PriceWrite(
     val billingPeriod: String,

@@ -42,6 +42,8 @@ object ProviderLegalInfoTable : Table("provider_legal_info") {
     val sourceUrl = text("source_url").nullable()
     val verifiedAt = timestampWithTimeZone("verified_at").nullable()
     val updatedAt = timestampWithTimeZone("updated_at")
+    val legalEntityNameOrigin = varchar("legal_entity_name_origin", 16).nullable()
+    val registrationCountryOrigin = varchar("registration_country_origin", 16).nullable()
 
     override val primaryKey = PrimaryKey(providerId)
 }
@@ -51,6 +53,7 @@ object ProviderPaymentMethodTable : Table("provider_payment_method") {
     val providerId = long("provider_id").references(ProviderTable.id, onDelete = ReferenceOption.CASCADE)
     val method = varchar("method", 32)
     val note = text("note").nullable()
+    val origin = varchar("origin", 16)
 
     override val primaryKey = PrimaryKey(providerId, method)
 }
@@ -66,8 +69,31 @@ object LocationTable : Table("location") {
     val longitude = decimal("longitude", 9, 6).nullable()
     val createdAt = timestampWithTimeZone("created_at")
     val updatedAt = timestampWithTimeZone("updated_at")
+    val origin = varchar("origin", 16)
 
     override val primaryKey = PrimaryKey(id)
+}
+
+/** 0..1 per provider; `evidence` is an `EnrichmentEvidenceDto` serialised as JSON. */
+object ProviderEnrichmentTable : Table("provider_enrichment") {
+    val providerId = long("provider_id").references(ProviderTable.id, onDelete = ReferenceOption.CASCADE)
+    val lastAttemptAt = timestampWithTimeZone("last_attempt_at")
+    val lastOutcome = varchar("last_outcome", 32)
+    val lastMessage = varchar("last_message", 500).nullable()
+    val lastPagesFetched = integer("last_pages_fetched")
+    val lastSuccessAt = timestampWithTimeZone("last_success_at").nullable()
+    val evidence = text("evidence").nullable()
+
+    override val primaryKey = PrimaryKey(providerId)
+}
+
+object ProviderEnrichmentDismissalTable : Table("provider_enrichment_dismissal") {
+    val providerId = long("provider_id").references(ProviderTable.id, onDelete = ReferenceOption.CASCADE)
+    val facet = varchar("facet", 32)
+    val value = varchar("value", 32)
+    val createdAt = timestampWithTimeZone("created_at")
+
+    override val primaryKey = PrimaryKey(providerId, facet, value)
 }
 
 object TariffTable : Table("tariff") {

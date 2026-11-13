@@ -2,6 +2,7 @@ package org.a1tsign.vds.api.dto
 
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
+import org.a1tsign.vds.domain.FieldOrigin
 import org.a1tsign.vds.domain.PaymentMethod
 import org.a1tsign.vds.domain.ProviderStatus
 import org.a1tsign.vds.domain.SystemStatus
@@ -21,6 +22,9 @@ data class ProviderSummaryDto(
     /** Always `CONFIGURED` unless the request asked for other values with `?systemStatus=`. */
     val systemStatus: SystemStatus,
     val registrationCountry: String? = null,
+    val legalEntityName: String? = null,
+    val legalEntityNameOrigin: FieldOrigin? = null,
+    val registrationCountryOrigin: FieldOrigin? = null,
     val paymentMethods: Set<PaymentMethod> = emptySet(),
     val locationCountryCodes: Set<String> = emptySet(),
     val activeTariffCount: Int,
@@ -34,7 +38,10 @@ data class TariffWithPricesDto(
     val prices: List<PriceDto> = emptyList(),
 )
 
-/** `GET /api/v1/providers/{id}` -- the full provider: legal info, payment methods, locations and active tariffs. */
+/**
+ * `GET /api/v1/providers/{id}` -- the full provider: legal info, payment methods, locations, active
+ * tariffs and the state of its latest enrichment (absent when it was never attempted).
+ */
 @Serializable
 data class ProviderDetailDto(
     val provider: ProviderDto,
@@ -42,4 +49,5 @@ data class ProviderDetailDto(
     val paymentMethods: List<ProviderPaymentMethodDto> = emptyList(),
     val locations: List<LocationDto> = emptyList(),
     val tariffs: List<TariffWithPricesDto> = emptyList(),
+    val enrichment: ProviderEnrichmentDto? = null,
 )

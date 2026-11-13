@@ -162,11 +162,14 @@ class CoreSchemaTest : AbstractDbTest() {
                 "source_url" to true,
                 "verified_at" to true,
                 "updated_at" to false,
+                "legal_entity_name_origin" to true,
+                "registration_country_origin" to true,
             ),
             "provider_payment_method" to mapOf(
                 "provider_id" to false,
                 "method" to false,
                 "note" to true,
+                "origin" to false,
             ),
             "location" to mapOf(
                 "id" to false,
@@ -179,6 +182,7 @@ class CoreSchemaTest : AbstractDbTest() {
                 "longitude" to true,
                 "created_at" to false,
                 "updated_at" to false,
+                "origin" to false,
             ),
             "tariff" to mapOf(
                 "id" to false,
@@ -333,6 +337,9 @@ class CoreSchemaTest : AbstractDbTest() {
             "app_user.created_at",
             "app_user.updated_at",
             "app_user.last_login_at",
+            "provider_enrichment.last_attempt_at",
+            "provider_enrichment.last_success_at",
+            "provider_enrichment_dismissal.created_at",
         )
 
         PostgresSupport.dataSource.connection.use { connection ->

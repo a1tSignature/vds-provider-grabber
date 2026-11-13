@@ -3,15 +3,8 @@ package org.a1tsign.vds.crawler.write
 import org.a1tsign.vds.domain.SystemStatus
 
 /**
- * The [CrawlWriter] that really writes: pure delegation to [CatalogApiClient], one call per method,
- * no decision of its own (ADR-05).
- *
- * Nothing is caught here -- a [CatalogApiException] is the reconciler's to interpret (`Conflict` is
- * absorbed by re-reading, `Unauthorized` must reach the runner) -- and nothing is returned that the
- * reconciler does not need, so the response bodies of the catalog stay inside this layer.
- *
- * [beginProvider] and [plannedOperations] keep their interface defaults: this writer performs the
- * mutations instead of planning them.
+ * The [CrawlWriter] that really writes, by delegating to [CatalogApiClient]. Catches nothing: every
+ * [CatalogApiException] is the reconciler's to interpret.
  */
 class ApiCrawlWriter(private val client: CatalogApiClient) : CrawlWriter {
 

@@ -3,34 +3,23 @@ package org.a1tsign.vds.crawler.write
 import org.a1tsign.vds.domain.SystemStatus
 import java.util.concurrent.atomic.AtomicLong
 
-/** How many planned-operation lines one run keeps (spec req. 36); the rest are dropped. */
+/** How many planned-operation lines one run keeps; the rest are dropped. */
 const val PLANNED_OPERATIONS_LIMIT: Int = 200
 
 /**
- * The preview [CrawlWriter] (ADR-05): it performs **no** mutation at all, records one
- * operator-readable line per mutation the reconciler intended, and returns ids that let planning
- * continue as if the write had happened.
+ * The preview [CrawlWriter]: performs no mutation, records one line per intended mutation, and
+ * returns ids that let planning continue as if the write had happened.
  *
- * Three properties make the preview realistic rather than decorative:
- *
- * - **Fabricated ids are consistent inside the run.** A created entity gets one synthetic id,
- *   memoised by what identifies it in the catalog (slug / the location unique index / the tariff's
- *   `externalId` or lower-cased name), so a second create of the same thing returns the same id and
- *   the follow-up operations (links, prices) are still planned against it. The ids are **negative**
- *   so one that escaped into a URL could not possibly address a real row -- but they never leave
- *   this class: the reconciler only hands them back to the writer, and the run summary reports
- *   counters and lines.
- * - **Counters come out identical to a real run's**, because they are produced by the reconciler
- *   from these return values; [putPrice] therefore reports `appended = true` (a dry run cannot know
- *   whether vds-001 would have answered `200`, and "would append" is the honest preview) and
+ * - A created entity gets one synthetic id per catalog identity (slug, location unique key, tariff
+ *   `externalId` or lower-cased name), so follow-up links and prices are planned against it. The
+ *   ids are negative so one that leaked into a URL could not address a real row.
+ * - [putPrice] reports `appended = true` (whether the server would answer `200` is unknowable) and
  *   `noFxRate = false` (the FX state is not consulted without a write).
- * - **The line list is bounded** at [PLANNED_OPERATIONS_LIMIT]: a broken adapter claiming thousands
- *   of tariffs must not grow the in-memory run history. Dropping lines never affects the counters.
+ * - Lines are capped at [PLANNED_OPERATIONS_LIMIT] to bound the in-memory run history; counters
+ *   are unaffected.
  *
- * One instance per run, shared by every adapter of it; [beginProvider] is what names the provider in
- * each line. All state is behind one lock, so an HTTP thread can read the summary while the run
- * writes it -- `CrawlerRunner` runs adapters one at a time (`VDS_CRAWLER_MAX_CONCURRENT_ADAPTERS > 1`
- * is refused at startup), so the lock is not there for concurrent adapters.
+ * One instance per run, shared by its adapters. The lock lets an HTTP thread read the summary while
+ * the run writes it; adapters themselves run one at a time.
  */
 class DryRunWriter : CrawlWriter {
 
@@ -115,14 +104,14 @@ class DryRunWriter : CrawlWriter {
         fabricated.getOrPut(key) { -ids.incrementAndGet() }
     }
 
-    /** The tariff's name once this run has seen it, otherwise the id it was read from the catalog by. */
+    /** The tariff's name once this run has seen it, otherwise its id. */
     private fun tariffLabel(tariffId: Long): String =
         synchronized(lock) { tariffNames[tariffId] } ?: "#$tariffId"
 
     private fun renderLocation(request: LocationWrite): String =
         "country=${request.countryCode} city=${request.city ?: "-"} dc=${request.datacenterName ?: "-"}"
 
-    /** Mirrors vds-001's `uq_location_provider_country_city_dc`, so the same row keeps the same id. */
+    /** Mirrors `uq_location_provider_country_city_dc`, so the same row keeps the same id. */
     private fun locationKey(request: LocationWrite): String =
         "${request.countryCode}|${request.city.orEmpty().lowercase()}|${request.datacenterName.orEmpty().lowercase()}"
 }

@@ -1,48 +1,28 @@
 package org.a1tsign.vds.crawler.write
 
 /**
- * The write boundary of the crawler (ADR-05): **one method per catalog mutation the reconciler is
- * allowed to perform**, and nothing else.
+ * Every catalog mutation the reconciler may perform, and nothing else. Implemented by
+ * [ApiCrawlWriter] and [DryRunWriter], so the reconciler has no `if (dryRun)` branch. Reads are not
+ * behind this interface: both modes read the real catalog through [CatalogApiClient].
  *
- * Two implementations follow in task vds-002.5 -- `ApiCrawlWriter` (delegates to
- * [CatalogApiClient]) and `DryRunWriter` (records the intended mutation, fabricates consistent ids,
- * writes nothing) -- so the reconciler contains no `if (dryRun)` branch and cannot tell which one
- * it was given. Reads are **not** behind this interface: both modes read the real catalog through
- * [CatalogApiClient], because a preview against a fake catalog would be worthless.
+ * There is no delete or deactivate method, so destroying catalog data cannot be expressed here.
+ * The only disappearance signal is [TariffWrite.inStock] `false`; [TariffWrite.isActive] has no
+ * default so that an update must echo the catalog's current value.
  *
- * ### Why this interface is this small
- *
- * There is deliberately **no delete and no deactivate method**, and no method that takes a
- * "remove"/"deactivate" flag. The never-destroy rule of ADR-02/ADR-03 is therefore structurally
- * impossible to express here, instead of being a convention every call site has to remember. The
- * only disappearance signal a writer can carry is [TariffWrite.inStock] `false`, and
- * [TariffWrite.isActive] has no default precisely so that an update must echo the value the
- * reconciler just read from the catalog.
- *
- * Every method returns what the reconciler needs to keep going: the id of a created row, or the
- * created-vs-unchanged outcome of a price write. A failure is a [CatalogApiException] -- notably
- * [CatalogApiException.Conflict], which the reconciler absorbs by re-reading, and
- * [CatalogApiException.Unauthorized], which it must **not** swallow.
- *
- * The two non-mutating members ([beginProvider], [plannedOperations]) exist because a recording
- * writer has to produce an operator-readable plan out of calls that carry only ids: they are
- * no-ops for a writer that really writes, and they are what keeps `if (dryRun)` out of the
- * reconciler (task vds-002.5 report).
+ * Failures are [CatalogApiException]s: the reconciler absorbs [CatalogApiException.Conflict] by
+ * re-reading and must not swallow [CatalogApiException.Unauthorized].
  */
 interface CrawlWriter {
 
     /**
-     * Declares that every following call belongs to the provider identified by [slug], until the
-     * next [beginProvider]. A writer that really writes ignores it; a recording writer needs it
-     * because the mutation methods below carry only ids, and `provider=acme` in a planned-operation
-     * line is what makes the plan readable (ADR-05).
+     * Every following call belongs to the provider [slug], until the next [beginProvider]. Lets a
+     * recording writer name the provider, since the mutation methods carry only ids.
      */
     suspend fun beginProvider(slug: String) {}
 
     /**
-     * The operator-readable lines of the mutations this writer **intended** instead of performing,
-     * in call order and capped by the implementation. Empty for a writer that really writes, so the
-     * reconciler reports it without knowing which writer it was handed.
+     * Lines for the mutations this writer recorded instead of performing, in call order and capped
+     * by the implementation. Empty for a writer that really writes.
      */
     fun plannedOperations(): List<String> = emptyList()
 
@@ -77,23 +57,11 @@ interface CrawlWriter {
     suspend fun putPrice(tariffId: Long, request: PriceWrite): PriceOutcome
 
     /**
-     * `PUT /api/v1/providers/{id}/system-status {"systemStatus":"CONFIGURED"}` -- the promotion of a
-     * discovered `CANDIDATE` row to a normal catalog member (vds-004.2).
-     *
-     * It is a **writer operation**, not an `if (dryRun)` branch in the reconciler (ADR-05): a dry
-     * run must promote nothing, and the way that is provable is that the recording writers record it
-     * and perform nothing. The reconciler calls it at most once per adapter run, only for a row it
-     * read as `CANDIDATE`, and only when that run actually wrote something -- so `REJECTED` and
-     * already-`CONFIGURED` rows are never touched. There is deliberately no parameter for the target
-     * value: this method cannot express a demotion.
+     * `PUT /api/v1/providers/{id}/system-status {"systemStatus":"CONFIGURED"}`: promotes a
+     * discovered `CANDIDATE` row. Takes no target value, so it cannot express a demotion.
      */
     suspend fun promoteProviderToConfigured(providerId: Long)
 }
 
-/**
- * What a price write tells the reconciler's counters: `appended` feeds `pricesAppended`, its
- * negation `pricesUnchanged`, and [noFxRate] feeds `noFxRateCount` (a counter, never a failure).
- *
- * Narrower than [PriceWriteOutcome] on purpose: a dry-run writer has no stored row to return.
- */
+/** Narrower than [PriceWriteOutcome]: a dry-run writer has no stored row to return. */
 data class PriceOutcome(val appended: Boolean, val noFxRate: Boolean)

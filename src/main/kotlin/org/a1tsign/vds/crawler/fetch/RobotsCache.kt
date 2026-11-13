@@ -12,22 +12,52 @@ data class RobotsRules(
     val disallow: List<String>,
     /** `null` when robots.txt named no usable `Crawl-delay` for us. */
     val crawlDelayMs: Long?,
+    /** Absolute http(s) `Sitemap:` URLs of the file, whatever group they appear in; at most [MAX_SITEMAPS]. */
+    val sitemaps: List<String> = emptyList(),
 ) {
     /**
-     * Longest-match precedence, the de-facto standard: the longest matching prefix decides, and on
-     * an equal-length tie `Allow` wins. `Allow: /plans/public` therefore beats `Disallow: /plans`
-     * for `/plans/public/x`, while `Disallow: /plans` still blocks `/plans/x`.
+     * Google's matching rules: `*` matches any sequence, a trailing `$` anchors the end, and
+     * otherwise a rule matches as a prefix. The longest matching rule as written decides, and on an
+     * equal-length tie `Allow` wins, so `Allow: /plans/public` beats `Disallow: /plans` for
+     * `/plans/public/x`.
      */
     fun allows(pathWithQuery: String): Boolean {
-        val blocked = disallow.filter { pathWithQuery.startsWith(it) }.maxOfOrNull { it.length } ?: return true
-        val allowed = allow.filter { pathWithQuery.startsWith(it) }.maxOfOrNull { it.length } ?: -1
+        val blocked = disallow.filter { robotsPatternMatches(it, pathWithQuery) }.maxOfOrNull { it.length } ?: return true
+        val allowed = allow.filter { robotsPatternMatches(it, pathWithQuery) }.maxOfOrNull { it.length } ?: -1
         return allowed >= blocked
     }
 
     companion object {
-        /** What a missing, `404`, `5xx`, empty or unparsable robots.txt means (spec req. 16). */
+        /** What a missing, `404`, `5xx`, empty or unparsable robots.txt means. */
         val ALLOW_ALL = RobotsRules(emptyList(), emptyList(), null)
+        const val MAX_SITEMAPS = 5
     }
+}
+
+/**
+ * Whether robots rule [pattern] matches [path]. A hand-written matcher rather than a `Regex` built
+ * from the rule, because the rule comes from a third party: greedy `*` with backtracking to the
+ * last star only, which never recurses and runs in O(pattern × path) at worst.
+ */
+internal fun robotsPatternMatches(pattern: String, path: String): Boolean {
+    val anchored = pattern.endsWith('$')
+    val rule = if (anchored) pattern.dropLast(1) else pattern
+    var p = 0
+    var t = 0
+    var starAt = -1
+    var resumeAt = 0
+    while (t < path.length) {
+        when {
+            // Every rule char consumed: an unanchored rule is a prefix match and is done.
+            p == rule.length && !anchored -> return true
+            p < rule.length && rule[p] == '*' -> { starAt = p++; resumeAt = t }
+            p < rule.length && rule[p] == path[t] -> { p++; t++ }
+            starAt >= 0 -> { p = starAt + 1; t = ++resumeAt }
+            else -> return false
+        }
+    }
+    while (p < rule.length && rule[p] == '*') p++
+    return p == rule.length
 }
 
 /**
@@ -143,15 +173,12 @@ class RobotsCache(
  * - an empty `Disallow:` value means "nothing is disallowed" and is dropped rather than recorded as
  *   the empty prefix (which would match every path);
  * - an unknown directive, a line without `:` and anything after `#` is ignored, so a garbage
- *   document yields no rules at all, i.e. "allowed".
- *
- * **Wildcards are not interpreted.** `*` and `$` in a rule path are matched literally, so a rule
- * written as a glob (ending in `.pdf$`, say) blocks nothing here. That is the permissive direction,
- * accepted because the crawler fetches a handful of known catalogue pages per provider rather than
- * exploring a site; it is the one documented deviation from Google's extension of the format.
+ *   document yields no rules at all, i.e. "allowed";
+ * - `Sitemap:` lines belong to the file, not to a group.
  */
 internal fun parseRobotsTxt(body: String, agentToken: String): RobotsRules {
     val groups = mutableListOf<Group>()
+    val sitemaps = mutableListOf<String>()
     var current: Group? = null
     body.lineSequence().forEach { rawLine ->
         val line = rawLine.substringBefore('#').trim()
@@ -169,18 +196,25 @@ internal fun parseRobotsTxt(body: String, agentToken: String): RobotsRules {
             "disallow" -> current?.let { group -> if (value.isNotEmpty()) group.disallow += value }
             "allow" -> current?.let { group -> if (value.isNotEmpty()) group.allow += value }
             "crawl-delay" -> current?.let { group -> group.crawlDelayMs = parseCrawlDelayMs(value) }
+            "sitemap" -> if (sitemaps.size < RobotsRules.MAX_SITEMAPS && value !in sitemaps && isAbsoluteHttpUrl(value)) sitemaps += value
             else -> Unit
         }
     }
 
     val named = groups.filter { group -> group.agents.any { it != "*" && agentToken.startsWith(it) } }
     val applicable = named.ifEmpty { groups.filter { group -> group.agents.contains("*") } }
-    if (applicable.isEmpty()) return RobotsRules.ALLOW_ALL
+    if (applicable.isEmpty()) return RobotsRules.ALLOW_ALL.copy(sitemaps = sitemaps)
     return RobotsRules(
         allow = applicable.flatMap { it.allow },
         disallow = applicable.flatMap { it.disallow },
         crawlDelayMs = applicable.mapNotNull { it.crawlDelayMs }.maxOrNull(),
+        sitemaps = sitemaps,
     )
+}
+
+private fun isAbsoluteHttpUrl(value: String): Boolean {
+    val uri = runCatching { java.net.URI(value) }.getOrNull() ?: return false
+    return (uri.scheme == "http" || uri.scheme == "https") && !uri.host.isNullOrEmpty()
 }
 
 /**

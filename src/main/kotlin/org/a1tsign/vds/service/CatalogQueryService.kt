@@ -5,6 +5,10 @@ import kotlinx.coroutines.withContext
 import org.a1tsign.vds.api.NotFoundException
 import org.a1tsign.vds.api.SortField
 import org.a1tsign.vds.api.dto.*
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
+import org.a1tsign.vds.api.ApiJson
+import org.a1tsign.vds.db.EnrichmentRepository
 import org.a1tsign.vds.db.LocationTable
 import org.a1tsign.vds.db.PriceRepository
 import org.a1tsign.vds.db.ProviderListFilter
@@ -30,6 +34,9 @@ import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import java.math.BigDecimal
 import java.time.Instant
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger(CatalogQueryService::class.java)
 
 /**
  * Read-only cross-table queries for the provider catalog -- `GET /api/v1/providers` (filtered,
@@ -45,6 +52,7 @@ class CatalogQueryService(
     private val providers: ProviderRepository,
     private val tariffs: TariffRepository,
     private val prices: PriceRepository,
+    private val enrichmentState: EnrichmentRepository = EnrichmentRepository(),
 ) {
     /**
      * Returns `(totalElements, page content)` -- the caller (the route) builds the final
@@ -55,8 +63,7 @@ class CatalogQueryService(
      * filters alone via [ProviderRepository.filteredIds] when sorting by `minMonthlyPriceUsd`,
      * because that value has no column to `ORDER BY`), one `minMonthlyPriceUsd` aggregate (raw
      * SQL, [ProviderRepository.minMonthlyPriceUsdByProvider]) and one decoration query per
-     * auxiliary fact (payment methods, location countries, active tariff counts, registration
-     * country) -- never one query per row.
+     * auxiliary fact (payment methods, location countries, active tariff counts, legal info) -- never one query per row.
      */
     suspend fun listProviders(
         filter: ProviderListFilter,
@@ -102,7 +109,7 @@ class CatalogQueryService(
             val paymentMethods = providers.paymentMethodsByProvider(ids)
             val locationCountries = providers.locationCountriesByProvider(ids)
             val activeTariffCounts = providers.activeTariffCountsByProvider(ids)
-            val registrationCountries = providers.registrationCountriesByProvider(ids)
+            val legalInfo = providers.legalInfoByProvider(ids)
             val summaries = pageProviders.map { p ->
                 ProviderSummaryDto(
                     id = p.id,
@@ -111,7 +118,10 @@ class CatalogQueryService(
                     websiteUrl = p.websiteUrl,
                     status = p.status,
                     systemStatus = p.systemStatus,
-                    registrationCountry = registrationCountries[p.id],
+                    registrationCountry = legalInfo[p.id]?.registrationCountry,
+                    legalEntityName = legalInfo[p.id]?.legalEntityName,
+                    legalEntityNameOrigin = legalInfo[p.id]?.legalEntityNameOrigin,
+                    registrationCountryOrigin = legalInfo[p.id]?.registrationCountryOrigin,
                     paymentMethods = paymentMethods[p.id] ?: emptySet(),
                     locationCountryCodes = locationCountries[p.id] ?: emptySet(),
                     activeTariffCount = activeTariffCounts[p.id] ?: 0,
@@ -141,6 +151,7 @@ class CatalogQueryService(
                     .map { it.toTariffPrice() }
                     .groupBy { it.tariffId }
             }
+            val enrichment = enrichmentState.state(id)
             ProviderDetailDto(
                 provider = provider.toDto(),
                 legalInfo = legalInfo?.toDto(),
@@ -148,6 +159,16 @@ class CatalogQueryService(
                 locations = locations.map { it.toDto() },
                 tariffs = activeTariffs.map { t ->
                     TariffWithPricesDto(t.toDto(), (currentPricesByTariff[t.id] ?: emptyList()).map { it.toDto() })
+                },
+                enrichment = enrichment?.let { state ->
+                    ProviderEnrichmentDto(
+                        lastAttemptAt = state.lastAttemptAt,
+                        lastOutcome = state.lastOutcome,
+                        lastMessage = state.lastMessage,
+                        lastPagesFetched = state.lastPagesFetched,
+                        lastSuccessAt = state.lastSuccessAt,
+                        evidence = state.evidenceJson?.let { decodeStoredEvidence(id, it) },
+                    )
                 },
             )
         }
@@ -301,3 +322,17 @@ class CatalogQueryService(
         }
     }
 }
+
+/**
+ * Stored evidence outlives the code that wrote it, so it is read leniently, and an unreadable
+ * document hides the evidence instead of failing the whole provider card.
+ */
+private val storedEvidenceJson = Json(from = ApiJson) { ignoreUnknownKeys = true }
+
+private fun decodeStoredEvidence(providerId: Long, raw: String): EnrichmentEvidenceDto? =
+    try {
+        storedEvidenceJson.decodeFromString(EnrichmentEvidenceDto.serializer(), raw)
+    } catch (e: SerializationException) {
+        logger.warn("Stored enrichment evidence of provider {} is unreadable; omitting it", providerId, e)
+        null
+    }

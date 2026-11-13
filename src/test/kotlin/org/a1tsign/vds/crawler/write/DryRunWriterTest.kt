@@ -9,13 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * The writer itself, without a catalog: what matters here is that the ids it fabricates stay
- * consistent for the same entity (otherwise the follow-up operations of a preview would be planned
- * against ids that drift) and that each line names the provider and the entity.
- *
- * "Writes nothing" is proved where it matters -- against the real application -- in `ReconcilerTest`.
- */
+/** "Writes nothing" is proved against the real application in [ReconcilerTest]. */
 class DryRunWriterTest {
 
     @Test
@@ -27,7 +21,7 @@ class DryRunWriterTest {
         val providerAgain = writer.createProvider(providerWrite("acme"))
         val other = writer.createProvider(providerWrite("beta"))
         val berlin = writer.createLocation(provider, location(city = "Berlin"))
-        // Same row by vds-001's unique index (case-insensitive city/datacenter), so the same id.
+        // Same row by the unique index (case-insensitive city/datacenter), so the same id.
         val berlinAgain = writer.createLocation(provider, location(city = "berlin"))
         val hamburg = writer.createLocation(provider, location(city = "Hamburg"))
         val tariff = writer.createTariff(provider, tariffWrite("VPS 1", externalId = "p-1"))

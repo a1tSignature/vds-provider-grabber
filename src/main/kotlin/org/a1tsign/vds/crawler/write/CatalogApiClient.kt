@@ -35,10 +35,8 @@ import java.util.concurrent.ThreadLocalRandom
 import kotlin.math.min
 
 /**
- * The crawler's tolerant `Json`: `ignoreUnknownKeys = true` so an additive field in a future
- * vds-001 response cannot break a crawl, `explicitNulls = false` so an absent key reads as `null`
- * and a `null` field is omitted from a request body (the same convention vds-001's `ApiJson` uses
- * for responses). **Not** `ApiJson`, which is strict on purpose (ADR-02).
+ * Tolerant, unlike the strict `ApiJson`: an additive response field cannot break a crawl, and with
+ * `explicitNulls = false` an absent key reads as `null` and a `null` field is omitted from a body.
  */
 internal val CATALOG_JSON: Json = Json {
     ignoreUnknownKeys = true
@@ -46,13 +44,10 @@ internal val CATALOG_JSON: Json = Json {
 }
 
 /**
- * Timeouts and the retry budget of the loopback catalog client. Defaults are the production
- * values; they are parameters only so a test can shorten them instead of sleeping for seconds.
+ * Timeouts and the retry budget of the loopback catalog client. Defaults are the production values.
  *
- * The retry policy is **the same shape as `crawler/fetch`'s** (≤ 2 retries, exponential backoff
- * with full jitter, base 1 s, cap 8 s) but implemented here rather than in a shared helper: the two
- * clients share no code at all by ADR-04, `crawler/fetch` applies it to redirects/`Retry-After`/
- * robots as well, and extracting a helper would mean editing that package.
+ * Same retry shape as `crawler/fetch`, but deliberately not shared: the catalog client and the
+ * external fetch client share no code.
  */
 data class CatalogClientLimits(
     val connectTimeoutMs: Long = 3_000,
@@ -65,8 +60,8 @@ data class CatalogClientLimits(
 
 /** Builds the one client [CatalogApiClient] owns; it is closed by `CatalogApiClient.close()`. */
 fun catalogHttpClient(limits: CatalogClientLimits = CatalogClientLimits()): HttpClient = HttpClient(CIO) {
-    // The status is the contract here (200 vs 201 on a price write, 409 on a duplicate), so the
-    // client must never turn a non-2xx into an exception before this class has seen it.
+    // The status is the contract (200 vs 201 on a price write, 409 on a duplicate), so the client
+    // must not turn a non-2xx into an exception before CatalogApiClient sees it.
     expectSuccess = false
     install(ContentNegotiation) { json(CATALOG_JSON) }
     install(HttpTimeout) {
@@ -85,11 +80,11 @@ fun catalogHttpClient(limits: CatalogClientLimits = CatalogClientLimits()): Http
 /** What a failed catalog call tells the reconciler. Nothing here ever carries a token or a body. */
 sealed class CatalogApiException(message: String, cause: Throwable? = null) : Exception(message, cause) {
 
-    /** `409` -- somebody else already created the row (or the unique index refused it): re-read and continue. */
+    /** `409`: a unique index refused the row, usually because someone else created it. */
     class Conflict(val method: String, val path: String, val apiMessage: String) :
         CatalogApiException("$method $path -> 409: $apiMessage")
 
-    /** Any other `4xx` -- a data or contract bug; the run becomes `PARTIAL`, the call is not retried. */
+    /** Any other `4xx`: a data or contract bug. Not retried. */
     class ClientError(
         val status: Int,
         val method: String,
@@ -107,9 +102,8 @@ sealed class CatalogApiException(message: String, cause: Throwable? = null) : Ex
         CatalogApiException("$method $path failed: ${cause.javaClass.simpleName}", cause)
 
     /**
-     * The service account cannot be used: the login itself was rejected, or a freshly obtained
-     * token was rejected again. **Non-retryable** -- the orchestrator turns this into a whole-run
-     * failure, not a per-adapter one (spec req. 23).
+     * The login was rejected, or a freshly obtained token was rejected again. Not retryable; fails
+     * the whole run, not one adapter.
      */
     class Unauthorized(message: String) : CatalogApiException(message)
 
@@ -119,60 +113,39 @@ sealed class CatalogApiException(message: String, cause: Throwable? = null) : Ex
     }
 }
 
-/** A price write reports both facts the run summary needs. */
 data class PriceWriteOutcome(
     val price: CatalogPrice,
-    /** `true` when the response was `201` (a new history row), `false` on `200` (unchanged). */
+    /** `true` on `201` (a new history row), `false` on `200` (unchanged). */
     val appended: Boolean,
-    /** `true` when the response carried the `NO_FX_RATE` warning -- a counter, never a failure. */
+    /** The response carried the `NO_FX_RATE` warning: counted, never a failure. */
     val noFxRate: Boolean,
 )
 
 /**
- * The crawler's **only** door into the catalog (ADR-02): every read and every write is an HTTP call
- * to the already-shipped vds-001 API on loopback, authenticated as a plain `EDITOR` service
- * account. No Exposed, no `…service`, no second write path -- the FX freeze, the append-only price
- * invariant and the `409` semantics of the unique indexes all stay in vds-001.
+ * The crawler's only access to the catalog: HTTP calls to the admin API on loopback as an `EDITOR`
+ * service account, so the FX freeze, append-only prices and unique-index `409`s stay server-side.
  *
- * ### Auth (spec req. 23)
+ * Auth: the token is cached until `expiresAt - 60 s` on [clock]. A `401` triggers one re-login and
+ * one retry of the call; a second consecutive `401` is [CatalogApiException.Unauthorized]. The
+ * password, the token and the `Authorization` header are never logged or put in a message.
  *
- * One login per token lifetime: the token is cached until `expiresAt − 60 s` measured on the
- * injected [clock]. A `401` on a call triggers **exactly one** re-login and one retry of that call;
- * a second consecutive `401` is [CatalogApiException.Unauthorized], which is not retried and is
- * meant to fail the whole run. The password, the token and the `Authorization` header value are
- * never logged and never appear in an exception message.
+ * Retries: `5xx` and transport failures get up to [CatalogClientLimits.maxRetries] retries with
+ * full-jitter exponential backoff; a `4xx` is never retried. The re-login retry is not charged to
+ * this budget.
  *
- * ### Retries (spec req. 33)
- *
- * `5xx` and transport failures: ≤ 2 retries, exponential backoff with full jitter (base 1 s, cap
- * 8 s). A `4xx` is never retried -- it cannot become true by repetition. The re-login retry is
- * **not** charged to this budget (it is one extra attempt of the same call, at most once).
- *
- * ### What it deliberately cannot do
- *
- * There is no `DELETE` method and no way to send a deactivating `isActive`: [TariffWrite] takes
- * that flag from its caller and the only value the reconciler may pass is the one it just read from
- * the catalog. `EDITOR` *does* permit `DELETE /api/v1/providers/{id}`, which would cascade away a
- * provider with its whole price history -- so the absence is enforced by a grep guard over this
- * package, not by a permission.
+ * There is no `DELETE` method on purpose: `EDITOR` may `DELETE /api/v1/providers/{id}`, which
+ * cascades away the provider's whole price history.
  */
 class CatalogApiClient(
     config: CrawlerConfig,
     private val clock: Clock,
     private val limits: CatalogClientLimits = CatalogClientLimits(),
-    /**
-     * Owned by this instance: [close] closes it. The parameter exists for substitution, not for
-     * sharing -- a caller that injects a client hands over its ownership. Nothing injects one today.
-     */
+    /** Ownership passes to this instance: [close] closes it. */
     private val client: HttpClient = catalogHttpClient(limits),
-    /**
-     * Page size of the two paged reads. 100 is vds-001's maximum; a test shrinks it to force
-     * paging without inserting hundreds of rows.
-     */
+    /** Page size of the paged reads; the server's maximum is 100. */
     private val pageSize: Int = MAX_PAGE_SIZE,
-    /** Full jitter: given the capped exponential bound, the actual wait in `[0, bound]`. */
+    /** Maps the capped exponential bound to the actual wait in `[0, bound]`. */
     private val backoffJitter: (Long) -> Long = { bound -> ThreadLocalRandom.current().nextLong(bound + 1) },
-    /** The retry sleep. Injectable so a retry test does not add seconds to the suite. */
     private val sleep: suspend (Long) -> Unit = { millis -> delay(millis) },
 ) : AutoCloseable {
 
@@ -183,17 +156,12 @@ class CatalogApiClient(
     private val tokenMutex = Mutex()
     private var cachedToken: CachedToken? = null
 
-    // ---------- reads (spec req. 24) ----------
-
     /**
      * The provider whose `slug` is exactly [slug], or `null`.
      *
-     * `GET /api/v1/providers?q=` matches `lower(name) LIKE %q%` **OR** `lower(slug) LIKE %q%`, so
-     * the exact match has to be picked here, and a short slug can match many rows: the search pages
-     * through at most [MAX_SLUG_SEARCH_PAGES] pages. Hitting that bound returns `null` with a WARN
-     * -- "not found within the bound", which the reconciler will treat as "create", possibly
-     * getting a `409` it then absorbs. That is deliberate: an unbounded loop over a hostile result
-     * set is worse.
+     * `?q=` is a substring match on name or slug, so a short slug can match many rows. After
+     * [MAX_SLUG_SEARCH_PAGES] pages this returns `null` with a WARN: the reconciler then creates and
+     * absorbs the `409`, which beats an unbounded walk.
      */
     suspend fun findProviderBySlug(slug: String): CatalogProviderSummary? {
         var page = 0
@@ -202,10 +170,8 @@ class CatalogApiClient(
                 HttpMethod.Get,
                 PROVIDERS_PATH,
                 CatalogPage.serializer(CatalogProviderSummary.serializer()),
-                // All three systemStatus values **explicitly**: the listing hides CANDIDATE and
-                // REJECTED by default, and a crawler that could not see a candidate row would POST,
-                // take a 409 from uq_provider_slug, re-read, miss again and fail the adapter on
-                // every single run (vds-004.2 "the 409 trap").
+                // The listing hides CANDIDATE and REJECTED by default; without them a candidate row
+                // would be missed, the POST would hit uq_provider_slug, and the re-read would miss again.
                 query = listOf("q" to slug, "page" to page.toString(), "size" to pageSize.toString()) +
                     SystemStatus.entries.map { "systemStatus" to it.name },
             ).value
@@ -222,10 +188,8 @@ class CatalogApiClient(
     }
 
     /**
-     * One page of **every** provider, whatever its `systemStatus` (all three requested explicitly,
-     * as in [findProviderBySlug]), ordered by `id` so consecutive pages neither skip nor repeat a
-     * row that existed when the walk started. The vds-004 discovery pass builds its dedup set from
-     * these pages and bounds the walk itself.
+     * One page of providers of every `systemStatus`, ordered by `id` so consecutive pages neither
+     * skip nor repeat a row that existed when the walk started. The caller bounds the walk.
      */
     suspend fun listProvidersPage(page: Int): CatalogPage<CatalogProviderSummary> =
         call(
@@ -236,16 +200,13 @@ class CatalogApiClient(
                 SystemStatus.entries.map { "systemStatus" to it.name },
         ).value
 
-    /** `GET /api/v1/providers/{id}` -- the detail, whose `tariffs` are the **active** ones only. */
+    /** `GET /api/v1/providers/{id}`; its `tariffs` are the active ones only. */
     suspend fun getProvider(providerId: Long): CatalogProviderDetail =
         call(HttpMethod.Get, "$PROVIDERS_PATH/$providerId", CatalogProviderDetail.serializer()).value
 
     /**
-     * **Every** tariff of the provider, deactivated ones included
-     * (`GET /api/v1/providers/{id}/tariffs?activeOnly=false`, paged to completion).
-     *
-     * Mandatory for matching: [getProvider] returns active tariffs only, so a reconciler working
-     * off the detail alone would re-create a deactivated tariff and get a `409` from
+     * Every tariff of the provider, deactivated ones included, paged to completion. Matching needs
+     * it: working off [getProvider] alone would re-create a deactivated tariff and hit
      * `uq_tariff_provider_name` forever.
      */
     suspend fun listAllTariffs(providerId: Long): List<CatalogTariff> {
@@ -267,13 +228,9 @@ class CatalogApiClient(
             page++
             if (page >= result.totalPages) return tariffs
         }
-        // Returning a truncated list would be read as "these are all the tariffs" and could flip
-        // live tariffs out of stock, so this is a hard failure rather than a WARN. Unreachable with
-        // a sane catalog: the bound is MAX_TARIFF_PAGES * pageSize rows for one provider.
+        // A truncated list would read as complete and could flip live tariffs out of stock.
         error("Provider $providerId reports more than ${MAX_TARIFF_PAGES * pageSize} tariffs; refusing a truncated list")
     }
-
-    // ---------- writes, one method per vds-001 write endpoint ----------
 
     suspend fun createProvider(request: ProviderWrite): CatalogProvider =
         call(
@@ -284,9 +241,8 @@ class CatalogApiClient(
         ).value
 
     /**
-     * `POST /api/v1/providers` with an explicit `systemStatus` -- the vds-004 discovery pass's one
-     * write, always `CANDIDATE`. A separate request type from [ProviderWrite] on purpose: the
-     * crawler's own create/update bodies never carry `systemStatus` at all.
+     * `POST /api/v1/providers` with an explicit `systemStatus`, used by discovery. A separate type
+     * from [ProviderWrite] so the crawler's own bodies never carry `systemStatus`.
      */
     suspend fun createCandidateProvider(request: CandidateProviderWrite): CatalogProvider =
         call(
@@ -296,10 +252,6 @@ class CatalogApiClient(
             body = encode(CandidateProviderWrite.serializer(), request),
         ).value
 
-    /**
-     * `PUT /api/v1/providers/{id}/system-status`. The reconciler reaches it only through
-     * [CrawlWriter.promoteProviderToConfigured], and only ever with `CONFIGURED`.
-     */
     suspend fun setSystemStatus(providerId: Long, systemStatus: String): CatalogProvider =
         call(
             HttpMethod.Put,
@@ -324,13 +276,17 @@ class CatalogApiClient(
             body = encode(LegalInfoWrite.serializer(), request),
         ).value
 
-    /** Replaces the whole set -- call it only for an **observed** (non-null) payment-method set. */
+    /**
+     * Replaces the whole set, so call it only for an observed set. Sent as an automatic write: new
+     * rows are `AUTO` and removals never become dismissals.
+     */
     suspend fun putPaymentMethods(providerId: Long, methods: List<PaymentMethodWrite>): List<CatalogPaymentMethod> =
         call(
             HttpMethod.Put,
             "$PROVIDERS_PATH/$providerId/payment-methods",
             ListSerializer(CatalogPaymentMethod.serializer()),
             body = encode(ListSerializer(PaymentMethodWrite.serializer()), methods),
+            query = listOf("writeMode" to AUTOMATIC_WRITE_MODE),
         ).value
 
     suspend fun createLocation(providerId: Long, request: LocationWrite): CatalogLocation =
@@ -357,7 +313,7 @@ class CatalogApiClient(
             body = encode(TariffWrite.serializer(), request),
         ).value
 
-    /** [TariffWrite.isActive] must be the value just read from the catalog -- see that type's doc. */
+    /** [TariffWrite.isActive] must be the value just read from the catalog. */
     suspend fun updateTariff(tariffId: Long, request: TariffWrite): CatalogTariff =
         call(
             HttpMethod.Put,
@@ -366,7 +322,7 @@ class CatalogApiClient(
             body = encode(TariffWrite.serializer(), request),
         ).value
 
-    /** Replaces the whole link set -- call it only when the tariff's locations were observed. */
+    /** Replaces the whole link set, so call it only when the tariff's locations were observed. */
     suspend fun replaceTariffLocations(tariffId: Long, locationIds: List<Long>): List<Long> =
         call(
             HttpMethod.Put,
@@ -376,9 +332,8 @@ class CatalogApiClient(
         ).value
 
     /**
-     * `PUT /api/v1/tariffs/{id}/price`, already idempotent on the vds-001 side: `200` means the
-     * current row equals the submitted price and only its `lastConfirmedAt` advanced, `201` means a
-     * row was appended. Both facts, plus the `NO_FX_RATE` warning, are reported in [PriceWriteOutcome].
+     * Idempotent server-side: `200` means the current row equals the submitted price and only its
+     * `lastConfirmedAt` advanced; `201` means a row was appended.
      */
     suspend fun putPrice(tariffId: Long, request: PriceWrite): PriceWriteOutcome {
         val result = call(
@@ -395,8 +350,6 @@ class CatalogApiClient(
     }
 
     override fun close() = client.close()
-
-    // ---------- the one request path everything above goes through ----------
 
     private data class CallResult<T>(val status: Int, val value: T)
 
@@ -446,8 +399,7 @@ class CatalogApiClient(
             val envelope = errorEnvelope(response)
             when {
                 status == UNAUTHORIZED && authorize && !reloginUsed -> {
-                    // No WARN and no retry budget spent: one re-login is the designed reaction to
-                    // an expired/revoked token, not a failure. Nothing about the token is logged.
+                    // An expired or revoked token is expected: no WARN, no retry budget spent.
                     logger.debug("{} {} -> 401; logging in again once", method.value, path)
                     reloginUsed = true
                     authToken(rejected = bearer)
@@ -485,10 +437,9 @@ class CatalogApiClient(
     }
 
     /**
-     * The cached bearer token, logging in when there is none, when it is within 60 s of expiry, or
-     * when [rejected] is the very token the server just refused. Passing [rejected] is what makes
-     * the re-login idempotent under concurrency: if another coroutine already replaced it, its
-     * fresh token is reused instead of logging in a second time.
+     * The cached token, logging in when there is none, it is near expiry, or it equals [rejected].
+     * Comparing with [rejected] makes concurrent re-logins collapse: a token another coroutine
+     * already replaced is reused.
      */
     private suspend fun authToken(rejected: String?): String = tokenMutex.withLock {
         val cached = cachedToken
@@ -518,7 +469,7 @@ class CatalogApiClient(
         return CachedToken(login.token, login.expiresAt.minusSeconds(TOKEN_RENEW_MARGIN_SECONDS))
     }
 
-    /** Exponential backoff with **full** jitter: a uniform wait in `[0, min(cap, base·2^(n-1))]`. */
+    /** Full jitter: a uniform wait in `[0, min(cap, base * 2^(n-1))]`. */
     private fun backoffMs(attempt: Int): Long {
         val exponential = limits.backoffBaseMs shl (attempt - 1).coerceAtMost(MAX_BACKOFF_SHIFT)
         return backoffJitter(min(exponential, limits.backoffCapMs))
@@ -545,10 +496,7 @@ class CatalogApiClient(
         }
     }
 
-    /**
-     * Method, path, status and the envelope's `message`/`details` -- never the request body (which
-     * may be large and, on the login call, carries the password) and never a token.
-     */
+    /** Never logs the request body (on login it carries the password) or a token. */
     private fun logFailure(method: HttpMethod, path: String, status: Int, envelope: CatalogErrorEnvelope) {
         val details = envelope.details.orEmpty()
         if (details.isEmpty()) {
@@ -568,10 +516,9 @@ class CatalogApiClient(
     companion object {
         const val NO_FX_RATE_WARNING = "NO_FX_RATE"
 
-        /** vds-001's `MAX_PAGE_SIZE`; a bigger `size` is a `400`, never clamped. */
+        /** The server's maximum; a bigger `size` is a `400`, not clamped. */
         private const val MAX_PAGE_SIZE = 100
 
-        /** Spec req. 24: the `?q=` walk gives up after ten pages. */
         private const val MAX_SLUG_SEARCH_PAGES = 10
 
         private const val MAX_TARIFF_PAGES = 100

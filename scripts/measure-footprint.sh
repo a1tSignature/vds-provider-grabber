@@ -16,8 +16,9 @@
 #   3. crawler peak   one `example-static` run over a 1 MiB page       <= 300 MB
 #                     (RSS sampled every 200 ms while the run is in flight, maximum reported)
 #
-# Profile 3 serves `scripts/footprint-fixture/` -- a 1 MiB `vps.html` plus an allowing
-# `robots.txt` -- from a throwaway `python3` HTTP server on the host, which the container reaches
+# Profile 3 serves `scripts/footprint-fixture/` -- `vps.html` expanded in memory to exactly 1 MiB
+# by repeating its marked filler section (the repository keeps only the few-KB template), plus an
+# allowing `robots.txt` -- from a throwaway `python3` HTTP server on the host, which the container reaches
 # as `host.docker.internal` (`--add-host=host.docker.internal:host-gateway`, one line that works
 # on Docker Desktop and on Linux alike). That server binds every interface, because it has to be
 # reachable from inside the container, but only for the duration of the measurement: the cleanup
@@ -332,7 +333,8 @@ measure_idle_profile() {
   stop_service
 }
 
-# Serves $FIXTURE_DIR to the container: the 1 MiB page for any path, robots.txt for /robots.txt.
+# Serves $FIXTURE_DIR to the container: vps.html expanded to 1 MiB for any path, robots.txt for
+# /robots.txt.
 # `python3 -m http.server` is not used because it would answer the extensionless `/vps` the
 # adapter asks for with `application/octet-stream`, which the crawler's content-type allowlist
 # (text/html, application/xhtml+xml, application/json, text/plain) rejects.
@@ -347,8 +349,19 @@ import os
 import sys
 
 port, root = int(sys.argv[1]), sys.argv[2]
-with open(os.path.join(root, "vps.html"), "rb") as handle:
-    page = handle.read()
+PAGE_SIZE = 1024 * 1024
+MARKER = "<!-- filler: the measurement script repeats this section and pads the page to exactly 1 MiB -->\n"
+
+with open(os.path.join(root, "vps.html"), encoding="utf-8") as handle:
+    head, rest = handle.read().split(MARKER)
+section_end = rest.index("</section>\n") + len("</section>\n")
+section, tail = rest[:section_end].encode(), rest[section_end:]
+body_end = tail.rindex("</body>")
+base = len(head.encode()) + len(tail.encode())
+copies = (PAGE_SIZE - base) // len(section)
+page = (head.encode() + section * copies + tail[:body_end].encode()
+        + b" " * (PAGE_SIZE - base - copies * len(section)) + tail[body_end:].encode())
+assert len(page) == PAGE_SIZE
 with open(os.path.join(root, "robots.txt"), "rb") as handle:
     robots = handle.read()
 
@@ -376,7 +389,7 @@ PYTHON
   local deadline_ms=$(( $(now_ms) + 5000 ))
   while [[ "$(now_ms)" -lt "$deadline_ms" ]]; do
     if [[ "$(curl -fsS -o /dev/null -w '%{http_code}' "http://localhost:${FIXTURE_PORT}/robots.txt" 2>/dev/null || true)" == "200" ]]; then
-      echo "  fixture server: serving ${FIXTURE_DIR} ($(du -h "${FIXTURE_DIR}/vps.html" | cut -f1) page) on port ${FIXTURE_PORT}"
+      echo "  fixture server: serving ${FIXTURE_DIR} (vps.html expanded to 1 MiB) on port ${FIXTURE_PORT}"
       return 0
     fi
     sleep 0.05

@@ -48,6 +48,51 @@ enum class PaymentMethod {
     CRYPTO_ETH, CRYPTO_USDT, CRYPTO_OTHER, WEBMONEY, PERFECT_MONEY, CASH, OTHER,
 }
 
+/**
+ * Who stands behind a legal field's value. Mirrors `ck_provider_legal_info_legal_entity_name_origin`
+ * and `ck_provider_legal_info_registration_country_origin` in `V4__site_enrichment.sql`.
+ *
+ * A `null` origin (no enum value) means nobody claimed the field. Automation may overwrite `null`
+ * and `AUTO_*`, never [MANUAL] -- not even when the value itself is null.
+ */
+enum class FieldOrigin { AUTO_CONFIRMED, AUTO_PRESUMED, MANUAL }
+
+/** Mirrors `ck_provider_payment_method_origin` and `ck_location_origin`. */
+enum class RowOrigin { AUTO, MANUAL }
+
+/**
+ * Mirrors `ck_provider_enrichment_last_outcome`. [isAttempt] outcomes come from an actual visit to
+ * the site; the others describe why a run did not attempt a provider.
+ */
+enum class EnrichmentOutcome(val isAttempt: Boolean) {
+    SUCCESS(true), NOTHING_FOUND(true), BLOCKED(true), UNREACHABLE(true), ROBOTS_DISALLOWED(true),
+    FAILED(true), TIMEOUT(true),
+    DEFERRED(false), NOT_DUE(false), SKIPPED(false), NO_PROVIDER(false), DISABLED(false),
+}
+
+/** Mirrors `ck_provider_enrichment_dismissal_facet`. */
+enum class DismissalFacet { PAYMENT_METHOD, LOCATION }
+
+// The enums below are wire-only: no column stores them.
+
+/** What an enrichment result can carry; also the vocabulary of `observedFacets`. */
+enum class EnrichmentFacet { LEGAL_ENTITY_NAME, REGISTRATION_COUNTRY, PAYMENT_METHOD, LOCATION }
+
+/** The two legal fields that carry an origin. */
+enum class LegalField { LEGAL_ENTITY_NAME, REGISTRATION_COUNTRY }
+
+/** Strength of a legal finding; maps to [FieldOrigin.AUTO_CONFIRMED] / [FieldOrigin.AUTO_PRESUMED]. */
+enum class FindingStatus { CONFIRMED, PRESUMED }
+
+/** Strength of a payment-method or location finding; only `HIGH`/`MEDIUM` are ever written. */
+enum class FindingConfidence { HIGH, MEDIUM, LOW }
+
+/**
+ * Who is writing through an ordinary write endpoint. Absent means [HUMAN], so a client that knows
+ * nothing about provenance produces protected `MANUAL` data.
+ */
+enum class WriteMode { HUMAN, AUTOMATIC }
+
 /** Mirrors `ck_tariff_disk_type` on `tariff.disk_type`. */
 enum class DiskType { NVME, SSD, HDD, UNKNOWN }
 

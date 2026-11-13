@@ -38,17 +38,13 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The reconciler against the **real** vds-001 application on a real port ([CrawlerAppHarness]) and
- * the real PostgreSQL: the data-safety rules of ADR-03 are about what the catalog looks like
- * afterwards, which a mocked write boundary cannot show.
+ * Runs against the real application and PostgreSQL ([CrawlerAppHarness]): the data-safety rules
+ * are about the resulting catalog, which a mocked write boundary cannot show.
  *
- * Where a rule is "nothing was written", the proof is either the **server's** own call log
- * (`harness.countCalls`) or a [RecordingCrawlWriter] -- never the absence of a log line. Every
- * count is scoped to the rows the test created.
+ * "Nothing was written" is proved by the server's call log (`harness.countCalls`) or a
+ * [RecordingCrawlWriter], never by the absence of a log line. Counts are scoped to the test's rows.
  */
 class ReconcilerTest : AbstractDbTest() {
-
-    // ---------- 1. cold create ----------
 
     @Test
     fun `a cold create writes every observed section with CRAWLER provenance and counts it`() {
@@ -95,8 +91,6 @@ class ReconcilerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 2. idempotent re-run ----------
-
     @Test
     fun `the identical snapshot a second time creates nothing and appends no price row`() {
         withCatalog { ctx ->
@@ -134,8 +128,6 @@ class ReconcilerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 3. a changed price ----------
-
     @Test
     fun `a changed price appends one row, closes the previous one at the new effectiveFrom and keeps CRAWLER`() {
         withCatalog { ctx ->
@@ -159,8 +151,6 @@ class ReconcilerTest : AbstractDbTest() {
             assertEquals(listOf(PriceDataSource.CRAWLER, PriceDataSource.CRAWLER), rows.map { it.dataSource })
         }
     }
-
-    // ---------- 4 + 5. matching ----------
 
     @Test
     fun `a tariff matched by externalId is renamed and one matched by name has its externalId backfilled`() {
@@ -188,8 +178,6 @@ class ReconcilerTest : AbstractDbTest() {
             assertEquals("vps 1", stored.getValue(backfilled.id).name)
         }
     }
-
-    // ---------- 6 + 7. partial vs observed-empty sections ----------
 
     @Test
     fun `a null payment-method and location section is never sent and leaves both sets untouched`() {
@@ -252,8 +240,6 @@ class ReconcilerTest : AbstractDbTest() {
 
     @Test
     fun `a location the API rejects leaves the tariff that links only to it with its existing link set untouched`() {
-        // M2 of 05-reviews/vds-002.5-6-combined-quality.md: the branch ADR-03 exists for -- a
-        // refused location's link set is skipped WHOLE, never truncated -- had no test.
         val fixture = CatalogFixture(PostgresSupport.database)
         withCatalog { ctx ->
             val provider = fixture.createProvider(FIXTURE_PROVIDER_SLUG, clock.instant())
@@ -282,8 +268,6 @@ class ReconcilerTest : AbstractDbTest() {
             )
         }
     }
-
-    // ---------- 8 + 9. disappearance ----------
 
     @Test
     fun `a complete tariff list flips exactly the missing tariffs out of stock and resurrects nothing`() {
@@ -350,8 +334,6 @@ class ReconcilerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 10. the mass-change guard ----------
-
     @Test
     fun `the mass-change guard refuses a wipe with zero writes, and yields below the threshold or at ratio one`() {
         val fixture = CatalogFixture(PostgresSupport.database)
@@ -394,9 +376,6 @@ class ReconcilerTest : AbstractDbTest() {
 
     @Test
     fun `the mass-change guard also counts tariffs the snapshot reports present but out of stock`() {
-        // I1 of 05-reviews/vds-002.5-6-combined-quality.md: a complete snapshot that *lists* every
-        // tariff with inStock = false is the same disappearance as one that omits them, but used to
-        // bypass the guard entirely because checkMassChange only counted TariffPlan.missing.
         val fixture = CatalogFixture(PostgresSupport.database)
         withCatalog { ctx ->
             val provider = fixture.createProvider(FIXTURE_PROVIDER_SLUG, clock.instant())
@@ -424,8 +403,6 @@ class ReconcilerTest : AbstractDbTest() {
             assertTrue(ctx.client.listAllTariffs(provider.id).none { it.inStock })
         }
     }
-
-    // ---------- 11. the concurrent-create race ----------
 
     @Test
     fun `a provider created by another writer between the read and the create is absorbed`() {
@@ -455,11 +432,8 @@ class ReconcilerTest : AbstractDbTest() {
 
     @Test
     fun `two snapshot tariffs that collide on a row created concurrently are not both written into it`() {
-        // M3 of 05-reviews/vds-002.5-6-combined-quality.md: createTariff's 409 re-read matched
-        // against a fresh catalog list without consulting the ids this run already claimed, so a
-        // row that did not exist at planning time but collides with two snapshot tariffs could be
-        // written twice. Both snapshot tariffs share one externalId a concurrent writer's row also
-        // carries, so they are both unmatched at plan time and both 409 against the same row.
+        // Both snapshot tariffs share the externalId of a row a concurrent writer creates, so both
+        // are unmatched at plan time and both get a 409 against the same row.
         withCatalog { ctx ->
             var primed = false
             val racing = object : CrawlWriter by ctx.writer {
@@ -519,8 +493,6 @@ class ReconcilerTest : AbstractDbTest() {
             assertEquals("New Name", stored.single().name, "the first tariff's rename is not overwritten by the collision")
         }
     }
-
-    // ---------- 12. a 4xx degrades to PARTIAL ----------
 
     @Test
     fun `a tariff the API rejects makes the adapter PARTIAL while the other tariffs are written`() {
@@ -594,8 +566,6 @@ class ReconcilerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 13. dry run ----------
-
     @Test
     fun `a dry run touches nothing yet reports exactly the counters the real run then produces`() {
         withCatalog { ctx ->
@@ -652,8 +622,6 @@ class ReconcilerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- helpers ----------
-
     private class Ctx(
         val harness: CrawlerAppHarness,
         val client: CatalogApiClient,
@@ -689,17 +657,14 @@ class ReconcilerTest : AbstractDbTest() {
     private companion object {
         val DEFAULT_RATIO: BigDecimal = BigDecimal("0.5")
 
-        /** Production retry budget, shorter timeouts -- a loopback call that fails, fails fast. */
+        /** Production retry budget, shorter timeouts: a loopback call that fails, fails fast. */
         val FAST_LIMITS = CatalogClientLimits(
             connectTimeoutMs = 1_000,
             requestTimeoutMs = 5_000,
             socketTimeoutMs = 5_000,
         )
 
-        /**
-         * USD prices, so `NO_FX_RATE` (no rate is ever ingested in these tests) does not mask the
-         * counter assertions; `noFxRateCount` has its own test in `CatalogApiClientTest`.
-         */
+        /** USD prices, so `NO_FX_RATE` (no rate is ingested in these tests) cannot mask a counter. */
         fun usd(tariff: TariffSnapshot): TariffSnapshot =
             tariff.copy(prices = tariff.prices.map { it.copy(currency = "USD") })
 
@@ -727,7 +692,7 @@ class ReconcilerTest : AbstractDbTest() {
             ),
         )
 
-        /** A `tariffListComplete = true` snapshot that observed **no** tariff at all. */
+        /** A `tariffListComplete = true` snapshot that observed no tariff at all. */
         fun emptyCompleteSnapshot(slug: String): ProviderSnapshot = validSnapshot().copy(
             provider = validSnapshot().provider.copy(slug = slug),
             legalInfo = null,

@@ -4,6 +4,10 @@ import org.a1tsign.vds.config.toUtcOffset
 import org.a1tsign.vds.domain.BillingPeriod
 import org.a1tsign.vds.domain.Confidence
 import org.a1tsign.vds.domain.DiskType
+import org.a1tsign.vds.domain.DismissalFacet
+import org.a1tsign.vds.domain.EnrichmentOutcome
+import org.a1tsign.vds.domain.FieldOrigin
+import org.a1tsign.vds.domain.RowOrigin
 import org.a1tsign.vds.domain.LegalDataSource
 import org.a1tsign.vds.domain.PaymentMethod
 import org.a1tsign.vds.domain.PriceDataSource
@@ -116,6 +120,12 @@ class SchemaEnumParityTest : AbstractDbTest() {
             connection.assertEnumMatchesCheckConstraint<BillingPeriod>("tariff_price", "billing_period")
             connection.assertEnumMatchesCheckConstraint<PriceDataSource>("tariff_price", "data_source")
             connection.assertEnumMatchesCheckConstraint<UserStatus>("app_user", "status")
+            connection.assertEnumMatchesCheckConstraint<FieldOrigin>("provider_legal_info", "legal_entity_name_origin")
+            connection.assertEnumMatchesCheckConstraint<FieldOrigin>("provider_legal_info", "registration_country_origin")
+            connection.assertEnumMatchesCheckConstraint<RowOrigin>("provider_payment_method", "origin")
+            connection.assertEnumMatchesCheckConstraint<RowOrigin>("location", "origin")
+            connection.assertEnumMatchesCheckConstraint<EnrichmentOutcome>("provider_enrichment", "last_outcome")
+            connection.assertEnumMatchesCheckConstraint<DismissalFacet>("provider_enrichment_dismissal", "facet")
         }
     }
 
@@ -145,6 +155,8 @@ class SchemaEnumParityTest : AbstractDbTest() {
             AppUserTable to "app_user",
             RoleTable to "role",
             UserRoleTable to "user_role",
+            ProviderEnrichmentTable to "provider_enrichment",
+            ProviderEnrichmentDismissalTable to "provider_enrichment_dismissal",
         )
 
         PostgresSupport.dataSource.connection.use { connection ->

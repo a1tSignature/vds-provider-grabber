@@ -14,6 +14,7 @@ import org.a1tsign.vds.api.dto.LocationWriteRequest
 import org.a1tsign.vds.api.dto.toDto
 import org.a1tsign.vds.auth.requireRole
 import org.a1tsign.vds.domain.Role
+import org.a1tsign.vds.domain.WriteMode
 import org.a1tsign.vds.service.LocationService
 import java.math.BigDecimal
 
@@ -23,7 +24,7 @@ fun Route.locationRoutes(service: LocationService) {
         val providerId = call.parameters["id"]?.toLongOrNull() ?: throw NotFoundException("Provider not found")
         val req = call.receive<LocationWriteRequest>()
         val fields = validateLocation(req)
-        val created = service.create(providerId, fields.countryCode, fields.region, fields.city, fields.datacenterName, fields.latitude, fields.longitude)
+        val created = service.create(providerId, fields.countryCode, fields.region, fields.city, fields.datacenterName, fields.latitude, fields.longitude, fields.mode)
         call.response.header("Location", "/api/v1/locations/${created.id}")
         call.respond(HttpStatusCode.Created, created.toDto())
     }
@@ -31,7 +32,7 @@ fun Route.locationRoutes(service: LocationService) {
         call.requireRole(Role.EDITOR)
         val id = call.parameters["id"]?.toLongOrNull() ?: throw NotFoundException("Location not found")
         val fields = validateLocation(call.receive<LocationWriteRequest>())
-        call.respond(service.update(id, fields.countryCode, fields.region, fields.city, fields.datacenterName, fields.latitude, fields.longitude).toDto())
+        call.respond(service.update(id, fields.countryCode, fields.region, fields.city, fields.datacenterName, fields.latitude, fields.longitude, fields.mode).toDto())
     }
     delete("/api/v1/locations/{id}") {
         call.requireRole(Role.EDITOR)
@@ -41,7 +42,7 @@ fun Route.locationRoutes(service: LocationService) {
     }
 }
 
-private data class LocationFields(val countryCode: String, val region: String?, val city: String?, val datacenterName: String?, val latitude: BigDecimal?, val longitude: BigDecimal?)
+private data class LocationFields(val countryCode: String, val region: String?, val city: String?, val datacenterName: String?, val latitude: BigDecimal?, val longitude: BigDecimal?, val mode: WriteMode)
 
 private fun validateLocation(req: LocationWriteRequest): LocationFields {
     val v = Validation()
@@ -52,6 +53,7 @@ private fun validateLocation(req: LocationWriteRequest): LocationFields {
     val latitude = req.latitude?.let { v.validateLocationCoordinate("latitude", it.toPlainString(), BigDecimal("-90"), BigDecimal("90")) }
     val longitude = req.longitude?.let { v.validateLocationCoordinate("longitude", it.toPlainString(), BigDecimal("-180"), BigDecimal("180")) }
     v.validateCoordinatePair(req.latitude, req.longitude)
+    val mode = parseWriteMode(v, req.writeMode)
     v.throwIfInvalid()
-    return LocationFields(country!!, region, city, datacenter, latitude, longitude)
+    return LocationFields(country!!, region, city, datacenter, latitude, longitude, mode!!)
 }

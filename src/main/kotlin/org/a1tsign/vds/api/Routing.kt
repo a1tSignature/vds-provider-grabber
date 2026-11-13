@@ -14,6 +14,7 @@ import org.a1tsign.vds.api.routes.discoveryRoutes
 import org.a1tsign.vds.api.routes.fxRoutes
 import org.a1tsign.vds.api.routes.providerRoutes
 import org.a1tsign.vds.api.routes.locationRoutes
+import org.a1tsign.vds.api.routes.enrichmentRoutes
 import org.a1tsign.vds.api.routes.tariffRoutes
 import org.a1tsign.vds.api.routes.priceRoutes
 import org.a1tsign.vds.api.routes.openApiRoutes
@@ -40,6 +41,7 @@ fun Application.registerRoutes(components: AppComponents, staticBasePackage: Str
                 discoveryRoutes(components.discoveryRunner, components.discoveryScope, components.discoverySources, components.discoveryAdminPassJob)
                 providerRoutes(components.providerService, components.catalogQueryService)
                 locationRoutes(components.locationService)
+                enrichmentRoutes(components.enrichmentService)
                 tariffRoutes(components.tariffService, components.catalogQueryService)
                 priceRoutes(components.priceService)
                 dictionaryRoutes()

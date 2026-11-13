@@ -34,12 +34,15 @@ data class LegalInfo(
     val sourceUrl: String?,
     val verifiedAt: Instant?,
     val updatedAt: Instant,
+    val legalEntityNameOrigin: FieldOrigin? = null,
+    val registrationCountryOrigin: FieldOrigin? = null,
 )
 
 data class ProviderPaymentMethod(
     val providerId: Long,
     val method: PaymentMethod,
     val note: String?,
+    val origin: RowOrigin = RowOrigin.MANUAL,
 )
 
 data class Location(
@@ -53,6 +56,18 @@ data class Location(
     val longitude: BigDecimal?,
     val createdAt: Instant,
     val updatedAt: Instant,
+    val origin: RowOrigin = RowOrigin.MANUAL,
+)
+
+/** 0..1 per [Provider]. [evidenceJson] is the raw stored document of the latest successful run. */
+data class ProviderEnrichment(
+    val providerId: Long,
+    val lastAttemptAt: Instant,
+    val lastOutcome: EnrichmentOutcome,
+    val lastMessage: String?,
+    val lastPagesFetched: Int,
+    val lastSuccessAt: Instant?,
+    val evidenceJson: String?,
 )
 
 data class Tariff(

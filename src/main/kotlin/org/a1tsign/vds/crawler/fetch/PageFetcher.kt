@@ -96,6 +96,10 @@ fun crawlerHttpClient(limits: FetchLimits = FetchLimits()): HttpClient = HttpCli
  * | retries | ≤ 2, connect/read failures + `408`/`429`/`5xx`, full-jitter backoff | [FetchLimits] |
  * | politeness | ≥ `VDS_CRAWLER_HOST_DELAY_MS` between, 1 in flight per host | [HostRateLimiter] |
  * | robots.txt | once per origin per run, `Disallow` → [FetchException.RobotsDisallowed] | [RobotsCache] |
+ * | anti-bot challenge | detected before the retry decision, never retried → [FetchException.Challenged] | [ChallengeMarkers] |
+ *
+ * [fetch] ([EnrichmentFetcher]) widens the content types per [FetchKind], always checks robots.txt
+ * and caps a script at [FetchKind.SCRIPT_MAX_BYTES]; every other limit above is shared.
  *
  * ### The body cap never trusts a header
  *
@@ -109,9 +113,10 @@ fun crawlerHttpClient(limits: FetchLimits = FetchLimits()): HttpClient = HttpCli
  *
  * ### What it deliberately does not do
  *
- * No cookie jar, no proxy, no header spoofing, no anti-bot handling: the crawler identifies itself
- * honestly with the configured `User-Agent`. `Jsoup.connect` is never used -- jsoup only parses the
- * string we already read under the cap, via [Jsoup.parse] with the **final** URL as base URI.
+ * No cookie jar, no proxy, no header spoofing, no challenge solving or retry-until-pass: the crawler
+ * identifies itself honestly with the configured `User-Agent` and stops at a challenge.
+ * `Jsoup.connect` is never used -- jsoup only parses the string we already read under the cap, via
+ * [Jsoup.parse] with the final URL as base URI.
  *
  * [clock] is used for one thing: resolving a `Retry-After` given as an HTTP date into a wait. All
  * *elapsed-time* measurement lives in [HostRateLimiter] on `System.nanoTime()`.
@@ -129,24 +134,42 @@ class KtorPageFetcher(
     private val backoffJitter: (Long) -> Long = { bound -> ThreadLocalRandom.current().nextLong(bound + 1) },
     /** The retry/`Retry-After` sleep. Injectable so a retry test does not add seconds to the suite. */
     private val sleep: suspend (Long) -> Unit = { millis -> delay(millis) },
-) : PageFetcher {
+) : PageFetcher, EnrichmentFetcher {
+
+    private val adapterMode = Mode(ALLOWED_MEDIA_TYPES, config.maxBodyBytes, alwaysCheckRobots = false)
 
     private val robots = RobotsCache(config.userAgent, limits.maxCrawlDelayMs) { url -> loadRobots(url) }
 
     private val fetchedPages = AtomicLong()
 
     /**
-     * Successful [get]/[getHtml] calls since this fetcher was created -- the orchestrator's
+     * Successful [get]/[getHtml]/[fetch] calls since this fetcher was created -- the orchestrator's
      * `pagesFetched` without parsing a log line. Redirect hops and `robots.txt` do not count: one
-     * page an adapter asked for is one page.
+     * page a caller asked for is one page.
      */
     val pagesFetched: Long get() = fetchedPages.get()
 
-    override suspend fun get(url: String): FetchedPage {
+    override suspend fun get(url: String): FetchedPage = fetchWithin(url, adapterMode)
+
+    override suspend fun fetch(url: String, kind: FetchKind): FetchedPage = fetchWithin(url, enrichmentModes.getValue(kind))
+
+    override suspend fun robotsSitemaps(url: String): List<String> = robots.rulesFor(parseTarget(url, url).origin).sitemaps
+
+    private val enrichmentModes: Map<FetchKind, Mode> = mapOf(
+        FetchKind.PAGE to Mode(HTML_MEDIA_TYPES, config.maxBodyBytes, alwaysCheckRobots = true),
+        FetchKind.SITEMAP to Mode(HTML_MEDIA_TYPES + SITEMAP_MEDIA_TYPES, config.maxBodyBytes, alwaysCheckRobots = true),
+        FetchKind.SCRIPT to Mode(
+            HTML_MEDIA_TYPES + SCRIPT_MEDIA_TYPES,
+            min(config.maxBodyBytes, FetchKind.SCRIPT_MAX_BYTES),
+            alwaysCheckRobots = true,
+        ),
+    )
+
+    private suspend fun fetchWithin(url: String, mode: Mode): FetchedPage {
         var target = parseTarget(url, url)
         var redirects = 0
         while (true) {
-            when (val hop = fetchHop(url, target)) {
+            when (val hop = fetchHop(url, target, mode)) {
                 is Hop.Done -> {
                     fetchedPages.incrementAndGet()
                     return hop.page
@@ -169,11 +192,11 @@ class KtorPageFetcher(
     }
 
     /** One hop: robots first (so a disallowed URL is never requested), then the attempt loop. */
-    private suspend fun fetchHop(requestedUrl: String, target: Target): Hop {
-        checkRobots(requestedUrl, target)
+    private suspend fun fetchHop(requestedUrl: String, target: Target, mode: Mode): Hop {
+        checkRobots(target, mode)
         var attempt = 1
         while (true) {
-            when (val outcome = runAttempt(requestedUrl, target, attempt)) {
+            when (val outcome = runAttempt(requestedUrl, target, attempt, mode)) {
                 is Attempt.Ok -> return Hop.Done(outcome.page)
                 is Attempt.Redirect -> return Hop.Redirect(outcome.location)
                 is Attempt.Retry -> {
@@ -185,8 +208,8 @@ class KtorPageFetcher(
         }
     }
 
-    private suspend fun checkRobots(requestedUrl: String, target: Target) {
-        if (!config.respectRobots) return
+    private suspend fun checkRobots(target: Target, mode: Mode) {
+        if (!config.respectRobots && !mode.alwaysCheckRobots) return
         val rules = robots.rulesFor(target.origin)
         rules.crawlDelayMs?.let { rateLimiter.raiseDelay(target.host, it) }
         if (!rules.allows(target.pathWithQuery)) {
@@ -196,17 +219,17 @@ class KtorPageFetcher(
         }
     }
 
-    private suspend fun runAttempt(requestedUrl: String, target: Target, attempt: Int): Attempt =
+    private suspend fun runAttempt(requestedUrl: String, target: Target, attempt: Int, mode: Mode): Attempt =
         try {
             rateLimiter.withHost(target.host) {
                 client.prepareGet(target.url) { politeRequest(this, limits.requestTimeoutMs) }
-                    .execute { response -> readResponse(requestedUrl, target, attempt, response) }
+                    .execute { response -> readResponse(requestedUrl, target, attempt, response, mode) }
             }
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (classified: FetchException) {
-            // Already decided by readResponse (BodyTooLarge, UnsupportedContentType, a terminal
-            // status): those short-circuit instead of being retried.
+            // Already decided by readResponse (BodyTooLarge, UnsupportedContentType, Challenged, a
+            // terminal status): those short-circuit instead of being retried.
             throw classified
         } catch (failure: Exception) {
             // Connect, DNS, TLS, read and request-timeout failures arrive as IOException (Ktor's
@@ -230,11 +253,13 @@ class KtorPageFetcher(
         target: Target,
         attempt: Int,
         response: HttpResponse,
+        mode: Mode,
     ): Attempt {
         val status = response.status.value
+        detectChallenge(requestedUrl, target, status, response)
         if (status in 300..399) {
             val location = response.headers[HttpHeaders.Location]
-                ?: return failure(requestedUrl, target, attempt, status, "redirect without a Location")
+                ?: failure(requestedUrl, target, attempt, status, "redirect without a Location")
             return Attempt.Redirect(location)
         }
         if (status !in 200..299) {
@@ -250,20 +275,20 @@ class KtorPageFetcher(
                 logger.warn("GET {} attempt {} failed: HTTP {}", target.url, attempt, status)
                 return Attempt.Retry(status = status, retryAfterMs = retryAfterMs)
             }
-            return failure(requestedUrl, target, attempt, status, "HTTP $status")
+            failure(requestedUrl, target, attempt, status, "HTTP $status")
         }
 
         val mediaType = response.contentType()
-        if (mediaType == null || mediaType.withoutParameters().toString().lowercase() !in ALLOWED_MEDIA_TYPES) {
+        if (mediaType == null || mediaType.withoutParameters().toString().lowercase() !in mode.allowedMediaTypes) {
             // Thrown before the body is touched: an unexpected payload is never read, let alone parsed.
             throw FetchException.UnsupportedContentType(requestedUrl, mediaType?.toString())
         }
         val declared = response.contentLength()
-        if (declared != null && declared > config.maxBodyBytes) {
-            throw FetchException.BodyTooLarge(requestedUrl, config.maxBodyBytes)
+        if (declared != null && declared > mode.maxBodyBytes) {
+            throw FetchException.BodyTooLarge(requestedUrl, mode.maxBodyBytes)
         }
-        val raw = readCapped(response.bodyAsChannel(), requestedUrl)
-        val bytes = decodeContentEncoding(raw, response, requestedUrl)
+        val raw = readCapped(response.bodyAsChannel(), requestedUrl, mode.maxBodyBytes)
+        val bytes = decodeContentEncoding(raw, response, requestedUrl, mode.maxBodyBytes)
         val body = String(bytes, mediaType.charset() ?: Charsets.UTF_8)
         logger.debug(
             "GET {} -> {} ({} bytes, attempt {})",
@@ -280,6 +305,63 @@ class KtorPageFetcher(
         )
     }
 
+    /**
+     * Runs on every attempt before the status is classified, so a challenge is never retried. Only
+     * an error status whose body could be an interstitial gets its body read, and only its first
+     * [ChallengeMarkers.BODY_PROBE_BYTES].
+     */
+    private suspend fun detectChallenge(requestedUrl: String, target: Target, status: Int, response: HttpResponse) {
+        val mitigated = response.headers[ChallengeMarkers.CF_MITIGATED_HEADER]?.trim()
+        val reason = when {
+            mitigated.equals(ChallengeMarkers.CF_MITIGATED_CHALLENGE, ignoreCase = true) ->
+                "Cloudflare challenge on ${target.url} (HTTP $status)"
+            status in ChallengeMarkers.CHALLENGE_STATUSES ->
+                ChallengeMarkers.challengeMarkerIn(readProbe(response))
+                    ?.let { marker -> "Challenge page on ${target.url} (HTTP $status, '$marker')" }
+            else -> null
+        } ?: return
+        logger.warn("GET {} stopped: {}", target.url, reason)
+        throw FetchException.Challenged(requestedUrl, reason)
+    }
+
+    /**
+     * Up to [ChallengeMarkers.BODY_PROBE_BYTES] of the decoded body, never more and never an
+     * error: a broken read or a truncated gzip stream yields what arrived before the cut.
+     */
+    private suspend fun readProbe(response: HttpResponse): String {
+        val channel = response.bodyAsChannel()
+        val sink = ByteArrayOutputStream()
+        val buffer = ByteArray(READ_BUFFER_BYTES)
+        try {
+            while (sink.size() < ChallengeMarkers.BODY_PROBE_BYTES) {
+                val read = channel.readAvailable(buffer, 0, min(buffer.size, ChallengeMarkers.BODY_PROBE_BYTES - sink.size()))
+                if (read == -1) break
+                sink.write(buffer, 0, read)
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            // A body cut off mid-read is checked as far as it arrived; the status still gets its
+            // normal classification and Retry-After instead of turning into a transport failure.
+        }
+        val raw = sink.toByteArray()
+        val encoding = response.headers[HttpHeaders.ContentEncoding]?.trim()?.lowercase()
+        if (encoding != "gzip" && encoding != "x-gzip") return String(raw, Charsets.UTF_8)
+        val decoded = ByteArrayOutputStream()
+        try {
+            GZIPInputStream(raw.inputStream()).use { gzip ->
+                while (decoded.size() < ChallengeMarkers.BODY_PROBE_BYTES) {
+                    val read = gzip.read(buffer)
+                    if (read == -1) break
+                    decoded.write(buffer, 0, read)
+                }
+            }
+        } catch (_: java.io.IOException) {
+            // Truncated or corrupt: keep what was decoded.
+        }
+        return String(decoded.toByteArray(), Charsets.UTF_8)
+    }
+
     private fun failure(
         requestedUrl: String,
         target: Target,
@@ -292,13 +374,12 @@ class KtorPageFetcher(
     }
 
     /**
-     * Reads [channel] into memory **while counting**, aborting at the first byte past
-     * `maxBodyBytes`. Returning from `execute { }` with this exception cancels the response, so an
+     * Reads [channel] into memory while counting, aborting at the first byte past [cap].
+     * Returning from `execute { }` with this exception cancels the response, so an
      * endless or oversized body is never buffered in full -- at most one [READ_BUFFER_BYTES]
      * buffer on top of the cap is ever held.
      */
-    private suspend fun readCapped(channel: ByteReadChannel, url: String): ByteArray {
-        val cap = config.maxBodyBytes
+    private suspend fun readCapped(channel: ByteReadChannel, url: String, cap: Long): ByteArray {
         val sink = ByteArrayOutputStream(min(cap, INITIAL_SINK_BYTES).toInt())
         val buffer = ByteArray(READ_BUFFER_BYTES)
         var total = 0L
@@ -321,13 +402,12 @@ class KtorPageFetcher(
      * would let a 2 MiB archive expand into gigabytes of heap, which is the same OOM the streamed
      * cap exists to prevent, wearing a different hat.
      */
-    private fun decodeContentEncoding(raw: ByteArray, response: HttpResponse, url: String): ByteArray {
+    private fun decodeContentEncoding(raw: ByteArray, response: HttpResponse, url: String, cap: Long): ByteArray {
         val encoding = response.headers[HttpHeaders.ContentEncoding]?.trim()?.lowercase()
         if (encoding == null || encoding == "identity") return raw
         if (encoding != "gzip" && encoding != "x-gzip") {
             throw FetchException.UnsupportedContentType(url, "Content-Encoding: $encoding")
         }
-        val cap = config.maxBodyBytes
         val sink = ByteArrayOutputStream(raw.size)
         val buffer = ByteArray(READ_BUFFER_BYTES)
         var total = 0L
@@ -382,8 +462,8 @@ class KtorPageFetcher(
                             // gzip bytes as text yields zero directives, i.e. a silently cached
                             // "allow all" on every host that honours the header (nginx's default
                             // gzip_types includes text/plain).
-                            val raw = readCapped(response.bodyAsChannel(), robotsUrl)
-                            String(decodeContentEncoding(raw, response, robotsUrl), Charsets.UTF_8)
+                            val raw = readCapped(response.bodyAsChannel(), robotsUrl, config.maxBodyBytes)
+                            String(decodeContentEncoding(raw, response, robotsUrl, config.maxBodyBytes), Charsets.UTF_8)
                         }
                     }
             }
@@ -453,6 +533,13 @@ class KtorPageFetcher(
         )
     }
 
+    /** The per-request policy: which content types are accepted, the body cap, and whether robots.txt is forced. */
+    private data class Mode(
+        val allowedMediaTypes: Set<String>,
+        val maxBodyBytes: Long,
+        val alwaysCheckRobots: Boolean,
+    )
+
     private data class Target(
         val url: String,
         val host: String,
@@ -491,6 +578,10 @@ class KtorPageFetcher(
             ContentType.Application.Json.toString(),
             ContentType.Text.Plain.toString(),
         ).map { it.lowercase() }.toSet()
+
+        private val HTML_MEDIA_TYPES = setOf("text/html", "application/xhtml+xml")
+        private val SITEMAP_MEDIA_TYPES = setOf("application/xml", "text/xml")
+        private val SCRIPT_MEDIA_TYPES = setOf("application/javascript", "text/javascript", "application/x-javascript")
 
         /** `408` and `429`; `5xx` is handled as a range, `4xx` otherwise is never retried. */
         private val RETRYABLE_STATUSES = setOf(408, 429)

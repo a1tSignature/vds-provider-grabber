@@ -361,7 +361,13 @@ paths:
     put:
       tags: [Providers]
       summary: Replace a provider's legal info (upsert)
-      description: "Required role: EDITOR."
+      description: >-
+        Required role: EDITOR. writeMode HUMAN (default) replaces the record; a field origin that is
+        absent becomes MANUAL for a field that has a value or is being cleared, and a field that was
+        empty and stays empty keeps its origin. writeMode AUTOMATIC follows "manual wins": a MANUAL
+        field is never changed, an absent field is left alone, verified_at is never touched (sending
+        verifiedAt is a 400), and registrationNumber, legalAddress, dataSource, confidence and
+        sourceUrl are written only while no legal field is MANUAL.
       requestBody:
         required: true
         content:
@@ -370,6 +376,102 @@ paths:
       responses:
         "200":
           description: Upserted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LegalInfoDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+
+  /api/v1/providers/{id}/enrichment:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    put:
+      tags: [Providers]
+      summary: Apply one automatic enrichment result
+      description: >-
+        Required role: EDITOR (the crawler's service account). The whole body is validated before
+        anything is written; any failure is a 400 with no writes. Applied in one transaction under
+        the provider row lock: a MANUAL legal field is never changed; empty, unclaimed or AUTO_* legal
+        fields take the found value; HIGH/MEDIUM payment methods and countries are only added, never
+        removed, and never when dismissed or listed in observedFacets; a country is added as a
+        country-only AUTO location only when the provider has no location of that country at all.
+        The enrichment state is always updated; the evidence is replaced only for SUCCESS and
+        NOTHING_FOUND. Facets are allowed only with SUCCESS.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EnrichmentApplyRequest" }
+      responses:
+        "200":
+          description: Applied. The body lists what was written.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnrichmentApplyResultDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+
+  /api/v1/providers/{id}/legal-info/confirm:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    post:
+      tags: [Providers]
+      summary: Confirm legal fields as manual
+      description: >-
+        Required role: EDITOR. Sets the origin of each listed field to MANUAL, keeps its value and
+        sets verifiedAt to the server clock. 404 when the provider or its legal info does not exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LegalFieldsRequest" }
+      responses:
+        "200":
+          description: Confirmed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LegalInfoDto" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "413": { $ref: "#/components/responses/PayloadTooLargeError" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
+
+  /api/v1/providers/{id}/legal-info/release:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    post:
+      tags: [Providers]
+      summary: Release legal fields to automation
+      description: >-
+        Required role: EDITOR. Clears the origin of each listed field and keeps its value, so the next
+        enrichment may overwrite it. 404 when the provider or its legal info does not exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LegalFieldsRequest" }
+      responses:
+        "200":
+          description: Released.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/LegalInfoDto" }
@@ -389,7 +491,16 @@ paths:
     put:
       tags: [Providers]
       summary: Replace a provider's accepted payment methods
-      description: "Required role: EDITOR. The whole list is replaced; duplicates in the body are rejected with 400."
+      description: >-
+        Required role: EDITOR. The whole list is replaced; duplicates in the body are rejected with 400.
+        Rows that already existed keep their origin; new rows are MANUAL (writeMode HUMAN) or AUTO
+        (AUTOMATIC). A HUMAN request that removes an AUTO method records a dismissal, so enrichment
+        never re-adds it, and a HUMAN request that adds a dismissed method clears the dismissal.
+      parameters:
+        - name: writeMode
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/WriteMode" }
       requestBody:
         required: true
         content:
@@ -421,7 +532,10 @@ paths:
     post:
       tags: [Locations]
       summary: Add a location to a provider
-      description: "Required role: EDITOR. latitude and longitude must be supplied together or not at all."
+      description: >-
+        Required role: EDITOR. latitude and longitude must be supplied together or not at all. The new
+        row is MANUAL (writeMode HUMAN, which also clears a dismissal of that country) or AUTO
+        (AUTOMATIC).
       requestBody:
         required: true
         content:
@@ -456,7 +570,10 @@ paths:
     put:
       tags: [Locations]
       summary: Replace a location
-      description: "Required role: EDITOR."
+      description: >-
+        Required role: EDITOR. writeMode HUMAN makes the row MANUAL; AUTOMATIC keeps its origin. A
+        HUMAN edit that moves the last AUTO location of a country elsewhere records a dismissal of
+        that country.
       requestBody:
         required: true
         content:
@@ -482,7 +599,7 @@ paths:
     delete:
       tags: [Locations]
       summary: Delete a location
-      description: "Required role: EDITOR."
+      description: "Required role: EDITOR. Deleting the last AUTO location of a country records a dismissal of that country, so enrichment never re-adds it."
       responses:
         "204": { description: Deleted. }
         "401": { $ref: "#/components/responses/UnauthorizedError" }
@@ -1328,6 +1445,15 @@ components:
     PriceDataSource: { type: string, enum: [MANUAL, CRAWLER] }
     UserStatus: { type: string, enum: [ACTIVE, DISABLED] }
     Role: { type: string, enum: [ADMIN, EDITOR, VIEWER] }
+    FieldOrigin:
+      type: string
+      enum: [AUTO_CONFIRMED, AUTO_PRESUMED, MANUAL]
+      description: Absent on a legal field means nobody claimed it; automation may fill it.
+    RowOrigin: { type: string, enum: [AUTO, MANUAL] }
+    EnrichmentOutcome:
+      type: string
+      enum: [SUCCESS, NOTHING_FOUND, BLOCKED, UNREACHABLE, ROBOTS_DISALLOWED, FAILED, TIMEOUT, DEFERRED, NOT_DUE, SKIPPED, NO_PROVIDER, DISABLED]
+    WriteMode: { type: string, enum: [HUMAN, AUTOMATIC], default: HUMAN }
     PaymentMethod:
       type: string
       enum:
@@ -1416,7 +1542,12 @@ components:
         dataSource: { $ref: "#/components/schemas/LegalDataSource" }
         confidence: { $ref: "#/components/schemas/Confidence" }
         sourceUrl: { type: string, maxLength: 2048 }
-        verifiedAt: { type: string, format: date-time }
+        verifiedAt: { type: string, format: date-time, description: "Must be absent when writeMode is AUTOMATIC." }
+        legalEntityNameOrigin:
+          $ref: "#/components/schemas/FieldOrigin"
+        registrationCountryOrigin:
+          $ref: "#/components/schemas/FieldOrigin"
+        writeMode: { $ref: "#/components/schemas/WriteMode" }
 
     LegalInfoDto:
       type: object
@@ -1432,6 +1563,8 @@ components:
         sourceUrl: { type: string }
         verifiedAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+        legalEntityNameOrigin: { $ref: "#/components/schemas/FieldOrigin" }
+        registrationCountryOrigin: { $ref: "#/components/schemas/FieldOrigin" }
 
     PaymentMethodWriteRequest:
       type: object
@@ -1442,10 +1575,11 @@ components:
 
     ProviderPaymentMethodDto:
       type: object
-      required: [method]
+      required: [method, origin]
       properties:
         method: { $ref: "#/components/schemas/PaymentMethod" }
         note: { type: string }
+        origin: { $ref: "#/components/schemas/RowOrigin" }
 
     ProviderSummaryDto:
       type: object
@@ -1458,6 +1592,9 @@ components:
         status: { $ref: "#/components/schemas/ProviderStatus" }
         systemStatus: { $ref: "#/components/schemas/SystemStatus" }
         registrationCountry: { type: string }
+        legalEntityName: { type: string }
+        legalEntityNameOrigin: { $ref: "#/components/schemas/FieldOrigin" }
+        registrationCountryOrigin: { $ref: "#/components/schemas/FieldOrigin" }
         paymentMethods:
           type: array
           items: { $ref: "#/components/schemas/PaymentMethod" }
@@ -1495,6 +1632,114 @@ components:
           type: array
           items: { $ref: "#/components/schemas/TariffWithPricesDto" }
           description: Active tariffs only.
+        enrichment:
+          $ref: "#/components/schemas/ProviderEnrichmentDto"
+
+    ProviderEnrichmentDto:
+      type: object
+      description: State of the latest enrichment attempt; absent from ProviderDetailDto when none was made.
+      required: [lastAttemptAt, lastOutcome, lastPagesFetched]
+      properties:
+        lastAttemptAt: { type: string, format: date-time }
+        lastOutcome: { $ref: "#/components/schemas/EnrichmentOutcome" }
+        lastMessage: { type: string, maxLength: 500 }
+        lastPagesFetched: { type: integer, minimum: 0 }
+        lastSuccessAt: { type: string, format: date-time }
+        evidence: { $ref: "#/components/schemas/EnrichmentEvidenceDto" }
+
+    EvidenceItemDto:
+      type: object
+      required: [url, kind, snippet]
+      properties:
+        url: { type: string, maxLength: 2048, description: "Absolute http or https URL." }
+        kind: { type: string, maxLength: 64 }
+        snippet: { type: string, maxLength: 220 }
+
+    LegalFindingDto:
+      type: object
+      required: [value, status]
+      properties:
+        value: { type: string, description: "Entity name (at most 255 characters) or ISO alpha-2 country code." }
+        status: { type: string, enum: [CONFIRMED, PRESUMED] }
+        basis: { type: array, maxItems: 10, items: { type: string, maxLength: 64 } }
+        alternatives: { type: array, maxItems: 3, items: { type: string, maxLength: 255 } }
+        evidence:
+          type: array
+          maxItems: 3
+          items: { $ref: "#/components/schemas/EvidenceItemDto" }
+          description: Strongest first; the first item's URL becomes the legal info's sourceUrl.
+
+    ValueFindingDto:
+      type: object
+      required: [value, confidence]
+      properties:
+        value: { type: string, description: "A PaymentMethod value or an ISO alpha-2 country code." }
+        confidence: { type: string, enum: [HIGH, MEDIUM, LOW], description: "Only HIGH and MEDIUM are written." }
+        pages: { type: integer, minimum: 0, description: "How many fetched pages mentioned the value." }
+        evidence:
+          type: array
+          maxItems: 3
+          items: { $ref: "#/components/schemas/EvidenceItemDto" }
+
+    EnrichmentEvidenceDto:
+      type: object
+      required: [paymentMethods, locations]
+      properties:
+        legalEntityName: { $ref: "#/components/schemas/LegalFindingDto" }
+        registrationCountry: { $ref: "#/components/schemas/LegalFindingDto" }
+        paymentMethods:
+          type: array
+          items: { $ref: "#/components/schemas/ValueFindingDto" }
+        locations:
+          type: array
+          items: { $ref: "#/components/schemas/ValueFindingDto" }
+
+    EnrichmentApplyRequest:
+      type: object
+      required: [outcome]
+      properties:
+        outcome:
+          type: string
+          enum: [SUCCESS, NOTHING_FOUND, BLOCKED, UNREACHABLE, ROBOTS_DISALLOWED, FAILED, TIMEOUT]
+        message: { type: string, maxLength: 500 }
+        pagesFetched: { type: integer, minimum: 0, default: 0 }
+        observedFacets:
+          type: array
+          items: { type: string, enum: [LEGAL_ENTITY_NAME, REGISTRATION_COUNTRY, PAYMENT_METHOD, LOCATION] }
+          description: Facets the provider's source already observes; they are not written, but their evidence is stored.
+        legalEntityName: { $ref: "#/components/schemas/LegalFindingDto" }
+        registrationCountry: { $ref: "#/components/schemas/LegalFindingDto" }
+        paymentMethods:
+          type: array
+          maxItems: 20
+          items: { $ref: "#/components/schemas/ValueFindingDto" }
+        locations:
+          type: array
+          maxItems: 25
+          items: { $ref: "#/components/schemas/ValueFindingDto" }
+
+    EnrichmentApplyResultDto:
+      type: object
+      required: [paymentMethods, locations, valuesApplied]
+      properties:
+        legalEntityName: { type: string, description: "Present only when the field was written." }
+        registrationCountry: { type: string, description: "Present only when the field was written." }
+        paymentMethods:
+          type: array
+          items: { $ref: "#/components/schemas/PaymentMethod" }
+        locations:
+          type: array
+          items: { type: string }
+        valuesApplied: { type: integer }
+
+    LegalFieldsRequest:
+      type: object
+      required: [fields]
+      properties:
+        fields:
+          type: array
+          minItems: 1
+          items: { type: string, enum: [LEGAL_ENTITY_NAME, REGISTRATION_COUNTRY] }
 
     LocationWriteRequest:
       type: object
@@ -1512,10 +1757,11 @@ components:
           type: string
           pattern: "^-?\\d{1,3}(\\.\\d{1,6})?$"
           description: NUMERIC(9,6), range -180..180. Must be supplied together with latitude or not at all.
+        writeMode: { $ref: "#/components/schemas/WriteMode" }
 
     LocationDto:
       type: object
-      required: [id, providerId, countryCode, createdAt, updatedAt]
+      required: [id, providerId, countryCode, createdAt, updatedAt, origin]
       properties:
         id: { type: integer, format: int64 }
         providerId: { type: integer, format: int64 }
@@ -1527,6 +1773,7 @@ components:
         longitude: { type: string, pattern: "^-?\\d{1,3}(\\.\\d{1,6})?$" }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+        origin: { $ref: "#/components/schemas/RowOrigin" }
 
     TariffWriteRequest:
       type: object
@@ -1979,6 +2226,10 @@ components:
         - confidenceLevels
         - legalDataSources
         - priceDataSources
+        - fieldOrigins
+        - rowOrigins
+        - enrichmentOutcomes
+        - dismissalFacets
       properties:
         paymentMethods: { type: array, items: { type: string } }
         billingPeriods: { type: array, items: { type: string } }
@@ -1989,6 +2240,10 @@ components:
         confidenceLevels: { type: array, items: { type: string } }
         legalDataSources: { type: array, items: { type: string } }
         priceDataSources: { type: array, items: { type: string } }
+        fieldOrigins: { type: array, items: { type: string } }
+        rowOrigins: { type: array, items: { type: string } }
+        enrichmentOutcomes: { type: array, items: { type: string } }
+        dismissalFacets: { type: array, items: { type: string } }
 
     PageMeta:
       type: object

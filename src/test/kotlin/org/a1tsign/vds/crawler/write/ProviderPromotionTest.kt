@@ -30,15 +30,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Promotion of a discovered `CANDIDATE` row by the crawler, against the **real** vds-001 application
- * ([CrawlerAppHarness]) -- so the `PUT /api/v1/providers/{id}/system-status` call is one the server
- * really answers, and "no promotion happened" is proved by the server's own call log rather than by
- * the absence of a log line.
+ * Runs against the real application ([CrawlerAppHarness]); "no promotion happened" is proved by the
+ * server's call log.
  *
- * The first test is also **the `409` trap** of vds-004.2: the listing hides `CANDIDATE` rows, so a
- * `findProviderBySlug` that did not ask for them would `POST`, collect a `409` from
- * `uq_provider_slug`, re-read, miss again and fail with `FailureReason.WRITE` on *every* run,
- * forever.
+ * The first test also covers the `409` trap: the listing hides `CANDIDATE` rows, so a
+ * `findProviderBySlug` that did not ask for them would `POST`, hit `uq_provider_slug`, re-read, miss
+ * again and fail with `FailureReason.WRITE` on every run.
  */
 class ProviderPromotionTest : AbstractDbTest() {
 
@@ -64,9 +61,8 @@ class ProviderPromotionTest : AbstractDbTest() {
             ctx.reconcile(snapshot(amount = BigDecimal("11.1100")))
             assertEquals(0, ctx.systemStatusCalls(providerId), "an already-CONFIGURED row is never written to")
 
-            // A successful run that wrote nothing promotes nothing: the same snapshot again submits
-            // four unchanged prices (which the catalog answers 200, only advancing lastConfirmedAt)
-            // and no mutation.
+            // The same snapshot again submits four unchanged prices (answered 200, only
+            // lastConfirmedAt advances) and no mutation, so nothing is promoted.
             setSystemStatus(providerId, SystemStatus.CANDIDATE)
             val priceRowsBefore = priceRowCount()
             clock.advance(Duration.ofHours(1))
@@ -123,8 +119,6 @@ class ProviderPromotionTest : AbstractDbTest() {
         }
     }
 
-    // ---------- harness ----------
-
     private class Ctx(val harness: CrawlerAppHarness, val client: CatalogApiClient, private val reconciler: Reconciler) {
         private val apiWriter = ApiCrawlWriter(client)
 
@@ -180,9 +174,8 @@ class ProviderPromotionTest : AbstractDbTest() {
 
     private companion object {
         /**
-         * Two tariffs with USD prices and **no location links**: a second pass over it therefore
-         * issues no `PUT …/tariffs/{id}/locations` either, which is what makes "this run wrote
-         * nothing" reachable at all (the link set is otherwise replaced unconditionally).
+         * No location links: the link set is otherwise replaced unconditionally, so a second pass
+         * could never write nothing.
          */
         fun snapshot(amount: BigDecimal = BigDecimal("9.9900")): ProviderSnapshot = validSnapshot()
             .copy(

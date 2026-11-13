@@ -27,13 +27,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The crawler↔API boundary, exercised against the **real** application on a **real** port
- * ([CrawlerAppHarness]) with the real PostgreSQL. Every assertion is scoped to rows this test
- * created, and request counts come from what the *server* saw, not from a parsed log file.
+ * Runs against the real application and PostgreSQL ([CrawlerAppHarness]). Assertions are scoped
+ * to rows the test created; request counts come from what the server saw.
  */
 class CatalogApiClientTest : AbstractDbTest() {
-
-    // ---------- auth: one login per token lifetime (spec req. 23) ----------
 
     @Test
     fun `three writes after one login reach the server as exactly one login plus three calls`() {
@@ -139,8 +136,7 @@ class CatalogApiClientTest : AbstractDbTest() {
             withCatalog { client, harness ->
                 val provider = client.createProvider(providerWrite("acme"))
                 client.putLegalInfo(provider.id, legalInfoWrite())
-                // Failing calls too: the WARN path and the thrown exceptions must be as clean as
-                // the happy path -- a leak could ride a message, a cause or an attached throwable.
+                // A secret could also leak through a WARN, an exception message or a cause.
                 failures += causeChain(
                     assertFailsWith<CatalogApiException.Conflict> { client.createProvider(providerWrite("acme")) },
                 )
@@ -149,8 +145,7 @@ class CatalogApiClientTest : AbstractDbTest() {
                         client.createTariff(provider.id, tariffWrite("VPS-1", vcpuCount = 0))
                     },
                 )
-                // The only failure that wraps a foreign throwable: a connect failure on the login
-                // call, i.e. the one request whose body carries the password.
+                // A connect failure on login: the only wrapped throwable, on the request carrying the password.
                 CatalogApiClient(
                     config = harness.crawlerConfig(apiBaseUrl = "http://127.0.0.1:${closedLoopbackPort()}"),
                     clock = clock,
@@ -174,8 +169,6 @@ class CatalogApiClientTest : AbstractDbTest() {
         // Every HS256 JWT this project issues is base64url of {"typ"... -- i.e. starts with eyJ.
         assertTrue(!captured.contains("eyJ"), "a token leaked: $captured")
     }
-
-    // ---------- reads (spec req. 24) ----------
 
     @Test
     fun `findProviderBySlug picks the exact slug out of paged q matches and returns null for an absent one`() {
@@ -212,8 +205,7 @@ class CatalogApiClientTest : AbstractDbTest() {
     @Test
     fun `listAllTariffs accumulates every page and returns deactivated tariffs too, which getProvider does not`() {
         val fixture = CatalogFixture(PostgresSupport.database)
-        // pageSize = 1 forces three pages: a first-page-only read would report a truncated
-        // "complete" list, the one failure mode ADR-03 exists to prevent.
+        // pageSize = 1 forces three pages: a first-page-only read would report a truncated list as complete.
         withCatalog(pageSize = 1) { client, harness ->
             val provider = fixture.createProvider("acme", clock.instant())
             fixture.createTariff(provider.id, "active-1", clock.instant())
@@ -237,8 +229,6 @@ class CatalogApiClientTest : AbstractDbTest() {
             )
         }
     }
-
-    // ---------- writes ----------
 
     @Test
     fun `every write endpoint round-trips the values that were sent`() {
@@ -450,8 +440,6 @@ class CatalogApiClientTest : AbstractDbTest() {
             assertEquals(emptyList(), harness.calls(), "nothing reached the real server")
         }
     }
-
-    // ---------- helpers ----------
 
     private fun withCatalog(
         pageSize: Int = 100,

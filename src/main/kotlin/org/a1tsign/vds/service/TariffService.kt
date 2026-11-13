@@ -90,7 +90,7 @@ class TariffService(
 
     suspend fun delete(id: Long) = withContext(Dispatchers.IO) {
         transaction(database) {
-            tariffs.find(id) ?: throw NotFoundException("Tariff not found")
+            lockedTariff(id)
             tariffs.delete(id)
         }
     }
@@ -105,7 +105,7 @@ class TariffService(
     suspend fun replaceLocations(tariffId: Long, locationIds: List<Long>): Set<Long> = withContext(Dispatchers.IO) {
         mapLocationConflict {
             transaction(database) {
-                val tariff = tariffs.find(tariffId) ?: throw NotFoundException("Tariff not found")
+                val tariff = lockedTariff(tariffId)
                 locationIds.forEach { locationId ->
                     val location = locations.find(locationId) ?: throw NotFoundException("Location not found")
                     if (location.providerId != tariff.providerId) {
@@ -116,6 +116,17 @@ class TariffService(
                 tariffs.locationIds(tariffId)
             }
         }
+    }
+
+    /**
+     * Locks the owning provider row, then re-reads the tariff so one deleted meanwhile is a `404`.
+     * Location writes take the same lock first; without it, writes that cascade through
+     * `tariff_location` lock its rows and the tariff/location rows in opposite orders and deadlock.
+     */
+    private fun lockedTariff(id: Long): Tariff {
+        val providerId = tariffs.find(id)?.providerId ?: throw NotFoundException("Tariff not found")
+        providers.lockProvider(providerId)
+        return tariffs.find(id) ?: throw NotFoundException("Tariff not found")
     }
 
     private inline fun <T> mapDuplicateConflict(block: () -> T): T = try {

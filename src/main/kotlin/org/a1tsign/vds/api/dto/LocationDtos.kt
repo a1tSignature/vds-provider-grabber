@@ -3,6 +3,7 @@ package org.a1tsign.vds.api.dto
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 import org.a1tsign.vds.domain.Location
+import org.a1tsign.vds.domain.RowOrigin
 import java.math.BigDecimal
 import java.time.Instant
 
@@ -14,6 +15,8 @@ data class LocationWriteRequest(
     val datacenterName: String? = null,
     @Contextual val latitude: BigDecimal? = null,
     @Contextual val longitude: BigDecimal? = null,
+    /** `HUMAN` (default) or `AUTOMATIC`; see [org.a1tsign.vds.domain.WriteMode]. */
+    val writeMode: String? = null,
 )
 
 @Serializable
@@ -28,6 +31,7 @@ data class LocationDto(
     @Contextual val longitude: BigDecimal?,
     @Contextual val createdAt: Instant,
     @Contextual val updatedAt: Instant,
+    val origin: RowOrigin,
 )
 
-fun Location.toDto() = LocationDto(id, providerId, countryCode, region, city, datacenterName, latitude, longitude, createdAt, updatedAt)
+fun Location.toDto() = LocationDto(id, providerId, countryCode, region, city, datacenterName, latitude, longitude, createdAt, updatedAt, origin)

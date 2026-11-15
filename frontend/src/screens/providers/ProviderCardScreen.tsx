@@ -2,13 +2,16 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { useApiMutation, useApiQuery } from "../../api/hooks";
 import type { ProviderDetailDto } from "../../api/types";
+import { OriginBadge } from "../../components/OriginBadge";
 import { PriceDates } from "../../components/PriceDates";
 import { ErrorView, Loading } from "../../components/StateViews";
 import { SystemStatusBadge } from "../../components/SystemStatusBadge";
+import { LEGAL_FIELD, originMarker } from "../../domain/provenanceLabels";
 import { DestructiveAction } from "../../forms/DestructiveAction";
 import { useCanEdit } from "../../forms/FormParts";
 import { formatDateTime, formatMoney } from "../../lib/format";
 import { LegalInfoEditor, LocationsEditor, PaymentMethodsEditor } from "./ProviderEditors";
+import { EnrichmentStatusLine, LegalFieldValue, ValueFindingDetails } from "./ProvenanceParts";
 
 type Editing = "legal" | "payment" | "locations" | null;
 
@@ -38,7 +41,8 @@ export function ProviderCardScreen() {
   if (loading) return <Loading />;
   if (error !== undefined || data === undefined) return <ErrorView error={error} onRetry={refetch} />;
 
-  const { provider, legalInfo, paymentMethods, locations, tariffs } = data;
+  const { provider, legalInfo, paymentMethods, locations, tariffs, enrichment } = data;
+  const evidence = enrichment?.evidence;
 
   return (
     <div className="provider-card">
@@ -53,6 +57,7 @@ export function ProviderCardScreen() {
       </p>
       <p>Статус: {provider.status}</p>
       {provider.description !== undefined && <p>{provider.description}</p>}
+      <EnrichmentStatusLine enrichment={enrichment} />
       {editor && (
         <div className="editor-actions">
           <Link to={`/providers/${provider.id}/edit`}>Редактировать</Link>
@@ -80,9 +85,29 @@ export function ProviderCardScreen() {
         ) : (
           <dl>
             <dt>Юридическое название</dt>
-            <dd>{legalInfo.legalEntityName ?? "нет данных"}</dd>
+            <dd>
+              <LegalFieldValue
+                providerId={provider.id}
+                field={LEGAL_FIELD.legalEntityName}
+                value={legalInfo.legalEntityName}
+                origin={legalInfo.legalEntityNameOrigin}
+                finding={evidence?.legalEntityName}
+                canEdit={editor}
+                onChanged={refetch}
+              />
+            </dd>
             <dt>Страна регистрации</dt>
-            <dd>{legalInfo.registrationCountry ?? "нет данных"}</dd>
+            <dd>
+              <LegalFieldValue
+                providerId={provider.id}
+                field={LEGAL_FIELD.registrationCountry}
+                value={legalInfo.registrationCountry}
+                origin={legalInfo.registrationCountryOrigin}
+                finding={evidence?.registrationCountry}
+                canEdit={editor}
+                onChanged={refetch}
+              />
+            </dd>
             <dt>Регистрационный номер</dt>
             <dd>{legalInfo.registrationNumber ?? "нет данных"}</dd>
             <dt>Юридический адрес</dt>
@@ -123,7 +148,10 @@ export function ProviderCardScreen() {
             {paymentMethods.map((pm) => (
               <li key={pm.method}>
                 {pm.method}
-                {pm.note !== undefined && ` — ${pm.note}`}
+                {pm.note !== undefined && ` — ${pm.note}`} <OriginBadge origin={pm.origin} />
+                {originMarker(pm.origin) !== null && (
+                  <ValueFindingDetails finding={evidence?.paymentMethods.find((f) => f.value === pm.method)} />
+                )}
               </li>
             ))}
           </ul>
@@ -154,6 +182,12 @@ export function ProviderCardScreen() {
                     {" "}
                     [{location.latitude}, {location.longitude}]
                   </span>
+                )}{" "}
+                <OriginBadge origin={location.origin} />
+                {originMarker(location.origin) !== null && (
+                  <ValueFindingDetails
+                    finding={evidence?.locations.find((f) => f.value === location.countryCode)}
+                  />
                 )}
               </li>
             ))}

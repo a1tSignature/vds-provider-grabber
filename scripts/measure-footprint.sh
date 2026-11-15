@@ -28,6 +28,25 @@
 # the admin API, exactly as a production run would; re-running is idempotent (the second run
 # creates nothing).
 #
+# `--enrich` (vds-006) -- site enrichment on real saved provider pages, with the same image, JVM
+# flags, dev-seed dataset and 50-request load as `--crawler`, plus the real built SPA (`GET /`,
+# `/index.html` and every `/assets/...` file the served HTML references) on every API pass:
+#   0. baseline       no VDS_CRAWLER_* variable, same load                 the number below compares to
+#   1. peak           max RSS sampled every 200 ms over every enrichment run  <= 300 MB
+#   2. leak check     5 consecutive `enrichment=FORCE` runs in one JVM; after each, a 10 s settle,
+#                     then RSS; the lowest post-GC heap per run comes from `-Xlog:gc:stdout`
+#                     (measurement-only; the JRE image has no jcmd). Run 1 is warm-up. Fails when
+#                     RSS after the last run exceeds run 2's by > 15 MB, or the last run's heap floor
+#                     exceeds run 2's by > 8 MB with a non-decreasing floor from run 2 on.
+# The pages are the prototype capture in ${VDS_ENRICH_REPLAY_DIR:-~/.vds-real-run/enrich-prototype-run6}
+# (hostinger-com: 25 pages incl. a 1.6 MB one; nuxt-cloud: an SPA read from its JS chunks), served
+# by `scripts/enrich-replay-server.py` on the host. The container keeps each site's own host name
+# (`www.hostinger.com.localhost`, mapped to host-gateway), so the analysis sees the real brand.
+# Temporary declarative sources, generated per invocation, give both providers an adapter; their
+# one-row probe tariff only keeps the adapter (and so the pricing URL) alive. A peak or a leak
+# table is reported only when every run enriched both providers with SUCCESS and the catalogue
+# holds Hostinger's entity name and at least one nuxt.cloud payment method; otherwise "not measured".
+#
 # Measure, do not optimise: a profile over its limit is reported and exits non-zero. That is never
 # a reason to lower a JVM flag, drop a dependency, trim the load or raise the limit -- it is the
 # trigger to reopen vault/06-decisions/vds-002-adr-01-in-process-crawler-module.md.
@@ -38,6 +57,8 @@
 #   - `src/main/resources/db/dev-seed.sql` applied against that empty, migrated catalogue
 #   - the fat jar built: `./gradlew shadowJar` (build/libs/*-all.jar)
 #   - `docker`, `curl`, `jq`, `python3` on the host; no other tool is used
+#   - `--enrich` only: the replay directory above, and a jar built WITH the frontend
+#     (`./gradlew shadowJar`, not `-PskipFrontend`)
 #
 # Only the RSS number measured via `ps -o rss=` is directly comparable to the budget: it is read
 # with `docker exec` inside the Linux `eclipse-temurin:21-jre` container regardless of the host
@@ -66,6 +87,17 @@ FIXTURE_PORT="18099"
 CRAWLER_USER="crawler-footprint"
 CRAWLER_PASSWORD="Footprint-Crawler-2026!"
 
+# --- the --enrich gate (vds-006) ---
+ENRICH_PEAK_LIMIT_MB="300"
+ENRICH_RUNS="5"
+ENRICH_SETTLE_SECONDS="10"
+ENRICH_RUN_TIMEOUT_SECONDS="900"
+ENRICH_HEAP_GROWTH_LIMIT_MB="8"
+ENRICH_RSS_GROWTH_LIMIT_MB="15"
+ENRICH_REPLAY_DIR="${VDS_ENRICH_REPLAY_DIR:-$HOME/.vds-real-run/enrich-prototype-run6}"
+# slug:pricing path:host port
+ENRICH_SITES=("hostinger-com:/vps-hosting:18101" "nuxt-cloud:/ru/virtual-servers:18102")
+
 JVM_FLAGS=(
   -Xmx192m
   -XX:MaxMetaspaceSize=128m
@@ -91,8 +123,11 @@ case "${1:-}" in
   --crawler)
     PROFILE="crawler"
     ;;
+  --enrich)
+    PROFILE="enrich"
+    ;;
   *)
-    echo "usage: $(basename "$0") [--crawler]" >&2
+    echo "usage: $(basename "$0") [--crawler | --enrich]" >&2
     exit 2
     ;;
 esac
@@ -121,6 +156,9 @@ DB_PASSWORD="${VDS_DB_PASSWORD:-vds}"
 
 CID=""
 FIXTURE_PID=""
+REPLAY_PIDS=()
+ENRICH_TMP=""
+EXTRA_JVM_FLAGS=()
 
 # `wait` reaps the killed python3 job inside this redirection, so bash does not print its
 # "Terminated: 15 python3 - ... <<PYTHON" job notice -- which would dump the whole heredoc into
@@ -132,11 +170,23 @@ stop_fixture_server() {
   fi
 }
 
+stop_replay_servers() {
+  local pid
+  for pid in ${REPLAY_PIDS[@]+"${REPLAY_PIDS[@]}"}; do
+    { kill "$pid" && wait "$pid"; } >/dev/null 2>&1 || true
+  done
+  REPLAY_PIDS=()
+}
+
 cleanup() {
   if [[ -n "$CID" ]]; then
     docker rm -f "$CID" >/dev/null 2>&1 || true
   fi
   stop_fixture_server
+  stop_replay_servers
+  if [[ -n "$ENRICH_TMP" ]]; then
+    rm -rf "$ENRICH_TMP"
+  fi
 }
 trap cleanup EXIT
 
@@ -177,7 +227,7 @@ start_service() {
     -p "${HOST_PORT}:8080" \
     -v "$(pwd)/${JAR_PATH}:/app/app.jar:ro" \
     "$JAVA_IMAGE" \
-    java "${JVM_FLAGS[@]}" -jar /app/app.jar)"
+    java "${JVM_FLAGS[@]}" ${EXTRA_JVM_FLAGS[@]+"${EXTRA_JVM_FLAGS[@]}"} -jar /app/app.jar)"
 
   deadline_ms=$((start_ms + COLD_START_BUDGET_SECONDS * 1000 + 5000)) # small grace margin before giving up entirely
   while [[ "$(now_ms)" -lt "$deadline_ms" ]]; do
@@ -418,15 +468,18 @@ crawl_run_status() {
   curl -fsS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/v1/admin/crawl/runs/$1" 2>/dev/null | jq -r '.status // empty'
 }
 
-# Triggers one run and samples RSS every $CRAWLER_PEAK_SAMPLE_SECONDS until the run is terminal.
-# Sets PEAK_RSS_KB, PEAK_RSS_MB, PEAK_SAMPLES and RUN_ID.
+# Triggers one run (body $1, default `{"dryRun":false}`) and samples RSS every
+# $CRAWLER_PEAK_SAMPLE_SECONDS until the run is terminal or $2 seconds (default
+# $CRAWLER_RUN_TIMEOUT_SECONDS) pass. Sets PEAK_RSS_KB, PEAK_RSS_MB, PEAK_SAMPLES and RUN_ID.
 measure_peak_during_run() {
+  local default_body='{"dryRun":false}'
+  local body="${1:-$default_body}" timeout_seconds="${2:-$CRAWLER_RUN_TIMEOUT_SECONDS}"
   local trigger_response rss status deadline_ms
   # An empty-ish body falls back to VDS_CRAWLER_ADAPTERS, i.e. the operator's own selection.
   trigger_response="$(curl -fsS -X POST "${BASE_URL}/api/v1/admin/crawl/run" \
     -H "Authorization: Bearer ${TOKEN}" \
     -H 'Content-Type: application/json' \
-    -d '{"dryRun":false}')"
+    -d "$body")"
   RUN_ID="$(printf '%s' "$trigger_response" | jq -r '.runId // empty')"
   if [[ -z "$RUN_ID" ]]; then
     echo "ERROR: POST /api/v1/admin/crawl/run did not return a runId. Response: $trigger_response" >&2
@@ -436,7 +489,7 @@ measure_peak_during_run() {
 
   PEAK_RSS_KB=0
   PEAK_SAMPLES=0
-  deadline_ms=$(( $(now_ms) + CRAWLER_RUN_TIMEOUT_SECONDS * 1000 ))
+  deadline_ms=$(( $(now_ms) + timeout_seconds * 1000 ))
   while :; do
     rss="$(docker exec "$CID" sh -c "ps -o rss= -p 1" 2>/dev/null | tr -d ' ' || true)"
     if [[ -n "$rss" ]]; then
@@ -453,7 +506,7 @@ measure_peak_during_run() {
       break
     fi
     if [[ "$(now_ms)" -ge "$deadline_ms" ]]; then
-      echo "ERROR: crawl run ${RUN_ID} did not reach a terminal status within ${CRAWLER_RUN_TIMEOUT_SECONDS}s." >&2
+      echo "ERROR: crawl run ${RUN_ID} did not reach a terminal status within ${timeout_seconds}s." >&2
       exit 1
     fi
     sleep "$CRAWLER_PEAK_SAMPLE_SECONDS"
@@ -578,11 +631,297 @@ profile_crawler() {
   fi
 }
 
+# --- --enrich ---------------------------------------------------------------------------------
+
+# Refuses before anything starts: without the real capture there is nothing honest to measure, and
+# a jar without the SPA would leave the frontend out of the load.
+check_enrich_prerequisites() {
+  local site slug
+  if [[ ! -f "${ENRICH_REPLAY_DIR}/results.json" ]]; then
+    echo "ERROR: no saved prototype run at ${ENRICH_REPLAY_DIR} (results.json missing). Restore the capture or set" >&2
+    echo "       VDS_ENRICH_REPLAY_DIR; this profile measures real pages only and has no synthetic fallback." >&2
+    exit 1
+  fi
+  for site in "${ENRICH_SITES[@]}"; do
+    slug="${site%%:*}"
+    if [[ ! -d "${ENRICH_REPLAY_DIR}/pages/${slug}" ]]; then
+      echo "ERROR: ${ENRICH_REPLAY_DIR}/pages/${slug} is missing; this profile measures real pages only." >&2
+      exit 1
+    fi
+  done
+  if ! python3 -I -c 'import sys, zipfile; sys.exit(0 if "static/index.html" in zipfile.ZipFile(sys.argv[1]).namelist() else 1)' "$JAR_PATH"; then
+    echo "ERROR: ${JAR_PATH} carries no static/index.html -- build it with the frontend ('./gradlew shadowJar', not -PskipFrontend)." >&2
+    exit 1
+  fi
+}
+
+# One replay server per site on its own host port, reachable from the container (host-gateway).
+# Sets REPLAY_PIDS and ENRICH_HOSTS (one `--add-host` argument pair per site) and fills
+# ENRICH_ORIGINS[slug-index] with the origin each server serves.
+start_replay_servers() {
+  local site slug port log origin deadline_ms
+  ENRICH_HOSTS=()
+  ENRICH_ORIGINS=()
+  for site in "${ENRICH_SITES[@]}"; do
+    slug="${site%%:*}"
+    port="${site##*:}"
+    log="${ENRICH_TMP}/replay-${slug}.log"
+    python3 -I scripts/enrich-replay-server.py --run-dir "$ENRICH_REPLAY_DIR" --slug "$slug" --port "$port" --listen-all \
+      >"$log" 2>&1 &
+    REPLAY_PIDS+=($!)
+    origin=""
+    deadline_ms=$(( $(now_ms) + 10000 ))
+    while [[ "$(now_ms)" -lt "$deadline_ms" ]]; do
+      origin="$(sed -n 's/^replaying .* at \(http:[^ ]*\)$/\1/p' "$log" | head -n1)"
+      if [[ -n "$origin" && "$(curl -fsS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/robots.txt" 2>/dev/null || true)" == "200" ]]; then
+        break
+      fi
+      origin=""
+      sleep 0.1
+    done
+    if [[ -z "$origin" ]]; then
+      echo "ERROR: the replay server for ${slug} did not come up on port ${port}:" >&2
+      cat "$log" >&2
+      exit 1
+    fi
+    ENRICH_ORIGINS+=("$origin")
+    ENRICH_HOSTS+=(--add-host="$(printf '%s' "$origin" | sed 's|^http://\([^:/]*\).*|\1|'):host-gateway")
+    echo "  replay: ${slug} at ${origin} (host port ${port})"
+  done
+}
+
+# Declarative sources pointing at the replay origins. The probe tariff reads a number out of the
+# viewport meta that both captured pricing pages carry; it only keeps the adapter alive.
+write_enrich_sources() {
+  local i site slug path
+  mkdir -p "${ENRICH_TMP}/sources"
+  for i in "${!ENRICH_SITES[@]}"; do
+    site="${ENRICH_SITES[$i]}"
+    slug="${site%%:*}"
+    path="${site#*:}"
+    path="${path%:*}"
+    python3 -I - "${ENRICH_TMP}/sources/${slug}.json" "$slug" "${ENRICH_ORIGINS[$i]}" "$path" <<'PYTHON'
+import json, sys
+target, slug, origin, path = sys.argv[1:]
+probe = {"value": "probe"}
+source = {
+    "schemaVersion": 1, "id": slug, "providerSlug": slug, "acknowledgeSlugMismatch": True,
+    "baseUrl": origin, "pagePath": path, "enabled": True,
+    "provider": {"name": {"value": slug}, "websiteUrl": {"value": origin + "/"}},
+    "tariffs": {
+        "rootSelector": "html", "rowSelector": "head", "externalId": probe, "name": probe,
+        "vcpuCount": {"value": "1"}, "ramMb": {"value": "1024"}, "diskGb": {"value": "10"},
+        "ipv4Count": {"value": "1"}, "diskType": {"value": "SSD"}, "virtualization": {"value": "KVM"},
+        "prices": [{"billingPeriod": "MONTHLY", "selector": "meta[name=viewport]", "attr": "content",
+                    "currency": {"fixed": "EUR"}}],
+    },
+}
+with open(target, "w", encoding="utf-8") as handle:
+    json.dump(source, handle)
+PYTHON
+  done
+}
+
+# Each replayed provider must exist before the run; 409 means an earlier invocation created it.
+create_enrich_providers() {
+  local i slug code
+  for i in "${!ENRICH_SITES[@]}"; do
+    slug="${ENRICH_SITES[$i]%%:*}"
+    code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE_URL}/api/v1/providers" \
+      -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
+      -d "{\"slug\":\"${slug}\",\"name\":\"${slug}\",\"websiteUrl\":\"${ENRICH_ORIGINS[$i]}/\",\"status\":\"ACTIVE\"}")"
+    if [[ "$code" != "201" && "$code" != "409" ]]; then
+      echo "ERROR: creating provider ${slug} returned ${code}." >&2
+      exit 1
+    fi
+  done
+}
+
+# The built SPA as a browser loads it: `/`, `/index.html` and every `/assets/...` file the served
+# HTML references, read from the HTML itself so a new build needs no edit here. Run 20 times, like
+# the API passes. Every request must return 200.
+run_frontend_load() {
+  local html assets asset i code ok=0 total=0
+  html="$(curl -fsS "${BASE_URL}/")"
+  assets=($(printf '%s' "$html" | python3 -I -c 'import re, sys; print("\n".join(dict.fromkeys(re.findall(r"(?:src|href)=\"(/assets/[^\"]+)\"", sys.stdin.read()))))'))
+  if [[ "${#assets[@]}" -eq 0 ]]; then
+    echo "ERROR: the served index.html references no /assets/ file -- the SPA is not part of this jar's load." >&2
+    exit 1
+  fi
+  for i in $(seq 1 20); do
+    for asset in / /index.html "${assets[@]}"; do
+      code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}${asset}")"
+      total=$((total + 1))
+      [[ "$code" == "200" ]] && ok=$((ok + 1))
+    done
+  done
+  echo "Frontend load: ${total} requests (20 x /, /index.html and ${#assets[@]} assets), ${ok}/${total} returned 200"
+  if [[ "$ok" -ne "$total" ]]; then
+    echo "ERROR: not every frontend request returned 200." >&2
+    exit 1
+  fi
+}
+
+# Exits "not measured" unless both replayed providers were enriched with SUCCESS in run $RUN_ID.
+verify_enrichment_run() {
+  local summary outcomes
+  summary="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/v1/admin/crawl/runs/${RUN_ID}")"
+  outcomes="$(printf '%s' "$summary" | jq -r '[.adapters[] | "\(.adapterId)=\(.enrichment.outcome // "none")"] | join(" ")')"
+  RUN_OUTCOMES="$outcomes"
+  local i slug
+  for i in "${!ENRICH_SITES[@]}"; do
+    slug="${ENRICH_SITES[$i]%%:*}"
+    if [[ " $outcomes " != *" ${slug}=SUCCESS "* ]]; then
+      echo "ERROR: run ${RUN_ID} did not enrich ${slug} with SUCCESS (${outcomes}): $(printf '%s' "$summary" | jq -c '[.adapters[] | {adapterId, status, enrichment}]')" >&2
+      echo "NOT MEASURED: a number is reported only for a run that enriched every replayed provider." >&2
+      exit 1
+    fi
+  done
+}
+
+# The values the replay must produce, read back from the catalogue.
+verify_enrichment_values() {
+  local id entity methods
+  id="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/v1/providers?q=hostinger-com" | jq -r '.content[] | select(.slug == "hostinger-com") | .id')"
+  entity="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/v1/providers/${id}" | jq -r '.legalInfo.legalEntityName // empty')"
+  id="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/v1/providers?q=nuxt-cloud" | jq -r '.content[] | select(.slug == "nuxt-cloud") | .id')"
+  methods="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/v1/providers/${id}" | jq -r '[.paymentMethods[].method] | join(",")')"
+  echo "  catalogue: hostinger-com entity='${entity}', nuxt-cloud payment methods=${methods:-none}"
+  if [[ -z "$entity" || -z "$methods" ]]; then
+    echo "NOT MEASURED: the catalogue lacks the expected enrichment values (Hostinger entity, nuxt.cloud payment methods)." >&2
+    exit 1
+  fi
+}
+
+# Lowest post-GC heap occupancy (MB, one decimal) in container log lines after line $1, or empty.
+post_gc_floor_mb() {
+  docker logs "$CID" 2>&1 | tail -n +"$(( $1 + 1 ))" | python3 -I -c '
+import re, sys
+units = {"K": 1 / 1024, "M": 1, "G": 1024}
+floors = [int(m.group(1)) * units[m.group(2)]
+          for m in (re.search(r"\[gc\s*\].*GC\(\d+\) Pause .*?->(\d+)([KMG])\(", line) for line in sys.stdin) if m]
+print(f"{min(floors):.1f}" if floors else "")'
+}
+
+profile_enrich() {
+  local baseline_rss_mb baseline_cold_ms enrich_cold_ms run log_start floor rss_after
+  local -a floors=() rss_values=() peaks=() outcomes=() durations=()
+  local overall_peak_kb=0 start_ms
+
+  check_enrich_prerequisites
+  ENRICH_TMP="$(mktemp -d)"
+
+  echo "=== Baseline: no VDS_CRAWLER_* variable, API + frontend load ==="
+  SERVICE_DOCKER_ARGS=()
+  start_service
+  baseline_cold_ms="$COLD_START_MS"
+  run_load
+  run_frontend_load
+  baseline_rss_mb="$(( $(read_rss_kb) / 1024 ))"
+  stop_service
+  echo "Baseline RSS: ${baseline_rss_mb} MB"
+  echo
+
+  echo "=== Enrichment: ${ENRICH_RUNS} consecutive FORCE runs over real saved pages in one JVM ==="
+  start_replay_servers
+  write_enrich_sources
+  local adapters="" site
+  for site in "${ENRICH_SITES[@]}"; do
+    adapters+="${adapters:+,}${site%%:*}"
+  done
+  SERVICE_DOCKER_ARGS=(
+    ${ENRICH_HOSTS[@]+"${ENRICH_HOSTS[@]}"}
+    -v "${ENRICH_TMP}/sources:/sources:ro"
+    -e VDS_DISCOVERY_SOURCES_DIR=/sources
+    -e VDS_CRAWLER_ENABLED=true
+    -e VDS_CRAWLER_USERNAME="${CRAWLER_USER}"
+    -e VDS_CRAWLER_PASSWORD="${CRAWLER_PASSWORD}"
+    -e VDS_CRAWLER_ADAPTERS="${adapters}"
+  )
+  EXTRA_JVM_FLAGS=(-Xlog:gc:stdout)
+  start_service
+  enrich_cold_ms="$COLD_START_MS"
+  run_load
+  run_frontend_load
+  create_service_account
+  create_enrich_providers
+
+  for run in $(seq 1 "$ENRICH_RUNS"); do
+    log_start="$(docker logs "$CID" 2>&1 | wc -l | tr -d ' ')"
+    start_ms="$(now_ms)"
+    measure_peak_during_run '{"dryRun":false,"enrichment":"FORCE"}' "$ENRICH_RUN_TIMEOUT_SECONDS"
+    durations+=("$(( ($(now_ms) - start_ms) / 1000 ))")
+    verify_enrichment_run
+    outcomes+=("$RUN_OUTCOMES")
+    [[ "$run" -eq 1 ]] && verify_enrichment_values
+    (( PEAK_RSS_KB > overall_peak_kb )) && overall_peak_kb="$PEAK_RSS_KB"
+    peaks+=("$PEAK_RSS_MB")
+    run_load
+    run_frontend_load
+    sleep "$ENRICH_SETTLE_SECONDS"
+    rss_after="$(( $(read_rss_kb) / 1024 ))"
+    floor="$(post_gc_floor_mb "$log_start")"
+    if [[ -z "$floor" ]]; then
+      echo "NOT MEASURED: no GC was logged during run ${run}, so its heap floor is unknown." >&2
+      exit 1
+    fi
+    floors+=("$floor")
+    rss_values+=("$rss_after")
+    printf '  run %d: peak %d MB, RSS after settle %d MB, post-GC heap floor %s MB, %s\n' \
+      "$run" "$PEAK_RSS_MB" "$rss_after" "$floor" "$RUN_OUTCOMES"
+  done
+  stop_service
+  stop_replay_servers
+
+  local peak_mb=$(( overall_peak_kb / 1024 )) last=$(( ENRICH_RUNS - 1 ))
+  local heap_growth rss_growth heap_trend
+  heap_growth="$(python3 -I -c "print(f'{${floors[$last]} - ${floors[1]}:.1f}')")"
+  rss_growth=$(( rss_values[last] - rss_values[1] ))
+  heap_trend="$(python3 -I -c "
+f = [$(IFS=,; echo "${floors[*]}")][1:]
+print('non-decreasing' if all(b >= a for a, b in zip(f, f[1:])) else 'not monotonic')")"
+
+  echo
+  echo "=== Results (RSS inside ${JAVA_IMAGE}, flags: ${JVM_FLAGS[*]} + ${EXTRA_JVM_FLAGS[*]} for the enrichment JVM) ==="
+  printf 'baseline (API + SPA load) : RSS %4d MB, cold start %5d ms\n' "$baseline_rss_mb" "$baseline_cold_ms"
+  printf 'enrichment JVM            : cold start %5d ms\n' "$enrich_cold_ms"
+  printf 'peak over %d runs          : RSS %4d MB (sampled every %ss), delta %+d MB vs baseline, limit <= %s MB\n' \
+    "$ENRICH_RUNS" "$peak_mb" "$CRAWLER_PEAK_SAMPLE_SECONDS" "$(( peak_mb - baseline_rss_mb ))" "$ENRICH_PEAK_LIMIT_MB"
+  echo "leak table (run 1 is warm-up):"
+  printf '  %-4s %8s %14s %16s %9s\n' run "peak MB" "RSS settled MB" "post-GC floor MB" "seconds"
+  for run in $(seq 0 "$last"); do
+    printf '  %-4d %8d %14d %16s %9d\n' "$((run + 1))" "${peaks[$run]}" "${rss_values[$run]}" "${floors[$run]}" "${durations[$run]}"
+  done
+  printf 'heap floor run %d vs run 2: %+.1f MB (%s), limit +%s MB with a non-decreasing floor\n' \
+    "$ENRICH_RUNS" "$heap_growth" "$heap_trend" "$ENRICH_HEAP_GROWTH_LIMIT_MB"
+  printf 'RSS run %d vs run 2: %+d MB, limit +%s MB\n' "$ENRICH_RUNS" "$rss_growth" "$ENRICH_RSS_GROWTH_LIMIT_MB"
+  jar_line
+
+  EXIT_CODE=0
+  if (( peak_mb > ENRICH_PEAK_LIMIT_MB )); then
+    echo "FAIL: peak RSS during enrichment is ${peak_mb}MB, above the ${ENRICH_PEAK_LIMIT_MB}MB limit." >&2
+    EXIT_CODE=1
+  fi
+  if [[ "$heap_trend" == "non-decreasing" ]] && python3 -I -c "import sys; sys.exit(0 if ${heap_growth} > ${ENRICH_HEAP_GROWTH_LIMIT_MB} else 1)"; then
+    echo "FAIL: the post-GC heap floor grew ${heap_growth}MB from run 2 to run ${ENRICH_RUNS} and never went down: a leak." >&2
+    EXIT_CODE=1
+  fi
+  if (( rss_growth > ENRICH_RSS_GROWTH_LIMIT_MB )); then
+    echo "FAIL: RSS after run ${ENRICH_RUNS} is ${rss_growth}MB above RSS after run 2." >&2
+    EXIT_CODE=1
+  fi
+  if (( EXIT_CODE != 0 )); then
+    echo "STOP: an enrichment footprint limit was exceeded. Do NOT change JVM flags, limits, load or pages here --" >&2
+    echo "      report it; ADR vds-002-01 (in-process crawler) is reopened in favour of a separate process." >&2
+  fi
+}
+
 EXIT_CODE=0
 SERVICE_DOCKER_ARGS=()
 case "$PROFILE" in
   default) profile_default ;;
   crawler) profile_crawler ;;
+  enrich) profile_enrich ;;
 esac
 
 exit "$EXIT_CODE"

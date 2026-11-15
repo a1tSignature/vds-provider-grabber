@@ -61,6 +61,12 @@ internal object EnrichmentRules {
     val LOCALE_SEGMENT: Pattern =
         rx("^/((?:${LOCALES.joinToString("|")})(?:[-_][a-z]{2,4})?|asia|world|latam)(?=/|$)", ignoreCase = true)
 
+    /** A per-locale dictionary chunk such as `ru.f11cd859.js`, matched on the lower-cased file name. */
+    val LOCALE_CHUNK: Pattern = rx("^(?:${LOCALES.joinToString("|")})\\.\\w{1,64}+\\.js$")
+    const val PRIMARY_LOCALE_CHUNK_BONUS = 10
+    val CHUNK_NAME_HINT: Pattern = rx("layout|footer|index|server|pricing|tariff")
+    const val CHUNK_NAME_HINT_WEIGHT = 2
+
 
     val ISO2: Set<String> = (
         "ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi bj bl bm bn bo bq br bs bt bv bw by bz ca cc " +

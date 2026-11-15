@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import { useApiQuery } from "../../api/hooks";
 import type { PageResponse, ProviderSummaryDto } from "../../api/types";
+import { OriginBadge } from "../../components/OriginBadge";
 import { Pagination } from "../../components/Pagination";
 import { Empty, ErrorView, Loading } from "../../components/StateViews";
 import { DictionarySelect } from "../../dictionaries/DictionarySelect";
@@ -186,6 +187,7 @@ export function ProvidersListScreen() {
                     </button>
                   </th>
                   <th>Страна рег.</th>
+                  <th>Юрлицо</th>
                   <th>Способы оплаты</th>
                   <th>Страны размещения</th>
                   <th className="num">Активных тарифов</th>
@@ -207,7 +209,13 @@ export function ProvidersListScreen() {
                       {provider.minMonthlyPriceUsd !== undefined ? `$${formatMoney(provider.minMonthlyPriceUsd)}/мес` : "—"}
                     </td>
                     <td>{provider.status}</td>
-                    <td>{provider.registrationCountry ?? "—"}</td>
+                    <td>
+                      {provider.registrationCountry ?? "—"}{" "}
+                      <OriginBadge origin={provider.registrationCountryOrigin} compact />
+                    </td>
+                    <td>
+                      {provider.legalEntityName ?? "—"} <OriginBadge origin={provider.legalEntityNameOrigin} compact />
+                    </td>
                     <td>
                       <span className="pm-icons">
                         {provider.paymentMethods.map((method) => (

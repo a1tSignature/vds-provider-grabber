@@ -2,7 +2,7 @@
 """Serves one site saved by the enrichment prototype run on a local port, so enrichment can be
 replayed deterministically against real pages without touching the live site.
 
-Usage: python3 -I scripts/enrich-replay-server.py --run-dir ~/.vds-real-run/enrich-prototype-run6 --slug aeza-net [--port 8765]
+Usage: python3 -I scripts/enrich-replay-server.py --run-dir ~/.vds-real-run/enrich-prototype-run6 --slug aeza-net [--port 8765] [--listen-all]
 
 The served origin is `http://<original host>.localhost:<port>` (e.g. `http://aeza.net.localhost:8765`),
 which resolves to loopback and keeps the brand the heuristics read from the domain. Only a ccTLD
@@ -81,6 +81,8 @@ class LoopbackServer(ThreadingHTTPServer):
     def server_bind(self):
         # HTTPServer.server_bind resolves the bind address with getfqdn(), a reverse DNS lookup
         # that can stall for tens of seconds; the name is not needed here.
+        if self.address_family == socket.AF_INET6:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
         socketserver.TCPServer.server_bind(self)
         self.server_name, self.server_port = "localhost", self.server_address[1]
 
@@ -90,17 +92,22 @@ def main():
     parser.add_argument("--run-dir", required=True, help="the saved prototype run (results.json + pages/)")
     parser.add_argument("--slug", required=True, help="the site to serve, e.g. aeza-net")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--listen-all", action="store_true",
+        help="listen on every interface instead of loopback, so a container can reach the site through host-gateway",
+    )
     args = parser.parse_args()
 
     run_dir = os.path.expanduser(args.run_dir)
     routes, hosts = load_site(run_dir, args.slug)
     origin = f"http://{hosts[0]}.localhost:{args.port}"
     handler = make_handler(routes, hosts, origin)
-    # Loopback only: the pages are third-party content. `*.localhost` may resolve to ::1 or
+    # Loopback by default: the pages are third-party content. `*.localhost` may resolve to ::1 or
     # 127.0.0.1, so both get a listener.
-    ipv4 = LoopbackServer(("127.0.0.1", args.port), handler)
+    ipv4_address, ipv6_address = ("0.0.0.0", "::") if args.listen_all else ("127.0.0.1", "::1")
+    ipv4 = LoopbackServer((ipv4_address, args.port), handler)
     ipv6_class = type("LoopbackServer6", (LoopbackServer,), {"address_family": socket.AF_INET6})
-    ipv6 = ipv6_class(("::1", args.port), handler)
+    ipv6 = ipv6_class((ipv6_address, args.port), handler)
     threading.Thread(target=ipv6.serve_forever, daemon=True).start()
     print(f"replaying {args.slug} ({len(routes)} pages) at {origin}", flush=True)
     try:

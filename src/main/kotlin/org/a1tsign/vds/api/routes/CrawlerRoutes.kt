@@ -23,6 +23,7 @@ import org.a1tsign.vds.config.CrawlerConfig
 import org.a1tsign.vds.crawler.AdapterRegistry
 import org.a1tsign.vds.crawler.AdapterSelection
 import org.a1tsign.vds.crawler.CrawlerRunner
+import org.a1tsign.vds.crawler.enrich.EnrichmentMode
 import org.a1tsign.vds.domain.Role
 import org.slf4j.LoggerFactory
 import java.util.UUID
@@ -58,12 +59,17 @@ fun Route.crawlerRoutes(
             }
         }
         val ratio = req.maxOutOfStockRatio?.let { v.validateRatio("maxOutOfStockRatio", it) }
+        val enrichment = req.enrichment?.let { v.enumValue("enrichment", it, EnrichmentMode.entries.toTypedArray()) }
         v.throwIfInvalid()
 
         // Shares the slot with CrawlScheduler: 409 means a run is in progress; runs are never queued.
         val runId = activeRunner.tryReserve(req.dryRun ?: crawlerConfig.dryRunDefault)
             ?: throw ConflictException("A crawl run is already in progress")
-        val selection = AdapterSelection(adapterIds = req.adapterIds ?: crawlerConfig.adapters, maxOutOfStockRatio = ratio)
+        val selection = AdapterSelection(
+            adapterIds = req.adapterIds ?: crawlerConfig.adapters,
+            maxOutOfStockRatio = ratio,
+            enrichment = enrichment ?: EnrichmentMode.DUE,
+        )
         // The application scope is cancelled on shutdown, so the run cannot outlive the app.
         // runReserved already releases the slot on failure; the catch only sends unexpected errors
         // to our logger instead of the default uncaught-exception handler.

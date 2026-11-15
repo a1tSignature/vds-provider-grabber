@@ -48,4 +48,7 @@ class ApiCrawlWriter(private val client: CatalogApiClient) : CrawlWriter {
     override suspend fun promoteProviderToConfigured(providerId: Long) {
         client.setSystemStatus(providerId, SystemStatus.CONFIGURED.name)
     }
+
+    override suspend fun submitEnrichment(providerId: Long, request: EnrichmentApplyWrite, current: CatalogProviderDetail): Int =
+        client.putEnrichment(providerId, request).valuesApplied
 }

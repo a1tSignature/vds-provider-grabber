@@ -10,6 +10,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.a1tsign.vds.config.CrawlerConfig
+import org.a1tsign.vds.crawler.enrich.EnrichmentMode
 import org.slf4j.LoggerFactory
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
@@ -153,7 +154,7 @@ class CrawlScheduler private constructor(
         fun create(
             config: CrawlerConfig,
             runner: CrawlerRunner,
-            selection: AdapterSelection = AdapterSelection(config.adapters),
+            selection: AdapterSelection = AdapterSelection(config.adapters, enrichment = EnrichmentMode.DUE),
             dryRun: Boolean = config.dryRunDefault,
             intervalMs: Long = TimeUnit.HOURS.toMillis(config.intervalHours),
             initialDelayMs: Long = TimeUnit.MINUTES.toMillis(config.initialDelayMinutes),

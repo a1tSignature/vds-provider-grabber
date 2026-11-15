@@ -1,6 +1,8 @@
 package org.a1tsign.vds.crawler.support
 
+import org.a1tsign.vds.crawler.write.CatalogProviderDetail
 import org.a1tsign.vds.crawler.write.CrawlWriter
+import org.a1tsign.vds.crawler.write.EnrichmentApplyWrite
 import org.a1tsign.vds.crawler.write.LegalInfoWrite
 import org.a1tsign.vds.crawler.write.LocationWrite
 import org.a1tsign.vds.crawler.write.PaymentMethodWrite
@@ -38,6 +40,7 @@ class RecordingCrawlWriter(
 
         /** `PUT …/system-status {"systemStatus":"CONFIGURED"}` -- how "a dry run promotes nothing" is proved. */
         data class PromoteProvider(val providerId: Long) : Mutation
+        data class SubmitEnrichment(val providerId: Long, val request: EnrichmentApplyWrite) : Mutation
     }
 
     private val recorded = CopyOnWriteArrayList<Mutation>()
@@ -81,6 +84,11 @@ class RecordingCrawlWriter(
 
     override suspend fun promoteProviderToConfigured(providerId: Long) =
         record(Mutation.PromoteProvider(providerId))
+
+    override suspend fun submitEnrichment(providerId: Long, request: EnrichmentApplyWrite, current: CatalogProviderDetail): Int {
+        record(Mutation.SubmitEnrichment(providerId, request))
+        return 0
+    }
 
     private fun record(mutation: Mutation) {
         recorded += mutation

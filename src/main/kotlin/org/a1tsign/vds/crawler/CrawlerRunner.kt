@@ -4,17 +4,22 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import org.a1tsign.vds.config.ConfigurationException
 import org.a1tsign.vds.config.CrawlerConfig
+import org.a1tsign.vds.crawler.enrich.EnrichmentMode
+import org.a1tsign.vds.crawler.enrich.EnrichmentStep
 import org.a1tsign.vds.crawler.fetch.FetchException
 import org.a1tsign.vds.crawler.fetch.PageFetcher
 import org.a1tsign.vds.crawler.model.AdapterRunResult
 import org.a1tsign.vds.crawler.model.AdapterRunStatus
 import org.a1tsign.vds.crawler.model.CrawlRunSummary
+import org.a1tsign.vds.crawler.model.EnrichmentReport
 import org.a1tsign.vds.crawler.model.FailureReason
+import org.a1tsign.vds.crawler.model.ProviderSnapshot
 import org.a1tsign.vds.crawler.model.RunStatus
 import org.a1tsign.vds.crawler.write.CatalogApiException
 import org.a1tsign.vds.crawler.write.CrawlWriter
 import org.a1tsign.vds.crawler.write.ReconcileOutcome
 import org.a1tsign.vds.crawler.write.Reconciler
+import org.a1tsign.vds.domain.EnrichmentOutcome
 import org.slf4j.LoggerFactory
 import java.math.BigDecimal
 import java.time.Clock
@@ -28,12 +33,14 @@ const val RUN_HISTORY_SIZE: Int = 20
 
 /**
  * What one run is asked to do: the adapter ids to run (**empty** = the registry's default-selectable
- * entries) and, optionally, a `maxOutOfStockRatio` that overrides the configured one for this run
- * only -- the operator's escape hatch for a genuine mass change (ADR-03).
+ * entries), optionally a `maxOutOfStockRatio` that overrides the configured one for this run
+ * only -- the operator's escape hatch for a genuine mass change (ADR-03) -- and how the enrichment
+ * step treats its cadence.
  */
 data class AdapterSelection(
     val adapterIds: List<String> = emptyList(),
     val maxOutOfStockRatio: BigDecimal? = null,
+    val enrichment: EnrichmentMode = EnrichmentMode.DUE,
 )
 
 /**
@@ -110,12 +117,16 @@ class CrawlerRunner(
     private val pagesFetched: () -> Long = { 0L },
     /** Defaults are the configured production budgets; parameters so a test needs no real minutes. */
     private val adapterTimeoutMs: Long = TimeUnit.MINUTES.toMillis(config.adapterTimeoutMinutes),
+    /** Per-adapter-id budgets that replace [adapterTimeoutMs] for those adapters only. */
+    private val adapterTimeoutOverridesMs: Map<String, Long> = emptyMap(),
     private val runTimeoutMs: Long = TimeUnit.MINUTES.toMillis(config.runTimeoutMinutes),
     /**
      * The process-wide run slot. Defaults to a private one, which is exactly the pre-vds-004
      * behaviour; `AppComponents` injects the instance it shares with `DiscoveryRunner`.
      */
     private val slot: RunSlot = RunSlot(),
+    /** The per-provider site enrichment after each reconcile; `null` while `VDS_ENRICH_ENABLED=false`. */
+    private val enrichment: EnrichmentStep? = null,
 ) {
 
     init {
@@ -203,10 +214,17 @@ class CrawlerRunner(
         var authFailed = false
         val completed = withTimeoutOrNull(runTimeoutMs) {
             for (adapter in adapters) {
-                val result = runAdapter(run, adapter, writer, ratio)
+                val (adapterResult, snapshot) = runAdapter(run, adapter, writer, ratio)
+                log(run, adapterResult)
+                if (adapterResult.failureReason == FailureReason.AUTH) {
+                    run.results += adapterResult
+                    authFailed = true
+                    break
+                }
+                val (result, stopRun) = enrich(run, adapter, writer, snapshot, adapterResult, selection.enrichment)
                 run.results += result
-                log(run, result)
-                if (result.failureReason == FailureReason.AUTH) {
+                logEnrichment(run, result)
+                if (stopRun) {
                     authFailed = true
                     break
                 }
@@ -254,7 +272,9 @@ class CrawlerRunner(
         adapter: ProviderAdapter,
         writer: CrawlWriter,
         ratio: BigDecimal,
-    ): AdapterRunResult {
+    ): Pair<AdapterRunResult, ProviderSnapshot?> {
+        var observed: ProviderSnapshot? = null
+        val timeoutMs = adapterTimeoutOverridesMs[adapter.id] ?: adapterTimeoutMs
         val startedNanos = System.nanoTime()
         val pagesBefore = pagesFetched()
         fun elapsedMs() = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos)
@@ -282,14 +302,14 @@ class CrawlerRunner(
             message = message,
         )
 
-        return try {
+        val result = try {
             // withTimeoutOrNull, not withTimeout: it returns null for **its own** expiry and
             // re-throws any other cancellation, which is the only sound way to tell "this adapter
             // ran out of time" (the run goes on) from "the run ran out of time or we are shutting
             // down" (record and re-throw). Both are a TimeoutCancellationException, so catching the
             // type cannot discriminate -- and treating the run's expiry as the adapter's would keep
             // the loop going through every remaining adapter inside a cancelled scope.
-            withTimeoutOrNull(adapterTimeoutMs) {
+            withTimeoutOrNull(timeoutMs) {
                 val snapshot = adapter.fetch(CrawlContext(fetcher, clock, run.runId, adapterConfig(adapter.id)))
                 val problems = validator.validate(adapter, snapshot)
                 if (problems.isNotEmpty()) {
@@ -302,6 +322,7 @@ class CrawlerRunner(
                         problems.toLogLine(),
                     )
                 }
+                observed = snapshot
                 val outcome = reconciler.reconcile(adapter, snapshot, writer, ratio)
                 result(outcome.status, outcome.failureReason, outcome.message, outcome)
                 // If the adapter budget expires while reconciler.reconcile(...) is suspended, this
@@ -310,7 +331,7 @@ class CrawlerRunner(
                 // made before the cut stay in the catalog. Not required by the task; the run's
                 // overall counters are therefore a lower bound on a TIMEOUT adapter, never wrong in
                 // the other direction (no write is ever double-counted or invented).
-            } ?: result(AdapterRunStatus.FAILED, FailureReason.TIMEOUT, "Timed out after ${adapterTimeoutMs}ms")
+            } ?: result(AdapterRunStatus.FAILED, FailureReason.TIMEOUT, "Timed out after ${timeoutMs}ms")
         } catch (robots: FetchException.RobotsDisallowed) {
             // Not a failure: the site told us not to, which is an answer, not a malfunction.
             result(AdapterRunStatus.SKIPPED, FailureReason.FETCH, robots.message)
@@ -335,6 +356,41 @@ class CrawlerRunner(
                 FailureReason.ADAPTER_ERROR,
                 "${failure.javaClass.simpleName}: ${failure.message}",
             )
+        }
+        return result to observed
+    }
+
+    /**
+     * The provider's enrichment step, isolated from its adapter: [adapterResult] gains only its
+     * `enrichment` block. The second value is `true` when the catalog rejected the service account,
+     * which stops the run exactly as an adapter's [FailureReason.AUTH] does.
+     */
+    private suspend fun enrich(
+        run: Active,
+        adapter: ProviderAdapter,
+        writer: CrawlWriter,
+        snapshot: ProviderSnapshot?,
+        adapterResult: AdapterRunResult,
+        mode: EnrichmentMode,
+    ): Pair<AdapterRunResult, Boolean> {
+        val step = enrichment
+            ?: return adapterResult.copy(enrichment = EnrichmentReport(EnrichmentOutcome.DISABLED, message = "VDS_ENRICH_ENABLED is false")) to false
+        return try {
+            val report = step.enrich(adapter.providerSlug, snapshot, writer, mode, remainingRunMs = runTimeoutMs - run.elapsedMs())
+            adapterResult.copy(enrichment = report) to false
+        } catch (unauthorized: CatalogApiException.Unauthorized) {
+            adapterResult.copy(enrichment = EnrichmentReport(EnrichmentOutcome.FAILED, message = unauthorized.message)) to true
+        } catch (cancellation: CancellationException) {
+            val cut = adapterResult.copy(
+                enrichment = EnrichmentReport(EnrichmentOutcome.TIMEOUT, message = "Cut short: the run was cancelled"),
+            )
+            run.results += cut
+            logEnrichment(run, cut)
+            throw cancellation
+        } catch (failure: Throwable) {
+            logger.debug("crawl run {} enrichment of {} failed", run.runId, adapter.providerSlug, failure)
+            val report = EnrichmentReport(EnrichmentOutcome.FAILED, message = "${failure.javaClass.simpleName}: ${failure.message}")
+            adapterResult.copy(enrichment = report) to false
         }
     }
 
@@ -392,6 +448,26 @@ class CrawlerRunner(
             AdapterRunStatus.SUCCESS -> logger.info(line, *arguments)
             AdapterRunStatus.SKIPPED -> logger.info(line, *arguments)
             AdapterRunStatus.PARTIAL, AdapterRunStatus.FAILED -> logger.warn(line, *arguments)
+        }
+    }
+
+    /** One line per provider for its enrichment step, separate from the adapter's line; never a page body. */
+    private fun logEnrichment(run: Active, result: AdapterRunResult) {
+        val report = result.enrichment ?: return
+        val line = "crawl run {} enrichment provider {} outcome={} durationMs={} pages={} valuesApplied={} message={}"
+        val arguments = arrayOf<Any?>(
+            run.runId,
+            result.providerSlug,
+            report.outcome,
+            report.durationMs,
+            report.pagesFetched,
+            report.valuesApplied,
+            report.message,
+        )
+        when (report.outcome) {
+            EnrichmentOutcome.FAILED, EnrichmentOutcome.TIMEOUT, EnrichmentOutcome.BLOCKED, EnrichmentOutcome.UNREACHABLE ->
+                logger.warn(line, *arguments)
+            else -> logger.info(line, *arguments)
         }
     }
 

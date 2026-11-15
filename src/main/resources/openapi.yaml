@@ -1990,6 +1990,13 @@ components:
           description: >-
             Decimal string in [0, 1], plain notation. Defaults to VDS_CRAWLER_MAX_OUT_OF_STOCK_RATIO
             when omitted.
+        enrichment:
+          type: string
+          enum: [DUE, FORCE, SKIP]
+          default: DUE
+          description: >-
+            Site enrichment after each adapter: DUE enriches providers whose last attempt is older
+            than VDS_ENRICH_INTERVAL_HOURS, FORCE ignores that cadence, SKIP enriches nothing.
 
     CrawlRunTriggerResponse:
       type: object
@@ -2018,6 +2025,23 @@ components:
           type: string
           enum: [VALIDATION, TIMEOUT, MASS_CHANGE_GUARD, FETCH, WRITE, AUTH, ADAPTER_ERROR]
         message: { type: string }
+        enrichment:
+          $ref: "#/components/schemas/EnrichmentReportDto"
+
+    EnrichmentReportDto:
+      type: object
+      description: >-
+        The provider's site enrichment step. Never changes the adapter's own status or counters.
+        Absent when the run stopped before reaching it.
+      required: [outcome, durationMs, pagesFetched, valuesApplied]
+      properties:
+        outcome: { $ref: "#/components/schemas/EnrichmentOutcome" }
+        durationMs: { type: integer, format: int64 }
+        pagesFetched: { type: integer }
+        valuesApplied:
+          type: integer
+          description: Fields and rows the catalog changed; in a dry run, the intended count (an approximation).
+        message: { type: string, description: One line, no page body. }
 
     CrawlRunSummaryDto:
       type: object

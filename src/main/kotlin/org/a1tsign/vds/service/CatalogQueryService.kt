@@ -58,12 +58,12 @@ class CatalogQueryService(
      * Returns `(totalElements, page content)` -- the caller (the route) builds the final
      * `PageResponse`, the same split [UserService.findPage] uses.
      *
-     * Not N+1: exactly seven SQL statements regardless of page size or sort field -- one
+     * Not N+1: exactly eight SQL statements regardless of page size or sort field -- one
      * id/page resolution (filters+order+limit/offset via [ProviderRepository.filteredPage], or
      * filters alone via [ProviderRepository.filteredIds] when sorting by `minMonthlyPriceUsd`,
      * because that value has no column to `ORDER BY`), one `minMonthlyPriceUsd` aggregate (raw
      * SQL, [ProviderRepository.minMonthlyPriceUsdByProvider]) and one decoration query per
-     * auxiliary fact (payment methods, location countries, active tariff counts, legal info) -- never one query per row.
+     * auxiliary fact (payment methods, location countries, active tariff counts, legal info, enrichment last attempt) -- never one query per row.
      */
     suspend fun listProviders(
         filter: ProviderListFilter,
@@ -110,6 +110,7 @@ class CatalogQueryService(
             val locationCountries = providers.locationCountriesByProvider(ids)
             val activeTariffCounts = providers.activeTariffCountsByProvider(ids)
             val legalInfo = providers.legalInfoByProvider(ids)
+            val lastAttempts = enrichmentState.lastAttemptAtByProvider(ids)
             val summaries = pageProviders.map { p ->
                 ProviderSummaryDto(
                     id = p.id,
@@ -126,6 +127,7 @@ class CatalogQueryService(
                     locationCountryCodes = locationCountries[p.id] ?: emptySet(),
                     activeTariffCount = activeTariffCounts[p.id] ?: 0,
                     minMonthlyPriceUsd = minPriceForPage[p.id],
+                    enrichmentLastAttemptAt = lastAttempts[p.id],
                 )
             }
             total to summaries

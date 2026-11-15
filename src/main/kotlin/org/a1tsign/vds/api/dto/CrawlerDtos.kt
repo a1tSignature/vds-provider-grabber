@@ -4,24 +4,21 @@ import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 import org.a1tsign.vds.crawler.model.AdapterRunResult
 import org.a1tsign.vds.crawler.model.CrawlRunSummary
-import org.a1tsign.vds.crawler.model.EnrichmentReport
 import java.time.Instant
 
 /**
  * Body of `POST /api/v1/admin/crawl/run`. Absent fields fall back to configuration: [adapterIds] to
  * the default selection (`VDS_CRAWLER_ADAPTERS`, or the registry's `includedByDefault` entries),
  * [dryRun] to `VDS_CRAWLER_DRY_RUN_DEFAULT`, [maxOutOfStockRatio] to
- * `VDS_CRAWLER_MAX_OUT_OF_STOCK_RATIO`, [enrichment] to `DUE`.
+ * `VDS_CRAWLER_MAX_OUT_OF_STOCK_RATIO`.
  *
  * [maxOutOfStockRatio] is a plain-decimal string in `[0, 1]`; a JSON number is a `400`.
- * [enrichment] is `DUE`, `FORCE` (ignore the cadence) or `SKIP`.
  */
 @Serializable
 data class CrawlRunTriggerRequest(
     val adapterIds: List<String>? = null,
     val dryRun: Boolean? = null,
     val maxOutOfStockRatio: String? = null,
-    val enrichment: String? = null,
 )
 
 /** `202` response of `POST /api/v1/admin/crawl/run` -- the run is already visible via [CrawlRunSummaryDto]. */
@@ -45,17 +42,6 @@ data class AdapterRunResultDto(
     val pricesUnchanged: Int = 0,
     val noFxRateCount: Int = 0,
     val failureReason: String? = null,
-    val message: String? = null,
-    val enrichment: EnrichmentReportDto? = null,
-)
-
-/** Wire form of `crawler.model.EnrichmentReport`. */
-@Serializable
-data class EnrichmentReportDto(
-    val outcome: String,
-    val durationMs: Long,
-    val pagesFetched: Int,
-    val valuesApplied: Int,
     val message: String? = null,
 )
 
@@ -101,15 +87,6 @@ fun AdapterRunResult.toDto(): AdapterRunResultDto = AdapterRunResultDto(
     pricesUnchanged = pricesUnchanged,
     noFxRateCount = noFxRateCount,
     failureReason = failureReason?.name,
-    message = message,
-    enrichment = enrichment?.toDto(),
-)
-
-fun EnrichmentReport.toDto(): EnrichmentReportDto = EnrichmentReportDto(
-    outcome = outcome.name,
-    durationMs = durationMs,
-    pagesFetched = pagesFetched,
-    valuesApplied = valuesApplied,
     message = message,
 )
 

@@ -28,24 +28,30 @@
 # the admin API, exactly as a production run would; re-running is idempotent (the second run
 # creates nothing).
 #
-# `--enrich` (vds-006) -- site enrichment on real saved provider pages, with the same image, JVM
-# flags, dev-seed dataset and 50-request load as `--crawler`, plus the real built SPA (`GET /`,
-# `/index.html` and every `/assets/...` file the served HTML references) on every API pass:
-#   0. baseline       no VDS_CRAWLER_* variable, same load                 the number below compares to
-#   1. peak           max RSS sampled every 200 ms over every enrichment run  <= 300 MB
-#   2. leak check     5 consecutive `enrichment=FORCE` runs in one JVM; after each, a 10 s settle,
-#                     then RSS; the lowest post-GC heap per run comes from `-Xlog:gc:stdout`
-#                     (measurement-only; the JRE image has no jcmd). Run 1 is warm-up. Fails when
-#                     RSS after the last run exceeds run 2's by > 15 MB, or the last run's heap floor
-#                     exceeds run 2's by > 8 MB with a non-decreasing floor from run 2 on.
-# The pages are the prototype capture in ${VDS_ENRICH_REPLAY_DIR:-~/.vds-real-run/enrich-prototype-run6}
-# (hostinger-com: 25 pages incl. a 1.6 MB one; nuxt-cloud: an SPA read from its JS chunks), served
-# by `scripts/enrich-replay-server.py` on the host. The container keeps each site's own host name
-# (`www.hostinger.com.localhost`, mapped to host-gateway), so the analysis sees the real brand.
-# Temporary declarative sources, generated per invocation, give both providers an adapter; their
-# one-row probe tariff only keeps the adapter (and so the pricing URL) alive. A peak or a leak
-# table is reported only when every run enriched both providers with SUCCESS and the catalogue
-# holds Hostinger's entity name and at least one nuxt.cloud payment method; otherwise "not measured".
+# `--enrich` (vds-007) -- the site enrichment PROCESS next to the service: two JVMs with the same
+# image and flags, on real saved provider pages, under the same API + built-SPA load:
+#   0. baseline       the service alone, no VDS_CRAWLER_*/VDS_ENRICH_*, API + SPA load
+#   A. drain          one process container (scripts/enrich-launch.sh, VDS_ENRICH_BATCHES_PER_JVM=0)
+#                     enriches 50 gate providers = 5 batches of 10 in ONE JVM. Sampled every 200 ms:
+#                     process RSS and service RSS (`ps` inside each container), PostgreSQL as the
+#                     sum of Pss over its processes (/proc/<pid>/smaps_rollup, every 1 s, read as the
+#                     postgres user). Passes when RSS(last batch) - RSS(batch 2) <= 15 MB, the
+#                     post-Full-GC heap grows <= 8 MB from batch 2 (batches without a Full GC are left
+#                     out) and service peak + process peak + PostgreSQL peak <= 700 MB. The service
+#                     peak is reported against 300 MB but does not decide (owner, 2026-11-15).
+#   B. per-batch      only when A fails: 50 fresh providers, one batch per JVM, relaunched by the
+#                     launcher; passes when the sum with the largest per-JVM peak <= 700 MB.
+# The last line is `MODE: drain` or `MODE: per-batch` (exit 0), or `STOP` (non-zero); the stand's
+# VDS_ENRICH_BATCHES_PER_JVM follows it. Gate sites: the 12 captured sites of
+# ${VDS_ENRICH_REPLAY_DIR:-~/.vds-real-run/enrich-prototype-run6} that have a page file (fornex-com
+# has none), each served by `scripts/enrich-replay-server.py` on its own host port. Every batch holds
+# hostinger-com (the 1.6 MB page), nuxt-cloud (SPA) and 8 of the other 10 in rotation. The gate
+# providers are CANDIDATEs, so the default listing and the load are unchanged; every other provider
+# that would be due is pre-marked NOTHING_FOUND first, so the queue is exactly the gate. Nothing is
+# reported ("NOT MEASURED", non-zero) unless every gate provider ended SUCCESS or NOTHING_FOUND
+# after the mode started (a replayed site that is unreachable is a broken measurement), Hostinger
+# copies carry an entity, nuxt.cloud copies a payment method, and no pre-marked provider was
+# touched. Expect roughly 25-50 minutes per mode.
 #
 # Measure, do not optimise: a profile over its limit is reported and exits non-zero. That is never
 # a reason to lower a JVM flag, drop a dependency, trim the load or raise the limit -- it is the
@@ -87,16 +93,24 @@ FIXTURE_PORT="18099"
 CRAWLER_USER="crawler-footprint"
 CRAWLER_PASSWORD="Footprint-Crawler-2026!"
 
-# --- the --enrich gate (vds-006) ---
-ENRICH_PEAK_LIMIT_MB="300"
-ENRICH_RUNS="5"
-ENRICH_SETTLE_SECONDS="10"
-ENRICH_RUN_TIMEOUT_SECONDS="900"
+# --- the --enrich gate (vds-007); the first two are the owner's Q1/Q2 of 2026-11-15 ---
+# ENRICH_SERVICE_PEAK_LIMIT_MB is reported only: it sits within measurement noise of what the service
+# needs just to serve the process, and the owner made the sum the deciding check (2026-11-15).
+ENRICH_SUM_LIMIT_MB="700"
 ENRICH_HEAP_GROWTH_LIMIT_MB="8"
 ENRICH_RSS_GROWTH_LIMIT_MB="15"
+ENRICH_SERVICE_PEAK_LIMIT_MB="300"
+ENRICH_GATE_PROVIDERS="50"
+ENRICH_BATCH_SIZE="10"
+ENRICH_PG_SAMPLE_SECONDS="1"
+ENRICH_SETTLE_SECONDS="10"
+ENRICH_MODE_TIMEOUT_SECONDS="7200"
+ENRICH_SERVICE_ALIAS="vds-gate-app"
 ENRICH_REPLAY_DIR="${VDS_ENRICH_REPLAY_DIR:-$HOME/.vds-real-run/enrich-prototype-run6}"
-# slug:pricing path:host port
-ENRICH_SITES=("hostinger-com:/vps-hosting:18101" "nuxt-cloud:/ru/virtual-servers:18102")
+# In every batch; the other gate sites rotate through the remaining 8 slots.
+ENRICH_FIXED_SITES=(hostinger-com nuxt-cloud)
+ENRICH_ROTATING_SITES=(aeza-net arct-cloud buyvm-net digitalocean-com host-co-in lunanode-com ovhcloud-com racknerd-com servercheap-com vdsina-com)
+ENRICH_FIRST_PORT="18101"
 
 JVM_FLAGS=(
   -Xmx192m
@@ -155,6 +169,7 @@ DB_USER="${VDS_DB_USER:-vds}"
 DB_PASSWORD="${VDS_DB_PASSWORD:-vds}"
 
 CID=""
+ECID=""
 FIXTURE_PID=""
 REPLAY_PIDS=()
 ENRICH_TMP=""
@@ -179,7 +194,11 @@ stop_replay_servers() {
 }
 
 cleanup() {
+  if [[ -n "$ECID" ]]; then
+    docker rm -f "$ECID" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$CID" ]]; then
+    delete_gate_providers
     docker rm -f "$CID" >/dev/null 2>&1 || true
   fi
   stop_fixture_server
@@ -633,17 +652,22 @@ profile_crawler() {
 
 # --- --enrich ---------------------------------------------------------------------------------
 
+# "NOT MEASURED": the run was not the run the numbers would describe. Never prints a number.
+not_measured() {
+  echo "NOT MEASURED: $*" >&2
+  exit 1
+}
+
 # Refuses before anything starts: without the real capture there is nothing honest to measure, and
 # a jar without the SPA would leave the frontend out of the load.
 check_enrich_prerequisites() {
-  local site slug
+  local slug
   if [[ ! -f "${ENRICH_REPLAY_DIR}/results.json" ]]; then
     echo "ERROR: no saved prototype run at ${ENRICH_REPLAY_DIR} (results.json missing). Restore the capture or set" >&2
     echo "       VDS_ENRICH_REPLAY_DIR; this profile measures real pages only and has no synthetic fallback." >&2
     exit 1
   fi
-  for site in "${ENRICH_SITES[@]}"; do
-    slug="${site%%:*}"
+  for slug in "${ENRICH_FIXED_SITES[@]}" "${ENRICH_ROTATING_SITES[@]}"; do
     if [[ ! -d "${ENRICH_REPLAY_DIR}/pages/${slug}" ]]; then
       echo "ERROR: ${ENRICH_REPLAY_DIR}/pages/${slug} is missing; this profile measures real pages only." >&2
       exit 1
@@ -653,88 +677,10 @@ check_enrich_prerequisites() {
     echo "ERROR: ${JAR_PATH} carries no static/index.html -- build it with the frontend ('./gradlew shadowJar', not -PskipFrontend)." >&2
     exit 1
   fi
-}
-
-# One replay server per site on its own host port, reachable from the container (host-gateway).
-# Sets REPLAY_PIDS and ENRICH_HOSTS (one `--add-host` argument pair per site) and fills
-# ENRICH_ORIGINS[slug-index] with the origin each server serves.
-start_replay_servers() {
-  local site slug port log origin deadline_ms
-  ENRICH_HOSTS=()
-  ENRICH_ORIGINS=()
-  for site in "${ENRICH_SITES[@]}"; do
-    slug="${site%%:*}"
-    port="${site##*:}"
-    log="${ENRICH_TMP}/replay-${slug}.log"
-    python3 -I scripts/enrich-replay-server.py --run-dir "$ENRICH_REPLAY_DIR" --slug "$slug" --port "$port" --listen-all \
-      >"$log" 2>&1 &
-    REPLAY_PIDS+=($!)
-    origin=""
-    deadline_ms=$(( $(now_ms) + 10000 ))
-    while [[ "$(now_ms)" -lt "$deadline_ms" ]]; do
-      origin="$(sed -n 's/^replaying .* at \(http:[^ ]*\)$/\1/p' "$log" | head -n1)"
-      if [[ -n "$origin" && "$(curl -fsS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/robots.txt" 2>/dev/null || true)" == "200" ]]; then
-        break
-      fi
-      origin=""
-      sleep 0.1
-    done
-    if [[ -z "$origin" ]]; then
-      echo "ERROR: the replay server for ${slug} did not come up on port ${port}:" >&2
-      cat "$log" >&2
-      exit 1
-    fi
-    ENRICH_ORIGINS+=("$origin")
-    ENRICH_HOSTS+=(--add-host="$(printf '%s' "$origin" | sed 's|^http://\([^:/]*\).*|\1|'):host-gateway")
-    echo "  replay: ${slug} at ${origin} (host port ${port})"
-  done
-}
-
-# Declarative sources pointing at the replay origins. The probe tariff reads a number out of the
-# viewport meta that both captured pricing pages carry; it only keeps the adapter alive.
-write_enrich_sources() {
-  local i site slug path
-  mkdir -p "${ENRICH_TMP}/sources"
-  for i in "${!ENRICH_SITES[@]}"; do
-    site="${ENRICH_SITES[$i]}"
-    slug="${site%%:*}"
-    path="${site#*:}"
-    path="${path%:*}"
-    python3 -I - "${ENRICH_TMP}/sources/${slug}.json" "$slug" "${ENRICH_ORIGINS[$i]}" "$path" <<'PYTHON'
-import json, sys
-target, slug, origin, path = sys.argv[1:]
-probe = {"value": "probe"}
-source = {
-    "schemaVersion": 1, "id": slug, "providerSlug": slug, "acknowledgeSlugMismatch": True,
-    "baseUrl": origin, "pagePath": path, "enabled": True,
-    "provider": {"name": {"value": slug}, "websiteUrl": {"value": origin + "/"}},
-    "tariffs": {
-        "rootSelector": "html", "rowSelector": "head", "externalId": probe, "name": probe,
-        "vcpuCount": {"value": "1"}, "ramMb": {"value": "1024"}, "diskGb": {"value": "10"},
-        "ipv4Count": {"value": "1"}, "diskType": {"value": "SSD"}, "virtualization": {"value": "KVM"},
-        "prices": [{"billingPeriod": "MONTHLY", "selector": "meta[name=viewport]", "attr": "content",
-                    "currency": {"fixed": "EUR"}}],
-    },
-}
-with open(target, "w", encoding="utf-8") as handle:
-    json.dump(source, handle)
-PYTHON
-  done
-}
-
-# Each replayed provider must exist before the run; 409 means an earlier invocation created it.
-create_enrich_providers() {
-  local i slug code
-  for i in "${!ENRICH_SITES[@]}"; do
-    slug="${ENRICH_SITES[$i]%%:*}"
-    code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE_URL}/api/v1/providers" \
-      -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
-      -d "{\"slug\":\"${slug}\",\"name\":\"${slug}\",\"websiteUrl\":\"${ENRICH_ORIGINS[$i]}/\",\"status\":\"ACTIVE\"}")"
-    if [[ "$code" != "201" && "$code" != "409" ]]; then
-      echo "ERROR: creating provider ${slug} returned ${code}." >&2
-      exit 1
-    fi
-  done
+  if [[ ! -f scripts/enrich-launch.sh ]]; then
+    echo "ERROR: scripts/enrich-launch.sh is missing; the process is measured only through its launcher." >&2
+    exit 1
+  fi
 }
 
 # The built SPA as a browser loads it: `/`, `/index.html` and every `/assets/...` file the served
@@ -762,56 +708,309 @@ run_frontend_load() {
   fi
 }
 
-# Exits "not measured" unless both replayed providers were enriched with SUCCESS in run $RUN_ID.
-verify_enrichment_run() {
-  local summary outcomes
-  summary="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/v1/admin/crawl/runs/${RUN_ID}")"
-  outcomes="$(printf '%s' "$summary" | jq -r '[.adapters[] | "\(.adapterId)=\(.enrichment.outcome // "none")"] | join(" ")')"
-  RUN_OUTCOMES="$outcomes"
-  local i slug
-  for i in "${!ENRICH_SITES[@]}"; do
-    slug="${ENRICH_SITES[$i]%%:*}"
-    if [[ " $outcomes " != *" ${slug}=SUCCESS "* ]]; then
-      echo "ERROR: run ${RUN_ID} did not enrich ${slug} with SUCCESS (${outcomes}): $(printf '%s' "$summary" | jq -c '[.adapters[] | {adapterId, status, enrichment}]')" >&2
-      echo "NOT MEASURED: a number is reported only for a run that enriched every replayed provider." >&2
+# One replay server per gate site on its own host port, reachable from the containers through
+# host-gateway. Fills SITE_ORIGIN[slug], SITE_PAGE_PATH[slug] (the path of results.json pages[1],
+# the captured pricing page) and ENRICH_HOSTS (one --add-host per origin).
+start_replay_servers() {
+  local slug port log origin deadline_ms
+  ENRICH_HOSTS=()
+  port="$ENRICH_FIRST_PORT"
+  for slug in "${ENRICH_FIXED_SITES[@]}" "${ENRICH_ROTATING_SITES[@]}"; do
+    log="${ENRICH_TMP}/replay-${slug}.log"
+    python3 -I scripts/enrich-replay-server.py --run-dir "$ENRICH_REPLAY_DIR" --slug "$slug" --port "$port" --listen-all \
+      >"$log" 2>&1 &
+    REPLAY_PIDS+=($!)
+    origin=""
+    deadline_ms=$(( $(now_ms) + 10000 ))
+    while [[ "$(now_ms)" -lt "$deadline_ms" ]]; do
+      origin="$(sed -n 's/^replaying .* at \(http:[^ ]*\)$/\1/p' "$log" | head -n1)"
+      if [[ -n "$origin" && "$(curl -fsS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/robots.txt" 2>/dev/null || true)" == "200" ]]; then
+        break
+      fi
+      origin=""
+      sleep 0.1
+    done
+    if [[ -z "$origin" ]]; then
+      echo "ERROR: the replay server for ${slug} did not come up on port ${port}:" >&2
+      cat "$log" >&2
       exit 1
     fi
+    printf '%s\t%s\t%s\n' "$slug" "$origin" "$(python3 -I -c '
+import json, sys, urllib.parse
+u = urllib.parse.urlsplit(json.load(open(sys.argv[1]))[sys.argv[2]]["pages"][1]["url"])
+print((u.path or "/") + ("?" + u.query if u.query else ""))' "${ENRICH_REPLAY_DIR}/results.json" "$slug")" >>"${ENRICH_TMP}/sites.tsv"
+    ENRICH_HOSTS+=(--add-host="$(printf '%s' "$origin" | sed 's|^http://\([^:/]*\).*|\1|'):host-gateway")
+    echo "  replay: ${slug} at ${origin} (host port ${port})"
+    port=$((port + 1))
   done
 }
 
-# The values the replay must produce, read back from the catalogue.
-verify_enrichment_values() {
-  local id entity methods
-  id="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/v1/providers?q=hostinger-com" | jq -r '.content[] | select(.slug == "hostinger-com") | .id')"
-  entity="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/v1/providers/${id}" | jq -r '.legalInfo.legalEntityName // empty')"
-  id="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/v1/providers?q=nuxt-cloud" | jq -r '.content[] | select(.slug == "nuxt-cloud") | .id')"
-  methods="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/v1/providers/${id}" | jq -r '[.paymentMethods[].method] | join(",")')"
-  echo "  catalogue: hostinger-com entity='${entity}', nuxt-cloud payment methods=${methods:-none}"
-  if [[ -z "$entity" || -z "$methods" ]]; then
-    echo "NOT MEASURED: the catalogue lacks the expected enrichment values (Hostinger entity, nuxt.cloud payment methods)." >&2
-    exit 1
+# Creates $ENRICH_GATE_PROVIDERS CANDIDATE providers in batch order (the queue orders
+# never-attempted providers by id) and one enabled source file per provider. Each batch of
+# $ENRICH_BATCH_SIZE holds 10 different sites: the fixed ones plus 8 rotating ones.
+# Appends "id<TAB>slug<TAB>site" to $1 and to ${ENRICH_TMP}/created.tsv (the cleanup list).
+create_gate_providers() {
+  local out="$1" sources="$2" suffix n=0 batch k slug site origin path code body id
+  local per_batch_rotating=$(( ENRICH_BATCH_SIZE - ${#ENRICH_FIXED_SITES[@]} ))
+  suffix="g$(date +%s)"
+  rm -rf "$sources"
+  mkdir -p "$sources"
+  : >"$out"
+  for batch in $(seq 0 $(( ENRICH_GATE_PROVIDERS / ENRICH_BATCH_SIZE - 1 ))); do
+    local -a sites=("${ENRICH_FIXED_SITES[@]}")
+    for k in $(seq 0 $(( per_batch_rotating - 1 ))); do
+      sites+=("${ENRICH_ROTATING_SITES[$(( (batch * 2 + k) % ${#ENRICH_ROTATING_SITES[@]} ))]}")
+    done
+    for site in "${sites[@]}"; do
+      n=$((n + 1))
+      slug="${site}-${suffix}-${n}"
+      origin="$(awk -F'\t' -v s="$site" '$1 == s {print $2}' "${ENRICH_TMP}/sites.tsv")"
+      path="$(awk -F'\t' -v s="$site" '$1 == s {print $3}' "${ENRICH_TMP}/sites.tsv")"
+      body="{\"slug\":\"${slug}\",\"name\":\"${slug}\",\"websiteUrl\":\"${origin}/\",\"status\":\"UNKNOWN\",\"systemStatus\":\"CANDIDATE\"}"
+      code="$(curl -s -o "${ENRICH_TMP}/create.json" -w '%{http_code}' -X POST "${BASE_URL}/api/v1/providers" \
+        -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' -d "$body")"
+      if [[ "$code" != "201" ]]; then
+        echo "ERROR: creating gate provider ${slug} returned ${code}: $(cat "${ENRICH_TMP}/create.json")" >&2
+        exit 1
+      fi
+      id="$(jq -r '.id' "${ENRICH_TMP}/create.json")"
+      printf '%s\t%s\t%s\n' "$id" "$slug" "$site" | tee -a "${ENRICH_TMP}/created.tsv" >>"$out"
+      python3 -I - "${sources}/${slug}.json" "$slug" "$origin" "$path" <<'PYTHON'
+import json, sys
+target, slug, origin, path = sys.argv[1:]
+probe = {"value": "probe"}
+source = {
+    "schemaVersion": 1, "id": slug, "providerSlug": slug, "acknowledgeSlugMismatch": True,
+    "baseUrl": origin, "pagePath": path, "enabled": True,
+    "provider": {"name": {"value": slug}, "websiteUrl": {"value": origin + "/"}},
+    "tariffs": {
+        "rootSelector": "html", "rowSelector": "head", "externalId": probe, "name": probe,
+        "vcpuCount": {"value": "1"}, "ramMb": {"value": "1024"}, "diskGb": {"value": "10"},
+        "ipv4Count": {"value": "1"}, "diskType": {"value": "SSD"}, "virtualization": {"value": "KVM"},
+        "prices": [{"billingPeriod": "MONTHLY", "selector": "meta[name=viewport]", "attr": "content",
+                    "currency": {"fixed": "EUR"}}],
+    },
+}
+with open(target, "w", encoding="utf-8") as handle:
+    json.dump(source, handle)
+PYTHON
+    done
+  done
+  echo "  gate providers: ${n} CANDIDATEs (${suffix}), ${ENRICH_GATE_PROVIDERS}/${ENRICH_BATCH_SIZE} batches in id order"
+}
+
+# id<TAB>lastAttemptAt (or "-") of every CONFIGURED/CANDIDATE provider, into $1.
+list_queue_members() {
+  local page=0 pages=1
+  : >"$1"
+  while (( page < pages )); do
+    curl -fsS -H "Authorization: Bearer ${TOKEN}" \
+      "${BASE_URL}/api/v1/providers?systemStatus=CONFIGURED&systemStatus=CANDIDATE&sort=id,asc&size=100&page=${page}" \
+      >"${ENRICH_TMP}/page.json"
+    jq -r '.content[] | "\(.id)\t\(.enrichmentLastAttemptAt // "-")"' "${ENRICH_TMP}/page.json" >>"$1"
+    pages="$(jq -r '.totalPages' "${ENRICH_TMP}/page.json")"
+    page=$((page + 1))
+  done
+}
+
+# Records a NOTHING_FOUND attempt for every non-gate provider the process would otherwise queue
+# (never attempted, or older than the 720 h default interval), then snapshots every non-gate
+# member's lastAttemptAt into ${ENRICH_TMP}/others.tsv for the "untouched" check.
+premark_other_providers() {
+  local gate="$1" id last marked=0 code
+  list_queue_members "${ENRICH_TMP}/members.tsv"
+  while IFS=$'\t' read -r id last; do
+    grep -q "^${id}"$'\t' "$gate" && continue
+    if [[ "$last" == "-" ]] || python3 -I -c '
+import sys, datetime
+t = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+sys.exit(0 if datetime.datetime.now(datetime.timezone.utc) - t >= datetime.timedelta(hours=720) else 1)' "$last"; then
+      code="$(curl -s -o "${ENRICH_TMP}/mark.json" -w '%{http_code}' -X PUT "${BASE_URL}/api/v1/providers/${id}/enrichment" \
+        -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
+        -d '{"outcome":"NOTHING_FOUND","message":"pre-marked by measure-footprint.sh --enrich","pagesFetched":0}')"
+      if [[ "$code" != "200" ]]; then
+        echo "ERROR: pre-marking provider ${id} returned ${code}: $(cat "${ENRICH_TMP}/mark.json")" >&2
+        exit 1
+      fi
+      marked=$((marked + 1))
+    fi
+  done <"${ENRICH_TMP}/members.tsv"
+  echo "  pre-marked ${marked} other provider(s) NOTHING_FOUND, so the queue is exactly the gate"
+  list_queue_members "${ENRICH_TMP}/members.tsv"
+  awk -F'\t' 'NR == FNR {gate[$1] = 1; next} !($1 in gate)' "$gate" "${ENRICH_TMP}/members.tsv" >"${ENRICH_TMP}/others.tsv"
+}
+
+# Starts the process container through the launcher with VDS_ENRICH_BATCHES_PER_JVM=$1. Sets ECID.
+start_process() {
+  ECID="$(docker run -d \
+    --network "$NETWORK" \
+    ${ENRICH_HOSTS[@]+"${ENRICH_HOSTS[@]}"} \
+    -v "$(pwd)/${JAR_PATH}:/app/app.jar:ro" \
+    -v "$(pwd)/scripts/enrich-launch.sh:/app/enrich-launch.sh:ro" \
+    -v "${ENRICH_TMP}/sources:/sources:ro" \
+    -e VDS_ENRICH_API_BASE_URL="http://${ENRICH_SERVICE_ALIAS}:8080" \
+    -e VDS_ENRICH_USERNAME="${CRAWLER_USER}" \
+    -e VDS_ENRICH_PASSWORD="${CRAWLER_PASSWORD}" \
+    -e VDS_ENRICH_BATCHES_PER_JVM="$1" \
+    -e VDS_ENRICH_EXTRA_JVM_FLAGS=-Xlog:gc:stdout \
+    -e VDS_ENRICH_LOCK_FILE=/tmp/vds-enrich.lock \
+    -e VDS_ENRICH_JAR=/app/app.jar \
+    -e VDS_DISCOVERY_SOURCES_DIR=/sources \
+    "$JAVA_IMAGE" bash /app/enrich-launch.sh)"
+}
+
+# Samples until the process container exits: every 200 ms process RSS (all `java` processes in it)
+# and service RSS; every ${ENRICH_PG_SAMPLE_SECONDS} s PostgreSQL Pss and the process log, whose
+# batch and JVM-exit lines tag each sample with the batch / JVM it belongs to. Writes
+# "t_ms proc_kb svc_kb pg_kb batches_done jvms_done" lines to $1; exits non-zero if Pss is unreadable.
+sample_until_process_exits() {
+  python3 -I - "$1" "$ECID" "$CID" "$POSTGRES_CID" "$CRAWLER_PEAK_SAMPLE_SECONDS" "$ENRICH_PG_SAMPLE_SECONDS" "$ENRICH_MODE_TIMEOUT_SECONDS" <<'PYTHON'
+import subprocess, sys, time
+out, proc, svc, pg, step, pg_step, timeout = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], float(sys.argv[5]), float(sys.argv[6]), float(sys.argv[7])
+PG_PSS = ('t=0; r=0; s=0; for d in /proc/[0-9]*; do [ "$(cat $d/comm 2>/dev/null)" = postgres ] || continue; '
+          't=$((t+1)); v=$(awk \'/^Pss:/{print $2}\' $d/smaps_rollup 2>/dev/null); '
+          '[ -n "$v" ] && { r=$((r+1)); s=$((s+v)); }; done; echo "$t $r $s"')
+def run(args):
+    return subprocess.run(args, capture_output=True, text=True)
+def running():
+    return run(["docker", "inspect", "-f", "{{.State.Running}}", proc]).stdout.strip() == "true"
+started, last_pg, pg_kb, batches, jvms = time.time(), 0.0, "", 0, 0
+with open(out, "w") as fh:
+    while running():
+        if time.time() - started > timeout:
+            print(f"ERROR: the process did not finish within {int(timeout)} s", file=sys.stderr); sys.exit(2)
+        p = subprocess.Popen(["docker", "exec", proc, "ps", "-eo", "rss=,comm="], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        q = subprocess.Popen(["docker", "exec", svc, "ps", "-o", "rss=", "-p", "1"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        proc_kb = sum(int(r.split()[0]) for r in p.communicate()[0].splitlines() if r.split()[1:] == ["java"])
+        svc_out = q.communicate()[0].strip()
+        if time.time() - last_pg >= pg_step:
+            total, readable, pss = (run(["docker", "exec", "-u", "postgres", pg, "sh", "-c", PG_PSS]).stdout.split() + ["0", "0", "0"])[:3]
+            if int(total) == 0 or readable != total:
+                print(f"ERROR: PostgreSQL Pss unreadable ({readable} of {total} processes)", file=sys.stderr); sys.exit(3)
+            pg_kb, last_pg = pss, time.time()
+            log = run(["docker", "logs", proc]).stdout
+            batches, jvms = log.count(" enrich batch "), log.count("enrich-launch: jvm ")
+        if proc_kb and svc_out:
+            fh.write(f"{int(time.time() * 1000)} {proc_kb} {svc_out} {pg_kb or 0} {batches} {jvms}\n"); fh.flush()
+        time.sleep(step)
+PYTHON
+}
+
+# Post-Full-GC heap occupancy (MB) per batch from the process log: the lowest after-value of the
+# `Pause Full` lines logged before that batch's `enrich batch` line; "-" when the batch had none.
+# Writes "batch providers rssMb durationMs fullgc" lines to $1.
+parse_batches() {
+  docker logs "$ECID" 2>&1 | python3 -I -c '
+import re, sys
+units = {"K": 1 / 1024, "M": 1, "G": 1024}
+full, rows = [], []
+for line in sys.stdin:
+    m = re.search(r"\[gc\s*\].*GC\(\d+\) Pause Full .*?->(\d+)([KMG])\(", line)
+    if m:
+        full.append(int(m.group(1)) * units[m.group(2)]); continue
+    b = re.search(r" enrich batch \d+ providers=(\d+) .*durationMs=(\d+)(?: rssMb=(\d+))?", line)
+    if b:
+        rows.append((b.group(1), b.group(3) or "-", b.group(2), f"{min(full):.1f}" if full else "-")); full = []
+for i, r in enumerate(rows, 1):
+    print(i, *r)' >"$1"
+}
+
+# The JVM exit codes the launcher logged, one per line, into $1.
+parse_jvm_exits() {
+  docker logs "$ECID" 2>&1 | sed -n 's/.*enrich-launch: jvm [0-9]* exited \([0-9]*\)$/\1/p' >"$1"
+}
+
+# Every validity rule of a mode; any failure is "NOT MEASURED". $1 = gate list, $2 = mode start
+# (epoch seconds), $3 = drain|per-batch.
+validate_mode() {
+  local gate="$1" since="$2" mode="$3" exit_code id slug site detail last outcome
+  exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$ECID")"
+  [[ "$exit_code" == "0" ]] || not_measured "the launcher exited ${exit_code}: $(docker logs "$ECID" 2>&1 | grep -E 'enrich-launch|launch finished' | tail -n 3 | tr '\n' ' ')"
+  parse_jvm_exits "${ENRICH_TMP}/jvm-exits"
+  [[ "$(tail -n 1 "${ENRICH_TMP}/jvm-exits")" == "0" ]] || not_measured "the last JVM did not exit 0"
+  if [[ "$mode" == "drain" ]]; then
+    [[ "$(wc -l <"${ENRICH_TMP}/jvm-exits" | tr -d ' ')" == "1" ]] || not_measured "drain mode used more than one JVM"
+  else
+    (( $(wc -l <"${ENRICH_TMP}/jvm-exits") >= 5 )) || not_measured "per-batch mode ran fewer than 5 JVMs"
+    [[ -z "$(sed '$d' "${ENRICH_TMP}/jvm-exits" | grep -v '^10$')" ]] || not_measured "a per-batch JVM other than the last exited with a code other than 10"
+  fi
+  (( $(awk -v n="$ENRICH_BATCH_SIZE" '$2 == n' "${ENRICH_TMP}/batches" | wc -l) >= 5 )) || not_measured "fewer than 5 batches of ${ENRICH_BATCH_SIZE} were logged"
+  while IFS=$'\t' read -r id slug site; do
+    detail="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/v1/providers/${id}")"
+    last="$(printf '%s' "$detail" | jq -r '.enrichment.lastAttemptAt // empty')"
+    outcome="$(printf '%s' "$detail" | jq -r '.enrichment.lastOutcome // empty')"
+    [[ -n "$last" ]] || not_measured "gate provider ${slug} was never attempted"
+    python3 -I -c 'import sys, datetime; sys.exit(0 if datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).timestamp() >= int(sys.argv[2]) else 1)' "$last" "$since" \
+      || not_measured "gate provider ${slug} was last attempted at ${last}, before this mode started"
+    [[ "$outcome" == "SUCCESS" || "$outcome" == "NOTHING_FOUND" ]] || not_measured "gate provider ${slug} ended ${outcome}: a replayed site must be read, not ${outcome}"
+    if [[ "$site" == "hostinger-com" && -z "$(printf '%s' "$detail" | jq -r '.legalInfo.legalEntityName // empty')" ]]; then
+      not_measured "${slug} has no legal entity name"
+    fi
+    if [[ "$site" == "nuxt-cloud" && "$(printf '%s' "$detail" | jq -r '.paymentMethods | length')" == "0" ]]; then
+      not_measured "${slug} has no payment method"
+    fi
+  done <"$gate"
+  list_queue_members "${ENRICH_TMP}/members-after.tsv"
+  if awk -F'\t' 'NR == FNR {after[$1] = $2; next} ($1 in after) && after[$1] != $2 {bad = 1} END {exit bad ? 0 : 1}' \
+      "${ENRICH_TMP}/members-after.tsv" "${ENRICH_TMP}/others.tsv"; then
+    not_measured "a pre-marked provider was attempted by the process"
   fi
 }
 
-# Lowest post-GC heap occupancy (MB, one decimal) in container log lines after line $1, or empty.
-post_gc_floor_mb() {
-  docker logs "$CID" 2>&1 | tail -n +"$(( $1 + 1 ))" | python3 -I -c '
-import re, sys
-units = {"K": 1 / 1024, "M": 1, "G": 1024}
-floors = [int(m.group(1)) * units[m.group(2)]
-          for m in (re.search(r"\[gc\s*\].*GC\(\d+\) Pause .*?->(\d+)([KMG])\(", line) for line in sys.stdin) if m]
-print(f"{min(floors):.1f}" if floors else "")'
+# One mode: gate providers, pre-mark, the process through the launcher, sampling, the service after.
+# $1 = 0 (drain) | 1 (per-batch). Sets PROC_PEAK_MB, SVC_PEAK_MB, PG_PEAK_MB, SVC_AFTER_MB,
+# PROC_COLD_MS; writes ${ENRICH_TMP}/samples, batches, jvm-exits.
+run_mode() {
+  local per_jvm="$1" mode since
+  mode="$([[ "$per_jvm" == 1 ]] && echo per-batch || echo drain)"
+  create_gate_providers "${ENRICH_TMP}/gate.tsv" "${ENRICH_TMP}/sources"
+  premark_other_providers "${ENRICH_TMP}/gate.tsv"
+  since="$(date +%s)"
+  start_process "$per_jvm"
+  echo "  process container started (mode ${mode}); sampling every ${CRAWLER_PEAK_SAMPLE_SECONDS}s until it exits"
+  sample_until_process_exits "${ENRICH_TMP}/samples" || not_measured "sampling failed (see the line above)"
+  PROC_COLD_MS="$(python3 -I -c '
+import datetime, re, sys
+started = datetime.datetime.fromisoformat(re.sub(r"(\.\d{6})\d*", r"\1", sys.argv[1]).replace("Z", "+00:00"))
+for line in sys.stdin:
+    if "enrich launch starting:" in line:
+        t = datetime.datetime.fromisoformat(re.sub(r"(\.\d{6})\d*", r"\1", line.split()[0]).replace("Z", "+00:00"))
+        print(int((t - started).total_seconds() * 1000)); break' \
+    "$(docker inspect -f '{{.State.StartedAt}}' "$ECID")" < <(docker logs -t "$ECID" 2>&1))"
+  parse_batches "${ENRICH_TMP}/batches"
+  validate_mode "${ENRICH_TMP}/gate.tsv" "$since" "$mode"
+  docker logs "$ECID" >"${ENRICH_TMP}/process-${mode}.log" 2>&1 || true
+  docker rm -f "$ECID" >/dev/null 2>&1 || true
+  ECID=""
+  read -r PROC_PEAK_MB SVC_PEAK_MB PG_PEAK_MB < <(awk '{if ($2 > p) p = $2; if ($3 > s) s = $3; if ($4 > g) g = $4} END {printf "%d %d %d\n", p / 1024, s / 1024, g / 1024}' "${ENRICH_TMP}/samples")
+  run_load
+  run_frontend_load
+  sleep "$ENRICH_SETTLE_SECONDS"
+  SVC_AFTER_MB="$(( $(read_rss_kb) / 1024 ))"
+}
+
+# Deletes the providers this invocation created (best effort, admin token): the script's own
+# cleanup, not something the process can do.
+delete_gate_providers() {
+  local id
+  [[ -n "${ENRICH_TMP}" && -f "${ENRICH_TMP}/created.tsv" && -n "${TOKEN:-}" ]] || return 0
+  while IFS=$'\t' read -r id _; do
+    curl -s -o /dev/null -X DELETE -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/v1/providers/${id}" || true
+  done <"${ENRICH_TMP}/created.tsv"
+  rm -f "${ENRICH_TMP}/created.tsv"
 }
 
 profile_enrich() {
-  local baseline_rss_mb baseline_cold_ms enrich_cold_ms run log_start floor rss_after
-  local -a floors=() rss_values=() peaks=() outcomes=() durations=()
-  local overall_peak_kb=0 start_ms
+  local baseline_rss_mb baseline_cold_ms service_cold_ms
+  local a_growth a_heap a_heap_note a_sum a_ok=1
+  local b_sum b_ok=1 b_max_peak
 
   check_enrich_prerequisites
   ENRICH_TMP="$(mktemp -d)"
+  echo "Expected duration: ~${ENRICH_GATE_PROVIDERS} providers x 30-60 s, i.e. 25-50 min per mode (mode B only if A fails)."
+  echo
 
-  echo "=== Baseline: no VDS_CRAWLER_* variable, API + frontend load ==="
+  echo "=== Baseline: the service alone, no VDS_CRAWLER_*/VDS_ENRICH_*, API + frontend load ==="
   SERVICE_DOCKER_ARGS=()
   start_service
   baseline_cold_ms="$COLD_START_MS"
@@ -819,100 +1018,116 @@ profile_enrich() {
   run_frontend_load
   baseline_rss_mb="$(( $(read_rss_kb) / 1024 ))"
   stop_service
-  echo "Baseline RSS: ${baseline_rss_mb} MB"
   echo
 
-  echo "=== Enrichment: ${ENRICH_RUNS} consecutive FORCE runs over real saved pages in one JVM ==="
+  echo "=== Service + enrichment process (two JVMs, same image and flags) ==="
   start_replay_servers
-  write_enrich_sources
-  local adapters="" site
-  for site in "${ENRICH_SITES[@]}"; do
-    adapters+="${adapters:+,}${site%%:*}"
-  done
-  SERVICE_DOCKER_ARGS=(
-    ${ENRICH_HOSTS[@]+"${ENRICH_HOSTS[@]}"}
-    -v "${ENRICH_TMP}/sources:/sources:ro"
-    -e VDS_DISCOVERY_SOURCES_DIR=/sources
-    -e VDS_CRAWLER_ENABLED=true
-    -e VDS_CRAWLER_USERNAME="${CRAWLER_USER}"
-    -e VDS_CRAWLER_PASSWORD="${CRAWLER_PASSWORD}"
-    -e VDS_CRAWLER_ADAPTERS="${adapters}"
-  )
-  EXTRA_JVM_FLAGS=(-Xlog:gc:stdout)
+  SERVICE_DOCKER_ARGS=(--network-alias "$ENRICH_SERVICE_ALIAS")
   start_service
-  enrich_cold_ms="$COLD_START_MS"
+  service_cold_ms="$COLD_START_MS"
   run_load
   run_frontend_load
   create_service_account
-  create_enrich_providers
+  echo
 
-  for run in $(seq 1 "$ENRICH_RUNS"); do
-    log_start="$(docker logs "$CID" 2>&1 | wc -l | tr -d ' ')"
-    start_ms="$(now_ms)"
-    measure_peak_during_run '{"dryRun":false,"enrichment":"FORCE"}' "$ENRICH_RUN_TIMEOUT_SECONDS"
-    durations+=("$(( ($(now_ms) - start_ms) / 1000 ))")
-    verify_enrichment_run
-    outcomes+=("$RUN_OUTCOMES")
-    [[ "$run" -eq 1 ]] && verify_enrichment_values
-    (( PEAK_RSS_KB > overall_peak_kb )) && overall_peak_kb="$PEAK_RSS_KB"
-    peaks+=("$PEAK_RSS_MB")
-    run_load
-    run_frontend_load
-    sleep "$ENRICH_SETTLE_SECONDS"
-    rss_after="$(( $(read_rss_kb) / 1024 ))"
-    floor="$(post_gc_floor_mb "$log_start")"
-    if [[ -z "$floor" ]]; then
-      echo "NOT MEASURED: no GC was logged during run ${run}, so its heap floor is unknown." >&2
-      exit 1
-    fi
-    floors+=("$floor")
-    rss_values+=("$rss_after")
-    printf '  run %d: peak %d MB, RSS after settle %d MB, post-GC heap floor %s MB, %s\n' \
-      "$run" "$PEAK_RSS_MB" "$rss_after" "$floor" "$RUN_OUTCOMES"
-  done
+  echo "=== Mode A: drain (one JVM, ${ENRICH_GATE_PROVIDERS} providers, batches of ${ENRICH_BATCH_SIZE}) ==="
+  run_mode 0
+  cp "${ENRICH_TMP}/batches" "${ENRICH_TMP}/batches-a"
+  local a_proc="$PROC_PEAK_MB" a_svc="$SVC_PEAK_MB" a_pg="$PG_PEAK_MB" a_after="$SVC_AFTER_MB" a_cold="$PROC_COLD_MS"
+  # Per-batch process peak from the samples tagged with the number of batch lines seen so far.
+  awk '{b = $5 + 1; if ($2 > p[b]) p[b] = $2} END {for (b in p) print b, int(p[b] / 1024)}' "${ENRICH_TMP}/samples" | sort -n >"${ENRICH_TMP}/peaks-a"
+  local last_batch
+  last_batch="$(wc -l <"${ENRICH_TMP}/batches-a" | tr -d ' ')"
+  a_growth=$(( $(awk -v b="$last_batch" '$1 == b {print $3}' "${ENRICH_TMP}/batches-a") - $(awk '$1 == 2 {print $3}' "${ENRICH_TMP}/batches-a") ))
+  read -r a_heap a_heap_note < <(python3 -I -c '
+import sys
+rows = [l.split() for l in open(sys.argv[1])]
+f = [float(r[4]) for r in rows[1:] if r[4] != "-"]
+if len(f) < 2:
+    print("0.0 fewer-than-2-batches-with-a-Full-GC")
+else:
+    trend = "decreasing" if all(b <= a for a, b in zip(f, f[1:])) else "not-decreasing"
+    print(f"{f[-1] - f[0]:.1f} {trend}")' "${ENRICH_TMP}/batches-a")
+  a_sum=$(( a_svc + a_proc + a_pg ))
+
+  echo
+  echo "=== Results, mode A (RSS inside ${JAVA_IMAGE}, flags: ${JVM_FLAGS[*]}; process also -Xlog:gc:stdout) ==="
+  printf '  %-5s %9s %16s %14s %16s %9s\n' batch providers "process peak MB" "rssMb at end" "post-Full-GC MB" seconds
+  while read -r b providers rss duration fullgc; do
+    printf '  %-5s %9s %16s %14s %16s %9d\n' "$b" "$providers" "$(awk -v b="$b" '$1 == b {print $2}' "${ENRICH_TMP}/peaks-a")" "$rss" \
+      "$([[ "$fullgc" == "-" ]] && echo "no Full GC" || echo "$fullgc")" "$(( duration / 1000 ))"
+  done <"${ENRICH_TMP}/batches-a"
+  printf 'service              : baseline %d MB, peak during the process %d MB (reference %s, not deciding), after %d MB\n' \
+    "$baseline_rss_mb" "$a_svc" "$ENRICH_SERVICE_PEAK_LIMIT_MB" "$a_after"
+  printf 'process              : peak %d MB\n' "$a_proc"
+  printf 'PostgreSQL (Pss)     : peak %d MB\n' "$a_pg"
+  printf 'sum                  : %d MB = service %d + process %d + PostgreSQL %d, limit <= %s MB\n' \
+    "$a_sum" "$a_svc" "$a_proc" "$a_pg" "$ENRICH_SUM_LIMIT_MB"
+  printf 'worst case (info)    : %d MB = %s (service limit, tariff crawl at the same time) + process %d + PostgreSQL %d\n' \
+    "$(( ENRICH_SERVICE_PEAK_LIMIT_MB + a_proc + a_pg ))" "$ENRICH_SERVICE_PEAK_LIMIT_MB" "$a_proc" "$a_pg"
+  printf 'growth               : rssMb batch %d vs batch 2 %+d MB, limit +%s MB\n' "$last_batch" "$a_growth" "$ENRICH_RSS_GROWTH_LIMIT_MB"
+  printf 'heap                 : post-Full-GC batch 2 -> last %+.1f MB (%s), limit +%s MB unless decreasing\n' \
+    "$a_heap" "$a_heap_note" "$ENRICH_HEAP_GROWTH_LIMIT_MB"
+  printf 'cold start           : service %d ms (baseline %d ms), process JVM %d ms\n' "$service_cold_ms" "$baseline_cold_ms" "$a_cold"
+  jar_line
+
+  if (( a_growth > ENRICH_RSS_GROWTH_LIMIT_MB )); then echo "  mode A: FAIL growth"; a_ok=0; fi
+  if [[ "$a_heap_note" == "not-decreasing" ]] && python3 -I -c "import sys; sys.exit(0 if ${a_heap} > ${ENRICH_HEAP_GROWTH_LIMIT_MB} else 1)"; then
+    echo "  mode A: FAIL heap"; a_ok=0
+  fi
+  if (( a_sum > ENRICH_SUM_LIMIT_MB )); then echo "  mode A: FAIL sum"; a_ok=0; fi
+  if (( a_svc > ENRICH_SERVICE_PEAK_LIMIT_MB )); then echo "  mode A: note: service peak above the ${ENRICH_SERVICE_PEAK_LIMIT_MB} MB reference"; fi
+  delete_gate_providers
+
+  if (( a_ok == 1 )); then
+    echo "MODE: drain"
+    EXIT_CODE=0
+    stop_service
+    stop_replay_servers
+    return
+  fi
+
+  echo
+  echo "=== Mode B: per-batch (one JVM per batch of ${ENRICH_BATCH_SIZE}, relaunched by the launcher) ==="
+  run_mode 1
+  local b_svc="$SVC_PEAK_MB" b_pg="$PG_PEAK_MB" b_after="$SVC_AFTER_MB"
+  # Per-JVM peak and duration from the samples tagged with the number of JVM exits seen so far.
+  awk '{j = $6 + 1; if ($2 > p[j]) p[j] = $2; if (!(j in s)) s[j] = $1; e[j] = $1}
+       END {for (j in p) print j, int(p[j] / 1024), int((e[j] - s[j]) / 1000)}' "${ENRICH_TMP}/samples" | sort -n >"${ENRICH_TMP}/peaks-b"
+  b_max_peak="$(awk '{if ($2 > m) m = $2} END {print m + 0}' "${ENRICH_TMP}/peaks-b")"
+  b_sum=$(( b_svc + b_max_peak + b_pg ))
+
+  echo
+  echo "=== Results, mode B ==="
+  printf '  %-6s %8s %14s %9s\n' launch "peak MB" "rssMb at exit" seconds
+  while read -r j peak seconds; do
+    printf '  %-6s %8s %14s %9s\n' "$j" "$peak" "$(awk -v j="$j" '$1 == j {print $3}' "${ENRICH_TMP}/batches")" "$seconds"
+  done <"${ENRICH_TMP}/peaks-b"
+  printf 'service              : peak %d MB (reference %s, not deciding), after %d MB\n' "$b_svc" "$ENRICH_SERVICE_PEAK_LIMIT_MB" "$b_after"
+  printf 'sum                  : %d MB = service %d + largest per-JVM peak %d + PostgreSQL %d, limit <= %s MB\n' \
+    "$b_sum" "$b_svc" "$b_max_peak" "$b_pg" "$ENRICH_SUM_LIMIT_MB"
+  printf 'worst case (info)    : %d MB\n' "$(( ENRICH_SERVICE_PEAK_LIMIT_MB + b_max_peak + b_pg ))"
+  local jvms first_peak last_peak
+  jvms="$(wc -l <"${ENRICH_TMP}/peaks-b" | tr -d ' ')"
+  first_peak="$(awk '$1 == 2 {print $2}' "${ENRICH_TMP}/peaks-b")"
+  last_peak="$(awk -v j="$jvms" '$1 == j {print $2}' "${ENRICH_TMP}/peaks-b")"
+  if (( last_peak - first_peak > ENRICH_RSS_GROWTH_LIMIT_MB )); then
+    echo "NOTE: per-JVM peaks rose $(( last_peak - first_peak )) MB from launch 2 to ${jvms}: that growth is outside the JVM."
+  fi
+  if (( b_sum > ENRICH_SUM_LIMIT_MB )); then echo "  mode B: FAIL sum"; b_ok=0; fi
+  if (( b_svc > ENRICH_SERVICE_PEAK_LIMIT_MB )); then echo "  mode B: note: service peak above the ${ENRICH_SERVICE_PEAK_LIMIT_MB} MB reference"; fi
+  delete_gate_providers
   stop_service
   stop_replay_servers
 
-  local peak_mb=$(( overall_peak_kb / 1024 )) last=$(( ENRICH_RUNS - 1 ))
-  local heap_growth rss_growth heap_trend
-  heap_growth="$(python3 -I -c "print(f'{${floors[$last]} - ${floors[1]}:.1f}')")"
-  rss_growth=$(( rss_values[last] - rss_values[1] ))
-  heap_trend="$(python3 -I -c "
-f = [$(IFS=,; echo "${floors[*]}")][1:]
-print('non-decreasing' if all(b >= a for a, b in zip(f, f[1:])) else 'not monotonic')")"
-
-  echo
-  echo "=== Results (RSS inside ${JAVA_IMAGE}, flags: ${JVM_FLAGS[*]} + ${EXTRA_JVM_FLAGS[*]} for the enrichment JVM) ==="
-  printf 'baseline (API + SPA load) : RSS %4d MB, cold start %5d ms\n' "$baseline_rss_mb" "$baseline_cold_ms"
-  printf 'enrichment JVM            : cold start %5d ms\n' "$enrich_cold_ms"
-  printf 'peak over %d runs          : RSS %4d MB (sampled every %ss), delta %+d MB vs baseline, limit <= %s MB\n' \
-    "$ENRICH_RUNS" "$peak_mb" "$CRAWLER_PEAK_SAMPLE_SECONDS" "$(( peak_mb - baseline_rss_mb ))" "$ENRICH_PEAK_LIMIT_MB"
-  echo "leak table (run 1 is warm-up):"
-  printf '  %-4s %8s %14s %16s %9s\n' run "peak MB" "RSS settled MB" "post-GC floor MB" "seconds"
-  for run in $(seq 0 "$last"); do
-    printf '  %-4d %8d %14d %16s %9d\n' "$((run + 1))" "${peaks[$run]}" "${rss_values[$run]}" "${floors[$run]}" "${durations[$run]}"
-  done
-  printf 'heap floor run %d vs run 2: %+.1f MB (%s), limit +%s MB with a non-decreasing floor\n' \
-    "$ENRICH_RUNS" "$heap_growth" "$heap_trend" "$ENRICH_HEAP_GROWTH_LIMIT_MB"
-  printf 'RSS run %d vs run 2: %+d MB, limit +%s MB\n' "$ENRICH_RUNS" "$rss_growth" "$ENRICH_RSS_GROWTH_LIMIT_MB"
-  jar_line
-
-  EXIT_CODE=0
-  if (( peak_mb > ENRICH_PEAK_LIMIT_MB )); then
-    echo "FAIL: peak RSS during enrichment is ${peak_mb}MB, above the ${ENRICH_PEAK_LIMIT_MB}MB limit." >&2
+  if (( b_ok == 1 )); then
+    echo "MODE: per-batch"
+    EXIT_CODE=0
+  else
+    echo "STOP: neither mode fits. Do NOT change JVM flags, batch size, limits, host delay, page budgets, load," >&2
+    echo "      sites or pages here -- report it; per ADR vds-002-01 the owner decides." >&2
+    echo "STOP"
     EXIT_CODE=1
-  fi
-  if [[ "$heap_trend" == "non-decreasing" ]] && python3 -I -c "import sys; sys.exit(0 if ${heap_growth} > ${ENRICH_HEAP_GROWTH_LIMIT_MB} else 1)"; then
-    echo "FAIL: the post-GC heap floor grew ${heap_growth}MB from run 2 to run ${ENRICH_RUNS} and never went down: a leak." >&2
-    EXIT_CODE=1
-  fi
-  if (( rss_growth > ENRICH_RSS_GROWTH_LIMIT_MB )); then
-    echo "FAIL: RSS after run ${ENRICH_RUNS} is ${rss_growth}MB above RSS after run 2." >&2
-    EXIT_CODE=1
-  fi
-  if (( EXIT_CODE != 0 )); then
-    echo "STOP: an enrichment footprint limit was exceeded. Do NOT change JVM flags, limits, load or pages here --" >&2
-    echo "      report it; ADR vds-002-01 (in-process crawler) is reopened in favour of a separate process." >&2
   fi
 }
 

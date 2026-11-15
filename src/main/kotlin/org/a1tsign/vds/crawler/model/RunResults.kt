@@ -1,6 +1,5 @@
 package org.a1tsign.vds.crawler.model
 
-import org.a1tsign.vds.domain.EnrichmentOutcome
 import java.time.Instant
 import java.util.UUID
 
@@ -39,22 +38,6 @@ data class AdapterRunResult(
     val noFxRateCount: Int = 0,
     val failureReason: FailureReason? = null,
     /** One line, operator-readable: no stack trace, no URL credentials, no secret. */
-    val message: String? = null,
-    /** The provider's enrichment step; `null` when the run stopped before reaching it. */
-    val enrichment: EnrichmentReport? = null,
-)
-
-/**
- * What the enrichment step did for one provider. It never affects the adapter's own status or
- * counters. [valuesApplied] counts fields and rows the catalog changed; in a dry run it is the
- * intended count, computed against the catalog read.
- */
-data class EnrichmentReport(
-    val outcome: EnrichmentOutcome,
-    val durationMs: Long = 0,
-    val pagesFetched: Int = 0,
-    val valuesApplied: Int = 0,
-    /** One line: no page body, no secret. */
     val message: String? = null,
 )
 

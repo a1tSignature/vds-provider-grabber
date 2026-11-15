@@ -64,6 +64,46 @@ services:
     stop_grace_period: 30s
     logging: *logging
 
+  # Site enrichment: a one-shot process, started by vds-enrich.timer (or cron) with
+  # `docker compose --profile enrich run --rm --no-deps enrich`; never by `docker compose up`.
+  enrich:
+    profiles: [enrich]
+    image: ${VDS_IMAGE:-vds-provider-grabber:stand}
+    entrypoint: ["/app/enrich-launch.sh"]
+    restart: "no"
+    environment:
+      # Optional here so `docker compose up` works without them; the process refuses to start
+      # without credentials.
+      VDS_ENRICH_API_BASE_URL: http://app:8080
+      VDS_ENRICH_USERNAME: ${VDS_ENRICH_USERNAME:-}
+      VDS_ENRICH_PASSWORD: ${VDS_ENRICH_PASSWORD:-}
+      VDS_ENRICH_BATCHES_PER_JVM: ${VDS_ENRICH_BATCHES_PER_JVM:-0}
+      VDS_ENRICH_INTERVAL_HOURS: ${VDS_ENRICH_INTERVAL_HOURS:-720}
+      VDS_ENRICH_PROVIDER_TIMEOUT_MINUTES: ${VDS_ENRICH_PROVIDER_TIMEOUT_MINUTES:-4}
+      VDS_ENRICH_MAX_PAGES: ${VDS_ENRICH_MAX_PAGES:-25}
+      VDS_ENRICH_MAX_PAGES_PER_SECTION: ${VDS_ENRICH_MAX_PAGES_PER_SECTION:-4}
+      VDS_ENRICH_MAX_SITEMAPS: ${VDS_ENRICH_MAX_SITEMAPS:-4}
+      VDS_ENRICH_MAX_RUNTIME_MINUTES: ${VDS_ENRICH_MAX_RUNTIME_MINUTES:-360}
+      # Set together with a read-only mount of the sources directory (compose override), so the
+      # pricing page and the source-observed facets are used; unset, every site is crawled from /.
+      VDS_DISCOVERY_SOURCES_DIR: ${VDS_ENRICH_SOURCES_DIR:-}
+      VDS_CRAWLER_HOST_DELAY_MS: ${VDS_CRAWLER_HOST_DELAY_MS:-2000}
+      VDS_CRAWLER_MAX_BODY_BYTES: ${VDS_CRAWLER_MAX_BODY_BYTES:-2097152}
+      VDS_CRAWLER_USER_AGENT: ${VDS_CRAWLER_USER_AGENT:-}
+      VDS_CRAWLER_CONTACT_URL: ${VDS_CRAWLER_CONTACT_URL:-}
+    volumes:
+      # Shared by every `docker compose run`, so the launcher's flock spans them.
+      - enrich-lock:/var/lock/vds-enrich
+    read_only: true
+    tmpfs:
+      - /tmp:exec,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: ${VDS_ENRICH_MEM_LIMIT:-512m}
+    logging: *logging
+
   caddy:
     image: caddy:2.10-alpine
     restart: unless-stopped
@@ -84,6 +124,7 @@ services:
     logging: *logging
 
 volumes:
+  enrich-lock:
   postgres-data:
   caddy-data:
   caddy-config:

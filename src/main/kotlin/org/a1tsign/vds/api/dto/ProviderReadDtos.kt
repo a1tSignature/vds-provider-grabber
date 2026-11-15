@@ -7,6 +7,7 @@ import org.a1tsign.vds.domain.PaymentMethod
 import org.a1tsign.vds.domain.ProviderStatus
 import org.a1tsign.vds.domain.SystemStatus
 import java.math.BigDecimal
+import java.time.Instant
 
 /**
  * One row of `GET /api/v1/providers`. `registrationCountry` and `minMonthlyPriceUsd` are omitted
@@ -29,6 +30,8 @@ data class ProviderSummaryDto(
     val locationCountryCodes: Set<String> = emptySet(),
     val activeTariffCount: Int,
     @Contextual val minMonthlyPriceUsd: BigDecimal? = null,
+    /** Absent when the provider was never attempted; the enrichment process orders its queue by it. */
+    @Contextual val enrichmentLastAttemptAt: Instant? = null,
 )
 
 /** One tariff plus its current price rows (every billing period present), nested in [ProviderDetailDto]. */

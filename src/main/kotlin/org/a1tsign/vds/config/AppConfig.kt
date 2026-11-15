@@ -109,16 +109,14 @@ data class CrawlerConfig(
      * [loadConfig] always fills it, and `AppComponentsWiringTest` pins that production path.
      */
     val adapterEnv: AdapterEnv = AdapterEnv(emptyMap()),
-    val enrichment: EnrichmentConfig = EnrichmentConfig(),
 )
 
 /**
- * The `VDS_ENRICH_*` settings of the per-provider site enrichment step of a crawl run. With
- * [enabled] `false` nothing enrichment-related is constructed. The per-host delay, `User-Agent` and
- * body cap are the `VDS_CRAWLER_*` ones.
+ * The `VDS_ENRICH_*` budgets of the site enrichment process (`crawler.enrich.EnrichMain`), which
+ * loads them itself; the service does not read them. The per-host delay, `User-Agent` and body cap
+ * are the `VDS_CRAWLER_*` ones.
  */
 data class EnrichmentConfig(
-    val enabled: Boolean = true,
     /** A provider is due again once its last attempt is older than this. */
     val intervalHours: Long = 720,
     val providerTimeoutMinutes: Long = 4,
@@ -482,22 +480,6 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
     // adapter literally called `timeout` could ever see it.
     val crawlerAdapterEnv = AdapterEnv(env.filterKeys { it.startsWith(ADAPTER_ENV_PREFIX) })
 
-    // A malformed VDS_ENRICH_* value fails startup only while the crawler is enabled.
-    val enrichErrors = mutableListOf<String>()
-    val enrichment = EnrichmentConfig(
-        enabled = booleanFlag("VDS_ENRICH_ENABLED", true, enrichErrors),
-        intervalHours = positiveLong("VDS_ENRICH_INTERVAL_HOURS", 720L, enrichErrors),
-        providerTimeoutMinutes = positiveLong("VDS_ENRICH_PROVIDER_TIMEOUT_MINUTES", 4L, enrichErrors),
-        maxPages = boundedInt("VDS_ENRICH_MAX_PAGES", 25, 1, 50, enrichErrors),
-        maxPagesPerSection = positiveInt("VDS_ENRICH_MAX_PAGES_PER_SECTION", 4, enrichErrors),
-        maxSitemaps = positiveInt("VDS_ENRICH_MAX_SITEMAPS", 4, enrichErrors),
-    )
-    if (crawlerEnabled) {
-        errors += enrichErrors
-    } else {
-        enrichErrors.forEach { logger.warn("VDS_CRAWLER_ENABLED is false, so this does not prevent startup: {}", it) }
-    }
-
     // --- discovery (vds-004) ---
     // Its own error sink, merged into `errors` only while discovery is enabled: with it disabled
     // every violation below is logged once at WARN and the variable falls back to its default, so
@@ -652,7 +634,6 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
             maxOutOfStockRatio = crawlerMaxOutOfStockRatio,
             dryRunDefault = crawlerDryRunDefault,
             adapterEnv = crawlerAdapterEnv,
-            enrichment = enrichment,
         ),
         discovery = DiscoveryConfig(
             enabled = discoveryEnabled,

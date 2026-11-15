@@ -62,6 +62,8 @@ export interface ProviderSummaryDto {
   locationCountryCodes: string[];
   activeTariffCount: number;
   minMonthlyPriceUsd?: string;
+  /** ISO-8601; absent when the provider was never attempted. */
+  enrichmentLastAttemptAt?: string;
 }
 
 export interface LegalInfoDto {

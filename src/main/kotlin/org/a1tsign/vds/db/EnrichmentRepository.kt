@@ -7,6 +7,7 @@ import org.a1tsign.vds.domain.ProviderEnrichment
 import org.a1tsign.vds.domain.parseDbEnum
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.insertIgnore
@@ -20,6 +21,14 @@ class EnrichmentRepository {
     fun state(providerId: Long): ProviderEnrichment? =
         ProviderEnrichmentTable.selectAll().where { ProviderEnrichmentTable.providerId eq providerId }
             .firstOrNull()?.toProviderEnrichment()
+
+    /** `last_attempt_at` of those of [ids] that were ever attempted, in one statement. */
+    fun lastAttemptAtByProvider(ids: Collection<Long>): Map<Long, Instant> {
+        if (ids.isEmpty()) return emptyMap()
+        return ProviderEnrichmentTable.select(ProviderEnrichmentTable.providerId, ProviderEnrichmentTable.lastAttemptAt)
+            .where { ProviderEnrichmentTable.providerId inList ids }
+            .associate { it[ProviderEnrichmentTable.providerId] to it[ProviderEnrichmentTable.lastAttemptAt].toInstant() }
+    }
 
     /**
      * Records one attempt. [success] `null` keeps `last_success_at` and `evidence` as they are; a

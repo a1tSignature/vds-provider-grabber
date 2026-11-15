@@ -1,0 +1,13 @@
+# Site enrichment, one launch. Install with vds-enrich.timer (README §9):
+#   sudo cp vds-enrich.service vds-enrich.timer /etc/systemd/system/
+#   set WorkingDirectory below to this stand directory, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vds-enrich.timer
+[Unit]
+Description=vds-provider-grabber site enrichment (one launch)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/vds-stand
+ExecStart=/usr/bin/docker compose --profile enrich run --rm --no-deps enrich

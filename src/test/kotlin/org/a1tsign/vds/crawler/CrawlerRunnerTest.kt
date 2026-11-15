@@ -10,6 +10,7 @@ import org.a1tsign.vds.config.ConfigurationException
 import org.a1tsign.vds.crawler.model.AdapterRunResult
 import org.a1tsign.vds.crawler.model.AdapterRunStatus
 import org.a1tsign.vds.crawler.model.CrawlRunSummary
+import org.a1tsign.vds.crawler.model.EnrichmentReport
 import org.a1tsign.vds.crawler.model.FailureReason
 import org.a1tsign.vds.crawler.model.RunStatus
 import org.a1tsign.vds.crawler.support.CrawlerAppHarness
@@ -27,6 +28,7 @@ import org.a1tsign.vds.crawler.write.CatalogClientLimits
 import org.a1tsign.vds.crawler.write.CrawlWriter
 import org.a1tsign.vds.crawler.write.DryRunWriter
 import org.a1tsign.vds.crawler.write.Reconciler
+import org.a1tsign.vds.domain.EnrichmentOutcome
 import org.a1tsign.vds.support.AbstractDbTest
 import org.a1tsign.vds.support.CatalogFixture
 import org.a1tsign.vds.support.PostgresSupport
@@ -108,7 +110,7 @@ class CrawlerRunnerTest : AbstractDbTest() {
         withRunner(
             sleepingAdapter("alpha", Duration.ofSeconds(30), stubSnapshot("alpha", clock.instant())),
             snapshotAdapter("bravo", stubSnapshot("bravo", clock.instant())),
-            adapterTimeoutMs = 100,
+            adapterTimeoutOverridesMs = mapOf("alpha" to 100L),
         ) { ctx ->
             val summary = ctx.runner.runOnce(AdapterSelection(), dryRun = false)
 
@@ -239,6 +241,7 @@ class CrawlerRunnerTest : AbstractDbTest() {
                     providersCreated = 1,
                     tariffsCreated = 1,
                     pricesAppended = 2,
+                    enrichment = EnrichmentReport(EnrichmentOutcome.DISABLED, message = "VDS_ENRICH_ENABLED is false"),
                 ),
                 result.copy(durationMs = 0),
             )
@@ -378,6 +381,7 @@ class CrawlerRunnerTest : AbstractDbTest() {
     private fun withRunner(
         vararg adapters: ProviderAdapter,
         adapterTimeoutMs: Long = 20_000,
+        adapterTimeoutOverridesMs: Map<String, Long> = emptyMap(),
         runTimeoutMs: Long = 60_000,
         recording: Boolean = false,
         block: suspend (Ctx) -> Unit,
@@ -404,6 +408,7 @@ class CrawlerRunnerTest : AbstractDbTest() {
                 writerFactory = writerFactory,
                 pagesFetched = { fetcher.pagesFetched },
                 adapterTimeoutMs = adapterTimeoutMs,
+                adapterTimeoutOverridesMs = adapterTimeoutOverridesMs,
                 runTimeoutMs = runTimeoutMs,
             )
             runBlocking { block(Ctx(runner, harness, client, fetcher, recorder)) }

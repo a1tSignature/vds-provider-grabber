@@ -204,7 +204,56 @@ data class CatalogProviderDetail(
     val paymentMethods: List<CatalogPaymentMethod> = emptyList(),
     val locations: List<CatalogLocation> = emptyList(),
     val tariffs: List<CatalogTariffWithPrices> = emptyList(),
+    val enrichment: CatalogEnrichmentState? = null,
 )
+
+/** The `enrichment` block of the provider detail; absent until the first attempt was recorded. */
+@Serializable
+data class CatalogEnrichmentState(
+    @Serializable(with = OffsetInstantSerializer::class) val lastAttemptAt: Instant,
+    val lastOutcome: String = "",
+)
+
+@Serializable
+data class EvidenceItemWrite(val url: String, val kind: String, val snippet: String)
+
+/** [status] is `CONFIRMED` or `PRESUMED`. */
+@Serializable
+data class LegalFindingWrite(
+    val value: String,
+    val status: String,
+    val basis: List<String> = emptyList(),
+    val alternatives: List<String> = emptyList(),
+    val evidence: List<EvidenceItemWrite> = emptyList(),
+)
+
+/** [confidence] is `HIGH`, `MEDIUM` or `LOW`; the catalog writes only the first two. */
+@Serializable
+data class ValueFindingWrite(
+    val value: String,
+    val confidence: String,
+    val pages: Int = 0,
+    val evidence: List<EvidenceItemWrite> = emptyList(),
+)
+
+/**
+ * Body of `PUT /api/v1/providers/{id}/enrichment`. The catalog applies the "manual wins" rules
+ * itself, under the provider row lock; facets are accepted only with `outcome = SUCCESS`.
+ */
+@Serializable
+data class EnrichmentApplyWrite(
+    val outcome: String,
+    val message: String? = null,
+    val pagesFetched: Int = 0,
+    val observedFacets: List<String> = emptyList(),
+    val legalEntityName: LegalFindingWrite? = null,
+    val registrationCountry: LegalFindingWrite? = null,
+    val paymentMethods: List<ValueFindingWrite> = emptyList(),
+    val locations: List<ValueFindingWrite> = emptyList(),
+)
+
+@Serializable
+data class EnrichmentApplyResult(val valuesApplied: Int = 0)
 
 /** Body of `PUT /api/v1/providers/{id}/system-status`. */
 @Serializable

@@ -96,6 +96,41 @@ class DryRunWriter : CrawlWriter {
         record("PROMOTE_PROVIDER provider=$providerSlug systemStatus=${SystemStatus.CONFIGURED.name}")
     }
 
+    /**
+     * Mirrors the catalog's apply rules against [current]: a legal field is planned unless it is
+     * `MANUAL` or would not change, a payment method or country only when it is new at `HIGH` or
+     * `MEDIUM`. Dismissals are not visible here, so the count is an upper bound.
+     */
+    override suspend fun submitEnrichment(providerId: Long, request: EnrichmentApplyWrite, current: CatalogProviderDetail): Int {
+        if (request.outcome != SUCCESS_OUTCOME) {
+            record("ENRICH provider=$providerSlug outcome=${request.outcome}")
+            return 0
+        }
+        val legal = current.legalInfo
+        val observed = request.observedFacets.toSet()
+        val planned = mutableListOf<String>()
+        fun planLegal(field: String, finding: LegalFindingWrite?, currentValue: String?, currentOrigin: String?) {
+            if (finding == null || field in observed || currentOrigin == MANUAL_ORIGIN) return
+            val origin = if (finding.status == CONFIRMED_STATUS) "AUTO_CONFIRMED" else "AUTO_PRESUMED"
+            if (finding.value == currentValue && origin == currentOrigin) return
+            planned += "${legalFieldName(field)}=${finding.value} ($origin)"
+        }
+        planLegal(LEGAL_ENTITY_FACET, request.legalEntityName, legal?.legalEntityName, legal?.legalEntityNameOrigin)
+        planLegal(REGISTRATION_COUNTRY_FACET, request.registrationCountry, legal?.registrationCountry, legal?.registrationCountryOrigin)
+        if (PAYMENT_METHOD_FACET !in observed) {
+            val existing = current.paymentMethods.map { it.method }.toSet()
+            request.paymentMethods.filter { it.confidence in WRITABLE_CONFIDENCES && it.value !in existing }
+                .forEach { planned += "paymentMethod=${it.value} (AUTO)" }
+        }
+        if (LOCATION_FACET !in observed) {
+            val existing = current.locations.map { it.countryCode }.toSet()
+            request.locations.filter { it.confidence in WRITABLE_CONFIDENCES && it.value !in existing }
+                .forEach { planned += "location=${it.value} (AUTO)" }
+        }
+        planned.forEach { record("ENRICH provider=$providerSlug $it") }
+        return planned.size
+    }
+
     private fun record(line: String) = synchronized(lock) {
         if (operations.size < PLANNED_OPERATIONS_LIMIT) operations += line
     }
@@ -108,10 +143,24 @@ class DryRunWriter : CrawlWriter {
     private fun tariffLabel(tariffId: Long): String =
         synchronized(lock) { tariffNames[tariffId] } ?: "#$tariffId"
 
+    private fun legalFieldName(facet: String): String =
+        if (facet == LEGAL_ENTITY_FACET) "legalEntityName" else "registrationCountry"
+
     private fun renderLocation(request: LocationWrite): String =
         "country=${request.countryCode} city=${request.city ?: "-"} dc=${request.datacenterName ?: "-"}"
 
     /** Mirrors `uq_location_provider_country_city_dc`, so the same row keeps the same id. */
     private fun locationKey(request: LocationWrite): String =
         "${request.countryCode}|${request.city.orEmpty().lowercase()}|${request.datacenterName.orEmpty().lowercase()}"
+
+    private companion object {
+        const val SUCCESS_OUTCOME = "SUCCESS"
+        const val CONFIRMED_STATUS = "CONFIRMED"
+        const val MANUAL_ORIGIN = "MANUAL"
+        const val LEGAL_ENTITY_FACET = "LEGAL_ENTITY_NAME"
+        const val REGISTRATION_COUNTRY_FACET = "REGISTRATION_COUNTRY"
+        const val PAYMENT_METHOD_FACET = "PAYMENT_METHOD"
+        const val LOCATION_FACET = "LOCATION"
+        val WRITABLE_CONFIDENCES = setOf("HIGH", "MEDIUM")
+    }
 }

@@ -349,6 +349,15 @@ class CatalogApiClient(
         )
     }
 
+    /** Applies one enrichment result server-side; see [EnrichmentApplyWrite]. */
+    suspend fun putEnrichment(providerId: Long, request: EnrichmentApplyWrite): EnrichmentApplyResult =
+        call(
+            HttpMethod.Put,
+            "$PROVIDERS_PATH/$providerId/enrichment",
+            EnrichmentApplyResult.serializer(),
+            body = encode(EnrichmentApplyWrite.serializer(), request),
+        ).value
+
     override fun close() = client.close()
 
     private data class CallResult<T>(val status: Int, val value: T)

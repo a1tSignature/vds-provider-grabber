@@ -35,6 +35,7 @@ import org.a1tsign.vds.crawler.SnapshotValidator
 import org.a1tsign.vds.crawler.adapters.DeclarativeAdapter
 import org.a1tsign.vds.crawler.config.SourceConfigLoader
 import org.a1tsign.vds.crawler.config.SourceLoadReport
+import org.a1tsign.vds.crawler.enrich.EnrichmentStep
 import org.a1tsign.vds.crawler.fetch.KtorPageFetcher
 import org.a1tsign.vds.crawler.fetch.crawlerHttpClient
 import org.a1tsign.vds.crawler.write.ApiCrawlWriter
@@ -362,6 +363,12 @@ fun buildComponents(
             adapterConfig = { adapterId -> crawlerAdapterConfig(adapterId, config.crawler.adapterEnv.reveal()) },
             pagesFetched = { fetcher.pagesFetched },
             slot = runSlot,
+            // The same fetcher as the adapters, so the per-host delay and the robots cache are shared.
+            enrichment = if (config.crawler.enrichment.enabled) {
+                EnrichmentStep(config.crawler.enrichment, fetcher, catalogClient, clock, pagesFetched = { fetcher.pagesFetched })
+            } else {
+                null
+            },
         )
         crawlerRegistry = registry
         crawlerFetchHttpClient = fetchClient

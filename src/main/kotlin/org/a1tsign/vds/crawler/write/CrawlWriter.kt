@@ -61,6 +61,13 @@ interface CrawlWriter {
      * discovered `CANDIDATE` row. Takes no target value, so it cannot express a demotion.
      */
     suspend fun promoteProviderToConfigured(providerId: Long)
+
+    /**
+     * `PUT /api/v1/providers/{id}/enrichment` -> how many values the catalog changed. [current] is
+     * the provider as the enrichment step just read it; only a recording writer uses it, to
+     * approximate that count without a write.
+     */
+    suspend fun submitEnrichment(providerId: Long, request: EnrichmentApplyWrite, current: CatalogProviderDetail): Int
 }
 
 /** Narrower than [PriceWriteOutcome]: a dry-run writer has no stored row to return. */

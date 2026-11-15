@@ -26,6 +26,7 @@ import org.a1tsign.vds.crawler.fetch.crawlerHttpClient
 import org.a1tsign.vds.crawler.model.AdapterRunResult
 import org.a1tsign.vds.crawler.model.AdapterRunStatus
 import org.a1tsign.vds.crawler.model.CrawlRunSummary
+import org.a1tsign.vds.crawler.model.EnrichmentReport
 import org.a1tsign.vds.crawler.model.FailureReason
 import org.a1tsign.vds.crawler.model.RunStatus
 import org.a1tsign.vds.crawler.support.CrawlerAppHarness
@@ -38,6 +39,7 @@ import org.a1tsign.vds.crawler.write.CatalogTariff
 import org.a1tsign.vds.crawler.write.CrawlWriter
 import org.a1tsign.vds.crawler.write.DryRunWriter
 import org.a1tsign.vds.crawler.write.Reconciler
+import org.a1tsign.vds.domain.EnrichmentOutcome
 import org.a1tsign.vds.support.AbstractDbTest
 import java.time.Duration
 import kotlin.test.Test
@@ -326,6 +328,7 @@ class CrawlerEndToEndTest : AbstractDbTest() {
         tariffsCreated = tariffsCreated,
         pricesAppended = pricesAppended,
         pricesUnchanged = pricesUnchanged,
+        enrichment = EnrichmentReport(EnrichmentOutcome.DISABLED, message = "VDS_ENRICH_ENABLED is false"),
     )
 
     private fun expectedSummary(ctx: Ctx, actual: CrawlRunSummary, adapter: AdapterRunResult) = CrawlRunSummary(

@@ -3,10 +3,12 @@ import { Link, useLocation, useNavigate } from "react-router";
 import { useApiQuery } from "../../api/hooks";
 import type { PageResponse, ProviderSummaryDto } from "../../api/types";
 import { OriginBadge } from "../../components/OriginBadge";
+import { SystemStatusBadge } from "../../components/SystemStatusBadge";
 import { Pagination } from "../../components/Pagination";
 import { Empty, ErrorView, Loading } from "../../components/StateViews";
 import { DictionarySelect } from "../../dictionaries/DictionarySelect";
 import { PaymentMethodIcon, paymentMethodLabel } from "../../domain/paymentMethods";
+import { systemStatusFilterLabel } from "../../domain/systemStatusLabels";
 import { EditorOnly } from "../../forms/FormParts";
 import { useDictionaries } from "../../dictionaries/DictionariesContext";
 import { formatMoney, websiteHost } from "../../lib/format";
@@ -103,6 +105,13 @@ export function ProvidersListScreen() {
     updateFilters({ paymentMethod: next, page: 0 });
   }
 
+  function toggleSystemStatus(systemStatus: string) {
+    const next = filters.systemStatus.includes(systemStatus)
+      ? filters.systemStatus.filter((item) => item !== systemStatus)
+      : [...filters.systemStatus, systemStatus];
+    updateFilters({ systemStatus: next, page: 0 });
+  }
+
   return (
     <div className="providers-list">
       <div className="page-header">
@@ -145,6 +154,27 @@ export function ProvidersListScreen() {
           />
           Только с активными тарифами
         </label>
+        <fieldset className="payment-methods-filter">
+          <legend>Статус в системе</legend>
+          {dictionaries.systemStatuses.map((systemStatus) => (
+            <label key={systemStatus} className="pm-option">
+              <input
+                type="checkbox"
+                checked={filters.systemStatus.includes(systemStatus)}
+                onChange={() => toggleSystemStatus(systemStatus)}
+              />
+              {systemStatusFilterLabel(systemStatus)}
+            </label>
+          ))}
+          <button
+            type="button"
+            className="btn-link"
+            onClick={() => updateFilters({ systemStatus: [...dictionaries.systemStatuses], page: 0 })}
+          >
+            все
+          </button>
+          {filters.systemStatus.length === 0 && <span className="muted">не выбрано — только настроенные</span>}
+        </fieldset>
         <fieldset className="payment-methods-filter">
           <legend>Способы оплаты</legend>
           {dictionaries.paymentMethods.map((method) => (
@@ -197,7 +227,8 @@ export function ProvidersListScreen() {
                 {data.content.map((provider) => (
                   <tr key={provider.id}>
                     <td>
-                      <Link to={`/providers/${provider.id}`}>{provider.name}</Link>
+                      <Link to={`/providers/${provider.id}`}>{provider.name}</Link>{" "}
+                      <SystemStatusBadge systemStatus={provider.systemStatus} />
                       <div className="muted">{provider.slug}</div>
                     </td>
                     <td className="cell-link">
@@ -206,7 +237,13 @@ export function ProvidersListScreen() {
                       </a>
                     </td>
                     <td className="num">
-                      {provider.minMonthlyPriceUsd !== undefined ? `$${formatMoney(provider.minMonthlyPriceUsd)}/мес` : "—"}
+                      {provider.minMonthlyPriceUsd === undefined && provider.minAnnualPriceUsdPerMonth === undefined && "—"}
+                      {provider.minMonthlyPriceUsd !== undefined && <div>${formatMoney(provider.minMonthlyPriceUsd)}/мес</div>}
+                      {provider.minAnnualPriceUsdPerMonth !== undefined && (
+                        <div className={provider.minMonthlyPriceUsd !== undefined ? "muted" : undefined}>
+                          ${formatMoney(provider.minAnnualPriceUsdPerMonth)}/мес при оплате за год
+                        </div>
+                      )}
                     </td>
                     <td>{provider.status}</td>
                     <td>

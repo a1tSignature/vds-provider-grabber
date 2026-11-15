@@ -156,18 +156,13 @@ class DiscoveryRunner(
     private val history = ArrayDeque<DiscoveryPassSummary>()
 
     /**
-     * The configured denylist in the same canonical form a search hit is compared in
-     * ([DomainName.normalize]): without it `www.facebook.com`, `reddit.com.` or `пример.рф` would
-     * sit in the configuration and never match anything. An entry may be a bare host or a full
-     * URL; one that is not a domain at all is dropped with a WARN rather than failing the start.
+     * The configured denylist in the same canonical form a search hit is compared in: without it
+     * `www.facebook.com`, `reddit.com.` or `пример.рф` would sit in the configuration and never
+     * match anything. An entry that is not a domain is dropped with a WARN rather than failing the start.
      */
-    private val deniedDomains: Set<String> = config.domainDenylist.mapNotNullTo(LinkedHashSet()) { entry ->
-        val normalized = DomainName.normalize(if (entry.contains("://")) entry else "https://$entry/")
-        if (normalized == null) {
-            logger.warn("discovery denylist entry '{}' is not a domain and is ignored", entry)
-        }
-        normalized
-    }
+    private val deniedDomains: Set<String> = canonicalDomains(config.domainDenylist) { entry ->
+        logger.warn("discovery denylist entry '{}' is not a domain and is ignored", entry)
+    }.toSet()
 
     @Volatile
     private var active: Active? = null
@@ -359,7 +354,9 @@ class DiscoveryRunner(
                 for (row in result.content) {
                     providers++
                     if (providers > max) return tooMany(pass, providers.toLong())
-                    known.add(DomainName.normalize(row.websiteUrl), row.slug)
+                    val domain = DomainName.normalize(row.websiteUrl)
+                    known.add(domain, row.slug)
+                    domain?.let { known.add(collapseServiceSubdomain(it), null) }
                 }
                 page++
                 if (page >= result.totalPages || result.content.isEmpty()) break
@@ -420,10 +417,13 @@ class DiscoveryRunner(
         val progress = pass.progress
         progress.resultsSeen++
         if (hit.url.length > RESULT_URL_MAX_LENGTH) return progress.reject(RejectionReason.MALFORMED_URL)
-        val domain = DomainName.normalize(hit.url) ?: return progress.reject(RejectionReason.MALFORMED_URL)
-        if (isDenied(domain)) return progress.reject(RejectionReason.DENYLIST)
+        val host = DomainName.normalize(hit.url) ?: return progress.reject(RejectionReason.MALFORMED_URL)
+        val domain = collapseServiceSubdomain(host)
+        // The host too: an entry such as `docs.microsoft.com` names a subdomain on purpose.
+        if (isDenied(host) || isDenied(domain)) return progress.reject(RejectionReason.DENYLIST)
         val slug = DomainName.slug(domain)
         if (known.contains(domain, slug)) return progress.reject(RejectionReason.ALREADY_KNOWN)
+        if (isListicle(hit)) return progress.reject(RejectionReason.LISTICLE)
         if (!matchesKeyword(hit)) return progress.reject(RejectionReason.KEYWORD)
         if (slug == null) return progress.reject(RejectionReason.SLUG_TOO_LONG)
         if (progress.newCandidates() >= config.maxNewCandidatesPerPass) {

@@ -86,6 +86,7 @@ class DiscoveryEndToEndTest : AbstractDbTest() {
                         RejectionReason.MALFORMED_URL to 1,
                         RejectionReason.SLUG_TOO_LONG to 1,
                         RejectionReason.ALREADY_KNOWN to 3,
+                        RejectionReason.LISTICLE to 0,
                     ),
                     summary.resultsRejected,
                 )

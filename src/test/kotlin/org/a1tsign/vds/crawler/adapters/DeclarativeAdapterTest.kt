@@ -420,6 +420,79 @@ class DeclarativeAdapterTest : AbstractDbTest() {
         }
     }
 
+    @Test
+    fun `a struck-out former price is ignored unless the config asks for the regular price`() {
+        val usd = """{"bySymbol": {"$DOLLAR": "USD"}}"""
+        assertEquals(BigDecimal("8"), price("<del>${DOLLAR}12</del> ${DOLLAR}8 /mo", usd).amount)
+        assertEquals(BigDecimal("12"), price("<del>${DOLLAR}12</del> ${DOLLAR}8 /mo", usd, regularPrice = true).amount)
+        assertEquals(
+            BigDecimal("12.99"),
+            price("""<div class="old-price"><span class="x-strike">$DOLLAR</span><span class="x-strike">12.99</span></div> ${DOLLAR}1.99""", usd, regularPrice = true).amount,
+            "struck parts are read together, so a symbol in its own span still counts",
+        )
+        assertEquals(BigDecimal("8"), price("${DOLLAR}8 /mo", usd).amount, "nothing struck: the shown price")
+        assertEquals(
+            BigDecimal("44"),
+            price("""<div><p class="now">${DOLLAR}20 / year</p><p><span class="line-through">${DOLLAR}44</span> with a code</p></div>""", usd, regularPrice = true, selector = "p.now").amount,
+            "a struck amount beside the selected price counts too",
+        )
+        assertEquals(BigDecimal("1.99"), price("""<span class="price-old">${DOLLAR}12.99</span> ${DOLLAR}1.99""", usd).amount)
+    }
+
+    @Test
+    fun `the number next to the currency symbol is the amount, ahead of a discount percentage`() {
+        val eur = """{"bySymbol": {"€": "EUR"}}"""
+        assertEquals(BigDecimal("6.00"), price("6.00 € \u221237%", eur).amount)
+        assertEquals(BigDecimal("5.00"), price("Save 20% - ${DOLLAR}5.00/mo", """{"bySymbol": {"$DOLLAR": "USD"}}""").amount)
+        assertEquals(BigDecimal("2094"), price("2 094 ₽", """{"bySymbol": {"₽": "RUB"}}""", grouping = " ").amount)
+    }
+
+    @Test
+    fun `multiplied sizes are summed and enum and flag values match by the longest contained key`() {
+        val page = """
+            <html><body><table><tbody>
+              <tr><td>vds.ryzen-16</td><td>200 GB NVMe</td><td>Buy now</td></tr>
+              <tr><td>vds.v1-max</td><td>2 x 960 GB SSD</td><td>Pre-Order</td></tr>
+            </tbody></table></body></html>
+        """.trimIndent()
+        val json = """
+            {
+              "schemaVersion": 1, "id": "multi", "providerSlug": "multi-test", "baseUrl": "https://multi.test",
+              "provider": {"name": {"value": "Multi"}, "websiteUrl": {"value": "https://multi.test/"}},
+              "tariffs": {
+                "rootSelector": "table", "rowSelector": "tbody tr",
+                "name": {"selector": "td:nth-child(1)", "text": true},
+                "vcpuCount": {"value": "4"}, "ramMb": {"value": "16384"}, "ipv4Count": {"value": "1"},
+                "diskGb": {"selector": "td:nth-child(2)", "text": true},
+                "diskType": {"selector": "td:nth-child(2)", "text": true, "values": {"NVMe": "NVME", "SSD": "SSD", "HDD": "HDD"}},
+                "inStock": {"selector": "td:nth-child(3)", "text": true, "values": {"Pre-Order": false}, "default": true},
+                "virtualization": {"value": "KVM"}
+              }
+            }
+        """.trimIndent()
+
+        val tariffs = snapshot(json, page).tariffs!!
+
+        assertEquals(listOf(200, 1920), tariffs.map { it.diskGb })
+        assertEquals(listOf(DiskType.NVME, DiskType.SSD), tariffs.map { it.diskType })
+        assertEquals(listOf(true, false), tariffs.map { it.inStock })
+    }
+
+    @Test
+    fun `colliding tariff names are prefixed with the spec that tells them apart, only when asked`() {
+        val rows = planRow(ram = "16384") + planRow(ram = "16384").replace("<td class=\"disk\">", "<td class=\"disk\">1")
+        val page = acmePage(planRows = rows)
+
+        val plain = snapshot(acmeConfig(tariffsSection()), page).tariffs!!
+        assertEquals(listOf("VPS 1", "VPS 1"), plain.map { it.name }, "off by default: the validator refuses the pair")
+
+        val prefixed = snapshot(acmeConfig(tariffsSection(extra = ", \"disambiguateNames\": true")), page).tariffs!!
+        assertEquals(
+            listOf("${plain[0].diskGb} GB disk · VPS 1", "${plain[1].diskGb} GB disk · VPS 1"),
+            prefixed.map { it.name },
+        )
+    }
+
     // ---------- helpers ----------
 
     private fun price(
@@ -427,11 +500,13 @@ class DeclarativeAdapterTest : AbstractDbTest() {
         currency: String,
         grouping: String? = null,
         decimal: String = ".",
+        regularPrice: Boolean = false,
+        selector: String = "td.month",
     ): PriceSnapshot {
         val grouped = grouping?.let { """"grouping": "$it", """ } ?: ""
         val spec = """
             {
-              "billingPeriod": "MONTHLY", "selector": "td.month", "text": true,
+              "billingPeriod": "MONTHLY", "selector": "$selector", "text": true, "regularPrice": $regularPrice,
               $grouped"decimal": "$decimal", "currency": $currency
             }
         """.trimIndent()

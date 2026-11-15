@@ -69,11 +69,16 @@ class ProviderReadApiTest : AbstractDbTest() {
             val content = Json.parseToJsonElement(response.bodyAsText()).jsonObject.getValue("content").jsonArray
             fun summaryOf(id: Long) = content.first { it.jsonObject.getValue("id").jsonPrimitive.long == id }.jsonObject
             fun minPrice(id: Long): BigDecimal? = summaryOf(id)["minMonthlyPriceUsd"]?.jsonPrimitive?.content?.let(::BigDecimal)
+            fun minAnnualPerMonth(id: Long): BigDecimal? =
+                summaryOf(id)["minAnnualPriceUsdPerMonth"]?.jsonPrimitive?.content?.let(::BigDecimal)
 
             assertEquals(BigDecimal("9.0000"), minPrice(fixture.nimbus.id)) // several tariffs; cheapest current MONTHLY wins
-            assertEquals(BigDecimal("15.0000"), minPrice(fixture.polaris.id)) // cheapest is is_active=false -> excluded; in_stock=false still counts
+            assertNull(minPrice(fixture.polaris.id)) // cheapest is is_active=false, the other in_stock=false -> both excluded
             assertEquals(BigDecimal("18.0000"), minPrice(fixture.vertex.id)) // cheapest has amount_usd=NULL -> ignored
             assertNull(minPrice(fixture.wayfarer.id)) // only ANNUAL prices present
+            assertEquals(BigDecimal("10.0000"), minAnnualPerMonth(fixture.wayfarer.id)) // 120.00 / 12
+            assertEquals(BigDecimal("8.3333"), minAnnualPerMonth(fixture.nimbus.id)) // 100.00 / 12, half-up
+            assertNull(minAnnualPerMonth(fixture.vertex.id)) // no ANNUAL price at all
             assertNull(minPrice(fixture.dormant.id)) // no active tariffs at all
             assertEquals(BigDecimal("5.0000"), minPrice(fixture.zephyr.id))
 
@@ -93,13 +98,14 @@ class ProviderReadApiTest : AbstractDbTest() {
                     .map { it.jsonObject.getValue("id").jsonPrimitive.long }
             }
 
-            val nullPriced = setOf(fixture.wayfarer.id, fixture.dormant.id)
+            val nullPriced = setOf(fixture.polaris.id, fixture.dormant.id)
             val asc = idsSorted("minMonthlyPriceUsd")
             val desc = idsSorted("minMonthlyPriceUsd,desc")
             assertEquals(nullPriced, asc.takeLast(2).toSet(), "nulls must sort last ascending")
             assertEquals(nullPriced, desc.takeLast(2).toSet(), "nulls must sort last descending too")
 
-            val expectedAscOrder = listOf(fixture.zephyr.id, fixture.nimbus.id, fixture.polaris.id, fixture.vertex.id)
+            // By the lower of the two: zephyr 5, nimbus 8.3333 (annual), wayfarer 10 (annual only), vertex 18.
+            val expectedAscOrder = listOf(fixture.zephyr.id, fixture.nimbus.id, fixture.wayfarer.id, fixture.vertex.id)
             assertEquals(expectedAscOrder, asc.take(4))
             assertEquals(expectedAscOrder.reversed(), desc.take(4))
 

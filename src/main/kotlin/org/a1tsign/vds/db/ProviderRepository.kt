@@ -29,9 +29,23 @@ import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.TransactionManager
 import org.jetbrains.exposed.v1.jdbc.update
 import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.Instant
 
 /** The `GET /api/v1/providers` filter set -- every field `null`/empty means "no constraint". */
+/**
+ * The cheapest current monthly price and the cheapest current annual price divided by 12, both in
+ * USD; [lowest] is the smaller of the two, the value the provider list sorts by.
+ */
+data class MinPricesUsd(val monthly: BigDecimal?, val annualPerMonth: BigDecimal?) {
+    val lowest: BigDecimal? get() = listOfNotNull(monthly, annualPerMonth).minOrNull()
+}
+
+private val MONTHS_PER_YEAR = BigDecimal(12)
+
+/** `NUMERIC(12, 4)`, the scale every stored USD amount has. */
+private const val MONEY_SCALE = 4
+
 data class ProviderListFilter(
     val q: String? = null,
     val status: ProviderStatus? = null,
@@ -221,34 +235,38 @@ class ProviderRepository {
 
     /**
      * Hand-written, parameterised SQL (ADR-04's named exception for this exact aggregate): the
-     * minimum **current** (`effective_to IS NULL`) **MONTHLY** `amount_usd` among a provider's
-     * **active** tariffs, skipping rows with no FX rate (`amount_usd IS NULL`) -- a two-table
-     * `GROUP BY ... MIN()` with a NULL-skip that reads far more naturally as SQL than as nested
-     * Exposed DSL aggregates, and is also the value the provider list sorts by when
-     * `sort=minMonthlyPriceUsd` (see [org.a1tsign.vds.service.CatalogQueryService.listProviders]).
-     * `in_stock` is deliberately absent from the `WHERE` clause -- it must never affect this value.
-     * [ids] is bound as individual `?` placeholders, never concatenated into the statement text.
+     * minimum **current** (`effective_to IS NULL`) MONTHLY and ANNUAL `amount_usd` among a
+     * provider's tariffs that can be bought now (**active and in stock**), skipping rows with no FX
+     * rate (`amount_usd IS NULL`). [ids] is bound as individual `?` placeholders, never
+     * concatenated into the statement text.
      */
-    fun minMonthlyPriceUsdByProvider(ids: Collection<Long>): Map<Long, BigDecimal?> {
+    fun minPricesUsdByProvider(ids: Collection<Long>): Map<Long, MinPricesUsd> {
         if (ids.isEmpty()) return emptyMap()
         val idList = ids.distinct()
         val placeholders = idList.joinToString(",") { "?" }
         val sql = """
-            SELECT t.provider_id AS provider_id, MIN(tp.amount_usd) AS min_price
+            SELECT t.provider_id AS provider_id,
+                   MIN(CASE WHEN tp.billing_period = 'MONTHLY' THEN tp.amount_usd END) AS min_monthly,
+                   MIN(CASE WHEN tp.billing_period = 'ANNUAL' THEN tp.amount_usd END) AS min_annual
             FROM tariff t
             JOIN tariff_price tp ON tp.tariff_id = t.id
             WHERE t.is_active = TRUE
-              AND tp.billing_period = 'MONTHLY'
+              AND t.in_stock = TRUE
+              AND tp.billing_period IN ('MONTHLY', 'ANNUAL')
               AND tp.effective_to IS NULL
               AND tp.amount_usd IS NOT NULL
               AND t.provider_id IN ($placeholders)
             GROUP BY t.provider_id
         """.trimIndent()
         val args: List<Pair<IColumnType<*>, Any?>> = idList.map { LongColumnType() to it }
-        val result = mutableMapOf<Long, BigDecimal?>()
+        val result = mutableMapOf<Long, MinPricesUsd>()
         TransactionManager.current().exec(sql, args, StatementType.SELECT) { rs ->
             while (rs.next()) {
-                result[rs.getLong("provider_id")] = rs.getBigDecimal("min_price")
+                val annual: BigDecimal? = rs.getBigDecimal("min_annual")
+                result[rs.getLong("provider_id")] = MinPricesUsd(
+                    monthly = rs.getBigDecimal("min_monthly"),
+                    annualPerMonth = annual?.divide(MONTHS_PER_YEAR, MONEY_SCALE, RoundingMode.HALF_UP),
+                )
             }
         }
         return result

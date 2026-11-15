@@ -125,7 +125,7 @@ paths:
       description: >-
         Required role: VIEWER. Filters are ANDed together; paymentMethod is repeatable (a provider
         must have every listed method). Sortable fields: id, name, slug, status, createdAt,
-        minMonthlyPriceUsd.
+        minMonthlyPriceUsd (sorts by the lower of minMonthlyPriceUsd and minAnnualPriceUsdPerMonth).
       parameters:
         - name: q
           in: query
@@ -1606,7 +1606,15 @@ components:
         minMonthlyPriceUsd:
           type: string
           pattern: "^\\d{1,8}(\\.\\d{1,4})?$"
-          description: Absent when there is no current MONTHLY price among this provider's active tariffs.
+          description: >-
+            The cheapest current MONTHLY price among this provider's tariffs that are active and in
+            stock; absent when there is none.
+        minAnnualPriceUsdPerMonth:
+          type: string
+          pattern: "^\\d{1,8}(\\.\\d{1,4})?$"
+          description: >-
+            The cheapest current ANNUAL price among this provider's tariffs that are active and in
+            stock, divided by 12 (4 decimals, half-up); absent when there is none.
         enrichmentLastAttemptAt:
           type: string
           format: date-time
@@ -2154,9 +2162,10 @@ components:
           type: object
           additionalProperties: { type: integer }
           description: >-
-            Keyed by DENYLIST, KEYWORD, MALFORMED_URL, SLUG_TOO_LONG, ALREADY_KNOWN; every key is
-            present. MALFORMED_URL also counts a hit whose URL is longer than 2048 characters.
-          example: { DENYLIST: 12, KEYWORD: 3, MALFORMED_URL: 0, SLUG_TOO_LONG: 0, ALREADY_KNOWN: 7 }
+            Keyed by DENYLIST, KEYWORD, MALFORMED_URL, SLUG_TOO_LONG, ALREADY_KNOWN, LISTICLE; every
+            key is present. MALFORMED_URL also counts a hit whose URL is longer than 2048 characters;
+            LISTICLE counts ranking and comparison pages, judged by title and URL path.
+          example: { DENYLIST: 12, KEYWORD: 3, MALFORMED_URL: 0, SLUG_TOO_LONG: 0, ALREADY_KNOWN: 7, LISTICLE: 2 }
         knownProviders:
           type: integer
           description: Providers already in the catalog when the pass started, in every systemStatus.

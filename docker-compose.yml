@@ -69,6 +69,34 @@ services:
         psql -v ON_ERROR_STOP=1 -q -f /seed/dev-seed.sql
         echo "dev-seed applied"
 
+  # One-off: `docker compose run --rm catalog` loads catalog-seed/catalog-dump.sql (not committed)
+  # into an empty catalogue after the app has migrated the schema; skips itself otherwise, because
+  # the dump is data only and not re-runnable.
+  catalog:
+    image: postgres:17-alpine
+    profiles: ["catalog"]
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${VDS_DB_NAME:-vds}
+      PGUSER: ${VDS_DB_USER:-vds}
+      PGPASSWORD: ${VDS_DB_PASSWORD:-vds}
+    volumes:
+      - ./catalog-seed/catalog-dump.sql:/seed/catalog-dump.sql:ro
+    entrypoint:
+      - sh
+      - -ec
+      - |
+        count=$$(psql -tAc 'SELECT count(*) FROM provider')
+        if [ "$$count" != "0" ]; then
+          echo "catalog dump skipped: the catalogue already has $$count providers"
+          exit 0
+        fi
+        psql -v ON_ERROR_STOP=1 -1 -q -f /seed/catalog-dump.sql
+        echo "catalog dump loaded: $$(psql -tAc 'SELECT count(*) FROM provider') providers"
+
   # Vite dev server with hot reload, proxying the API to the `app` container:
   # `docker compose --profile dev up -d`, then http://localhost:5173.
   frontend:

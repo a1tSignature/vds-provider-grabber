@@ -62,6 +62,8 @@ export interface ProviderSummaryDto {
   locationCountryCodes: string[];
   activeTariffCount: number;
   minMonthlyPriceUsd?: string;
+  /** The cheapest current ANNUAL price divided by 12; both minimums count only active, in-stock tariffs. */
+  minAnnualPriceUsdPerMonth?: string;
   /** ISO-8601; absent when the provider was never attempted. */
   enrichmentLastAttemptAt?: string;
 }

@@ -10,8 +10,9 @@ import java.math.BigDecimal
 import java.time.Instant
 
 /**
- * One row of `GET /api/v1/providers`. `registrationCountry` and `minMonthlyPriceUsd` are omitted
- * when absent; a missing `minMonthlyPriceUsd` means no current MONTHLY price among active tariffs.
+ * One row of `GET /api/v1/providers`. Optional fields are omitted when absent. The two minimum
+ * prices are taken over tariffs that are active and in stock: `minMonthlyPriceUsd` over current
+ * MONTHLY prices, `minAnnualPriceUsdPerMonth` over current ANNUAL prices divided by 12.
  */
 @Serializable
 data class ProviderSummaryDto(
@@ -30,6 +31,7 @@ data class ProviderSummaryDto(
     val locationCountryCodes: Set<String> = emptySet(),
     val activeTariffCount: Int,
     @Contextual val minMonthlyPriceUsd: BigDecimal? = null,
+    @Contextual val minAnnualPriceUsdPerMonth: BigDecimal? = null,
     /** Absent when the provider was never attempted; the enrichment process orders its queue by it. */
     @Contextual val enrichmentLastAttemptAt: Instant? = null,
 )

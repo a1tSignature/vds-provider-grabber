@@ -19,7 +19,8 @@ import java.net.URI
  * `vps.example.com` and `example.com` normalize to different domains and therefore to different
  * slugs. Reducing them to one registrable domain would need a public-suffix list -- a new dependency
  * plus a data file that goes stale -- and per-domain granularity is an accepted product decision: a
- * reseller on a subdomain really is a different catalog row.
+ * reseller on a subdomain really is a different catalog row. Discovery narrows this for service and
+ * edition labels (`docs.`, `billing.`, `us.`) only; see `discovery/HitFilter.kt`.
  */
 object DomainName {
 

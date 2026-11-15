@@ -48,6 +48,7 @@ import org.a1tsign.vds.discovery.CreditLedger
 import org.a1tsign.vds.discovery.DiscoveryRunner
 import org.a1tsign.vds.discovery.SearchProvider
 import org.a1tsign.vds.discovery.TavilySearchProvider
+import org.a1tsign.vds.discovery.canonicalDomains
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import io.ktor.client.HttpClient
@@ -378,6 +379,7 @@ fun buildComponents(
                     apiKey = checkNotNull(discovery.searchApiKey) { "VDS_DISCOVERY_SEARCH_API_KEY is required" },
                     requestTimeoutMs = TimeUnit.SECONDS.toMillis(discovery.searchTimeoutSeconds),
                     maxResponseBytes = discovery.maxResponseBytes,
+                    excludeDomains = canonicalDomains(discovery.domainDenylist),
                 )
                 discoverySearchProvider = tavily
                 discoverySearchHttpClient = tavily.client

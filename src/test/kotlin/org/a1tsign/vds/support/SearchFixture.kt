@@ -21,8 +21,8 @@ import java.time.Instant
  * - [nimbus]: several tariffs; the cheapest *current* MONTHLY price wins (9.00 USD), including one
  *   tariff with a **closed** MONTHLY row (20.00) superseded by a newer current one (9.00), and one
  *   tariff whose only price is ANNUAL (never mixed with MONTHLY).
- * - [polaris]: the cheapest tariff (3.00) is `is_active = false` and excluded; the next (15.00,
- *   `in_stock = false`) wins -- proving `in_stock` never affects the aggregate.
+ * - [polaris]: the cheapest tariff (3.00) is `is_active = false` and the other (15.00) is
+ *   `in_stock = false`: both are excluded, so `minMonthlyPriceUsd` is absent/null.
  * - [vertex]: the cheapest current MONTHLY price (on an active tariff) has `amount_usd = NULL` (no
  *   FX rate) and is ignored; the next cheapest (18.00) wins. `status = INACTIVE`.
  * - [wayfarer]: one active tariff has only an ANNUAL price, another active tariff has no price row
@@ -104,7 +104,7 @@ class SearchFixture(private val database: Database) {
         val nimbusArchive = catalog.createTariff(nimbus.id, "Nimbus Archive", base, vcpuCount = 1, ramMb = 512, diskGb = 10, diskType = DiskType.HDD)
         catalog.createTariffPrice(nimbusArchive.id, BigDecimal("100.00"), "USD", BillingPeriod.ANNUAL, base, amountUsd = BigDecimal("100.0000"))
 
-        // polaris: cheapest (3.00) is inactive and excluded; the active 15.00 is in_stock = false and still counts.
+        // polaris: cheapest (3.00) is inactive, the 15.00 is out of stock -- neither counts.
         val polarisMini = catalog.createTariff(
             polaris.id, "Polaris Mini", base, vcpuCount = 1, ramMb = 512, diskGb = 10, diskType = DiskType.HDD, isActive = false,
         )

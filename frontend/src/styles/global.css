@@ -230,6 +230,15 @@ th.num {
   gap: var(--sp-1);
 }
 
+.btn-link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--acc);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 .pm-option {
   display: inline-flex;
   align-items: center;

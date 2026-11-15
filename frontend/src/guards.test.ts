@@ -35,6 +35,10 @@ const BACKEND_ENUM_LITERALS = [
   "NVME", "SSD", "HDD",
   "KVM", "OPENVZ", "LXC", "XEN", "HYPERV",
   "HOURLY", "MONTHLY", "QUARTERLY", "SEMIANNUAL", "ANNUAL", "BIENNIAL", "TRIENNIAL",
+  "AUTO_CONFIRMED", "AUTO_PRESUMED", "AUTO",
+  "SUCCESS", "NOTHING_FOUND", "BLOCKED", "UNREACHABLE", "ROBOTS_DISALLOWED", "FAILED", "TIMEOUT",
+  "DEFERRED", "NOT_DUE", "SKIPPED", "NO_PROVIDER",
+  "LEGAL_ENTITY_NAME", "REGISTRATION_COUNTRY",
 ];
 
 const RULES: Rule[] = [
@@ -58,7 +62,12 @@ const RULES: Rule[] = [
   {
     name: "no backend enum literal outside the whitelisted modules",
     pattern: new RegExp(`(['"\`])(?:${BACKEND_ENUM_LITERALS.join("|")})\\1`),
-    whitelist: ["api/types.ts", "domain/systemStatusLabels.ts", "domain/paymentMethods.tsx"],
+    whitelist: [
+      "api/types.ts",
+      "domain/systemStatusLabels.ts",
+      "domain/paymentMethods.tsx",
+      "domain/provenanceLabels.ts",
+    ],
   },
   {
     name: "no parseFloat/Number(",

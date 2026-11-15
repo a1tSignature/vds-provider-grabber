@@ -125,7 +125,7 @@ paths:
       description: >-
         Required role: VIEWER. Filters are ANDed together; paymentMethod is repeatable (a provider
         must have every listed method). Sortable fields: id, name, slug, status, createdAt,
-        minMonthlyPriceUsd.
+        minMonthlyPriceUsd (sorts by the lower of minMonthlyPriceUsd and minAnnualPriceUsdPerMonth).
       parameters:
         - name: q
           in: query
@@ -396,7 +396,8 @@ paths:
       tags: [Providers]
       summary: Apply one automatic enrichment result
       description: >-
-        Required role: EDITOR (the crawler's service account). The whole body is validated before
+        Required role: EDITOR. The writer is the separate enrichment process (EnrichMainKt), logged in
+        as its own EDITOR account. The whole body is validated before
         anything is written; any failure is a 400 with no writes. Applied in one transaction under
         the provider row lock: a MANUAL legal field is never changed; empty, unclaimed or AUTO_* legal
         fields take the found value; HIGH/MEDIUM payment methods and countries are only added, never
@@ -1605,7 +1606,21 @@ components:
         minMonthlyPriceUsd:
           type: string
           pattern: "^\\d{1,8}(\\.\\d{1,4})?$"
-          description: Absent when there is no current MONTHLY price among this provider's active tariffs.
+          description: >-
+            The cheapest current MONTHLY price among this provider's tariffs that are active and in
+            stock; absent when there is none.
+        minAnnualPriceUsdPerMonth:
+          type: string
+          pattern: "^\\d{1,8}(\\.\\d{1,4})?$"
+          description: >-
+            The cheapest current ANNUAL price among this provider's tariffs that are active and in
+            stock, divided by 12 (4 decimals, half-up); absent when there is none.
+        enrichmentLastAttemptAt:
+          type: string
+          format: date-time
+          description: >-
+            When the latest enrichment attempt was recorded, as ProviderEnrichmentDto.lastAttemptAt.
+            Absent when the provider was never attempted. The enrichment process orders its queue by it.
 
     TariffWithPricesDto:
       type: object
@@ -1637,7 +1652,9 @@ components:
 
     ProviderEnrichmentDto:
       type: object
-      description: State of the latest enrichment attempt; absent from ProviderDetailDto when none was made.
+      description: >-
+        State of the latest enrichment attempt, written by the separate enrichment process through
+        PUT /api/v1/providers/{id}/enrichment; absent from ProviderDetailDto when none was made.
       required: [lastAttemptAt, lastOutcome, lastPagesFetched]
       properties:
         lastAttemptAt: { type: string, format: date-time }
@@ -1990,13 +2007,6 @@ components:
           description: >-
             Decimal string in [0, 1], plain notation. Defaults to VDS_CRAWLER_MAX_OUT_OF_STOCK_RATIO
             when omitted.
-        enrichment:
-          type: string
-          enum: [DUE, FORCE, SKIP]
-          default: DUE
-          description: >-
-            Site enrichment after each adapter: DUE enriches providers whose last attempt is older
-            than VDS_ENRICH_INTERVAL_HOURS, FORCE ignores that cadence, SKIP enriches nothing.
 
     CrawlRunTriggerResponse:
       type: object
@@ -2025,23 +2035,6 @@ components:
           type: string
           enum: [VALIDATION, TIMEOUT, MASS_CHANGE_GUARD, FETCH, WRITE, AUTH, ADAPTER_ERROR]
         message: { type: string }
-        enrichment:
-          $ref: "#/components/schemas/EnrichmentReportDto"
-
-    EnrichmentReportDto:
-      type: object
-      description: >-
-        The provider's site enrichment step. Never changes the adapter's own status or counters.
-        Absent when the run stopped before reaching it.
-      required: [outcome, durationMs, pagesFetched, valuesApplied]
-      properties:
-        outcome: { $ref: "#/components/schemas/EnrichmentOutcome" }
-        durationMs: { type: integer, format: int64 }
-        pagesFetched: { type: integer }
-        valuesApplied:
-          type: integer
-          description: Fields and rows the catalog changed; in a dry run, the intended count (an approximation).
-        message: { type: string, description: One line, no page body. }
 
     CrawlRunSummaryDto:
       type: object
@@ -2169,9 +2162,10 @@ components:
           type: object
           additionalProperties: { type: integer }
           description: >-
-            Keyed by DENYLIST, KEYWORD, MALFORMED_URL, SLUG_TOO_LONG, ALREADY_KNOWN; every key is
-            present. MALFORMED_URL also counts a hit whose URL is longer than 2048 characters.
-          example: { DENYLIST: 12, KEYWORD: 3, MALFORMED_URL: 0, SLUG_TOO_LONG: 0, ALREADY_KNOWN: 7 }
+            Keyed by DENYLIST, KEYWORD, MALFORMED_URL, SLUG_TOO_LONG, ALREADY_KNOWN, LISTICLE; every
+            key is present. MALFORMED_URL also counts a hit whose URL is longer than 2048 characters;
+            LISTICLE counts ranking and comparison pages, judged by title and URL path.
+          example: { DENYLIST: 12, KEYWORD: 3, MALFORMED_URL: 0, SLUG_TOO_LONG: 0, ALREADY_KNOWN: 7, LISTICLE: 2 }
         knownProviders:
           type: integer
           description: Providers already in the catalog when the pass started, in every systemStatus.

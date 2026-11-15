@@ -161,7 +161,7 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
             // the catalog's tariff-to-location links are left exactly as they are.
             null
         }
-        return rows(page, section.rootSelector, section.rowSelector, section.minRows, "tariffs").map { row ->
+        val tariffs = rows(page, section.rootSelector, section.rowSelector, section.minRows, "tariffs").map { row ->
             TariffSnapshot(
                 externalId = section.externalId?.let { text(row, it, "tariffs.externalId") },
                 name = present(text(row, section.name, "tariffs.name"), "tariffs.name"),
@@ -188,6 +188,37 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
                 },
             )
         }
+        return if (section.disambiguateNames) disambiguate(tariffs) else tariffs
+    }
+
+    /**
+     * Prefixes colliding names and external ids with the shortest spec combination that separates
+     * the colliding tariffs. A group no combination separates is left as it is, so the snapshot
+     * validator still refuses it.
+     */
+    private fun disambiguate(tariffs: List<TariffSnapshot>): List<TariffSnapshot> {
+        val named = prefixCollisions(tariffs, { it.name }) { tariff, prefix -> tariff.copy(name = "$prefix · ${tariff.name}") }
+        return prefixCollisions(named, { it.externalId }) { tariff, prefix ->
+            tariff.copy(externalId = "$prefix · ${tariff.externalId}")
+        }
+    }
+
+    private fun prefixCollisions(
+        tariffs: List<TariffSnapshot>,
+        key: (TariffSnapshot) -> String?,
+        prefixed: (TariffSnapshot, String) -> TariffSnapshot,
+    ): List<TariffSnapshot> {
+        val result = tariffs.toMutableList()
+        tariffs.indices.groupBy { key(tariffs[it])?.lowercase() }
+            .filter { (value, members) -> value != null && members.size > 1 }
+            .values
+            .forEach { members ->
+                val prefixes = PREFIX_PARTS.map { parts ->
+                    members.map { index -> parts.joinToString(", ") { part -> part(tariffs[index]) } }
+                }.firstOrNull { it.toSet().size == members.size } ?: return@forEach
+                members.forEachIndexed { position, index -> result[index] = prefixed(tariffs[index], prefixes[position]) }
+            }
+        return result
     }
 
     // ---------- the page ----------
@@ -265,10 +296,17 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
         val value = raw(root, spec, key) ?: return null
         val match = FIRST_NUMBER.find(value)
             ?: throw AdapterFailureException("$key is not a size this source can read: '${cut(value)}'")
-        val unit = SizeUnit.written(match.groupValues[2])
+        // "2 x 960 GB": several identical drives or modules, counted as their sum.
+        val multiplied = MULTIPLIED_SIZE.find(value)?.takeIf { it.range.first == match.range.first }
+        val unitWord = multiplied?.groupValues?.get(3) ?: match.groupValues[2]
+        val unit = SizeUnit.written(unitWord)
             ?: spec.unit?.let { name -> SizeUnit.entries.firstOrNull { it.name == name } }
             ?: target
-        val amount = BigDecimal(match.groupValues[1].replace(",", ""))
+        val amount = if (multiplied != null) {
+            BigDecimal(multiplied.groupValues[1]).multiply(BigDecimal(multiplied.groupValues[2].replace(",", "")))
+        } else {
+            BigDecimal(match.groupValues[1].replace(",", ""))
+        }
         return whole(amount.multiply(unit.megabytes(target)).divide(target.megabytes(target)), key, value)
     }
 
@@ -283,6 +321,7 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
         val value = raw(root, spec, key) ?: return null
         val name = spec.value
             ?: spec.values[value]
+            ?: contained(spec.values, value)
             ?: spec.default
             ?: throw AdapterFailureException(
                 "$key is not a value this source maps (${spec.values.keys.joinToString { cut(it) }}): '${cut(value)}'",
@@ -297,11 +336,16 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
         val value = raw(root, spec, key) ?: return null
         return spec.value?.toBooleanStrictOrNull()
             ?: spec.values[value]
+            ?: contained(spec.values, value)
             ?: spec.default
             ?: throw AdapterFailureException(
                 "$key is not a value this source maps (${spec.values.keys.joinToString { cut(it) }}): '${cut(value)}'",
             )
     }
+
+    /** No exact key: the longest key the value contains, ignoring case (`200 GB NVMe` → `NVMe`). */
+    private fun <V> contained(values: Map<String, V>, value: String): V? =
+        values.keys.filter { value.contains(it, ignoreCase = true) }.maxByOrNull { it.length }?.let(values::getValue)
 
     private fun decimal(root: Element, spec: DecimalSpec, key: String): BigDecimal? {
         val value = raw(root, spec, key) ?: return null
@@ -315,7 +359,7 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
      * a price history that is not back-correctable.
      */
     private fun price(row: Element, spec: PriceSpec, key: String): PriceSnapshot? {
-        val value = raw(row, spec, key) ?: return null
+        val value = priceText(row, spec, key) ?: return null
         val fixed = spec.currency.fixed
         val symbols = spec.currency.bySymbol.orEmpty()
         // The longest matching symbol wins, so "US$" is not read as "$" when both are mapped.
@@ -326,14 +370,7 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
                 "$key carries no currency symbol this source knows " +
                     "(${symbols.keys.joinToString { cut(it) }}): '${cut(value)}'",
             )
-        // After the symbol first, so "Save 20% - $5.00/mo" reads 5.00 and not 20; a page that
-        // writes the symbol last ("1.234,56 EUR") has its number before it.
-        val candidates = if (fixed == null && symbol != null) {
-            listOf(value.substringAfter(symbol), value.substringBefore(symbol))
-        } else {
-            listOf(value)
-        }
-        val digits = candidates.firstNotNullOfOrNull { firstAmount(it, spec) }
+        val digits = (if (fixed == null && symbol != null) amountBySymbol(value, symbol, spec) else firstAmount(value, spec))
             ?: throw AdapterFailureException("$key is not a number this source can read: '${cut(value)}'")
         return PriceSnapshot(
             billingPeriod = constant(BillingPeriod.entries, spec.billingPeriod, "$key.billingPeriod"),
@@ -342,14 +379,61 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
         )
     }
 
-    /** The first unsigned number in [text] under the config's separators; a minus sign before it is refused. */
-    private fun firstAmount(text: String, spec: PriceSpec): String? {
+    /**
+     * The value of the selected element read through the struck-out amounts next to it -- inside
+     * it, or else among its siblings while their parent is not the row itself (a row holds other
+     * periods' prices). By default the element without them: the catalog compares what a customer
+     * pays now, and a struck amount is a former price. With [PriceSpec.regularPrice] on, those
+     * struck parts when they hold a number.
+     */
+    private fun priceText(row: Element, spec: PriceSpec, key: String): String? {
+        if (spec.attr != null) return raw(row, spec, key)
+        val element = row.selectFirst(spec.selector) ?: return raw(row, spec, key)
+        if (element.`is`(STRUCK_OUT)) return raw(row, spec, key)
+        if (!spec.regularPrice) {
+            val promotional = element.clone()
+            promotional.select(STRUCK_OUT).remove()
+            return promotional.text().ifEmpty { null } ?: absent(spec, "$key: '${spec.selector}' holds only struck-out text")
+        }
+        val scopes = listOfNotNull(element, element.parent()?.takeIf { it != row && row.isAncestorOrSelfOf(it) })
+        val regular = scopes.firstNotNullOfOrNull { scope ->
+            scope.select(STRUCK_OUT)
+                .filter { candidate -> candidate.parents().takeWhile { it != scope }.none { it.`is`(STRUCK_OUT) } }
+                .joinToString(" ") { it.text() }
+                .takeIf { text -> text.any(Char::isDigit) }
+        }
+        return regular ?: raw(row, spec, key)
+    }
+
+    private fun Element.isAncestorOrSelfOf(other: Element): Boolean = this == other || other.parents().contains(this)
+
+    /**
+     * The number right next to [symbol] (after it, then before it), so `6.00 € −37%` reads 6.00 and
+     * not 37; otherwise the first number after the symbol, then the first before it, so
+     * `Save 20% - $5.00/mo` still reads 5.00 and `1.234,56 EUR` its number.
+     */
+    private fun amountBySymbol(value: String, symbol: String, spec: PriceSpec): String? {
+        val after = value.substringAfter(symbol)
+        val before = value.substringBefore(symbol)
+        return ADJACENT_AFTER.find(separated(after, spec))?.groupValues?.get(1)
+            ?: ADJACENT_BEFORE.find(separated(before, spec))?.groupValues?.get(1)
+            ?: firstAmount(after, spec)
+            ?: firstAmount(before, spec)
+    }
+
+    private fun separated(text: String, spec: PriceSpec): String {
         var normalized = text
         spec.grouping?.let { normalized = normalized.replace(it, "") }
         if (spec.decimal != ".") normalized = normalized.replace(spec.decimal, ".")
+        return normalized
+    }
+
+    /** The first unsigned number in [text] under the config's separators; a minus sign before it is refused. */
+    private fun firstAmount(text: String, spec: PriceSpec): String? {
+        val normalized = separated(text, spec)
         val match = FIRST_NUMBER_PLAIN.find(normalized) ?: return null
-        val negative = normalized.substring(0, match.range.first).trimEnd().endsWith("-")
-        return match.value.takeUnless { negative }
+        val sign = normalized.substring(0, match.range.first).trimEnd().lastOrNull()
+        return match.value.takeUnless { sign == '-' || sign == '\u2212' }
     }
 
     /**
@@ -411,6 +495,28 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
         /** The first number in a value (`,` groups thousands) and the word right after it. Code-owned. */
         val FIRST_NUMBER = Regex("([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*([A-Za-z]*)")
         val FIRST_NUMBER_PLAIN = Regex("[0-9]+(\\.[0-9]+)?")
+
+        /** `2 x 960 GB`: a count, then a size with its unit word. */
+        val MULTIPLIED_SIZE = Regex("([0-9]+)\\s*[x×]\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*([A-Za-z]*)")
+
+        val ADJACENT_AFTER = Regex("^\\s*([0-9]+(?:\\.[0-9]+)?)")
+        val ADJACENT_BEFORE = Regex("([0-9]+(?:\\.[0-9]+)?)\\s*$")
+
+        /** Markup that strikes an amount out: a former or regular price shown next to a promotion. */
+        const val STRUCK_OUT = "del, s, strike, [class*=line-through], [class*=strike], [class*=old-price], " +
+            "[class*=old_price], [class*=price-old], [class*=oldprice], [style*=line-through]"
+
+        fun ram(tariff: TariffSnapshot): String =
+            if (tariff.ramMb % 1024 == 0) "${tariff.ramMb / 1024} GB RAM" else "${tariff.ramMb} MB RAM"
+
+        /** Spec combinations tried in order when two tariffs share a name. */
+        val PREFIX_PARTS: List<List<(TariffSnapshot) -> String>> = listOf(
+            listOf { "${it.diskGb} GB disk" },
+            listOf(::ram),
+            listOf { "${it.vcpuCount} vCPU" },
+            listOf({ "${it.diskGb} GB disk" }, ::ram),
+            listOf({ "${it.diskGb} GB disk" }, ::ram, { "${it.vcpuCount} vCPU" }),
+        )
     }
 
     /**

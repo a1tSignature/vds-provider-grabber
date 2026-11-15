@@ -82,15 +82,16 @@ internal object PageAnalyzer {
 
     private val json = Json { isLenient = true }
 
-    fun analyze(page: PageContent, url: String, kinds: Set<String>, isPricing: Boolean, signals: SiteSignals) {
-        payments(page, url, kinds, signals)
-        locations(page, url, kinds, isPricing, signals)
+    /** [spa]: text read from a JS bundle, which carries every page's copy; it is weighted as a payment/legal page and scanned for country names. */
+    fun analyze(page: PageContent, url: String, kinds: Set<String>, isPricing: Boolean, signals: SiteSignals, spa: Boolean = false) {
+        payments(page, url, kinds, spa, signals)
+        locations(page, url, kinds, isPricing, spa, signals)
         jsonLd(page, url, signals)
         entities(page.text, page.footer, url, kinds, page.siteName, signals)
         registrationCountry(page.text, page.footer, url, kinds, signals)
     }
 
-    private fun payments(page: PageContent, url: String, kinds: Set<String>, signals: SiteSignals) {
+    private fun payments(page: PageContent, url: String, kinds: Set<String>, spa: Boolean, signals: SiteSignals) {
         for ((tag, attribute) in page.attributes) {
             val lower = attribute.lowercase()
             for (rule in EnrichmentRules.PAYMENT_RULES) {
@@ -104,7 +105,7 @@ internal object PageAnalyzer {
                 if (pattern.matcher(resource).find()) codes.forEach { signals.add(signals.payments, it, 2, "gateway:$name", url, resource) }
             }
         }
-        val strongPage = kinds.any { it == "pay" || it == "faq" || it == "legal" }
+        val strongPage = spa || kinds.any { it == "pay" || it == "faq" || it == "legal" }
         for (rule in EnrichmentRules.PAYMENT_RULES) {
             val m = rule.text.matcher(page.text)
             val nextM = capped(m)
@@ -117,7 +118,7 @@ internal object PageAnalyzer {
         }
     }
 
-    private fun locations(page: PageContent, url: String, kinds: Set<String>, isPricing: Boolean, signals: SiteSignals) {
+    private fun locations(page: PageContent, url: String, kinds: Set<String>, isPricing: Boolean, spa: Boolean, signals: SiteSignals) {
         val text = page.text
         val locationPage = "loc" in kinds || isPricing
         for ((tag, attribute) in page.attributes) {
@@ -138,7 +139,7 @@ internal object PageAnalyzer {
                 signals.add(signals.locations, code, weight, "city:$name", url, snippet)
             }
         }
-        if (locationPage) {
+        if (locationPage || spa) {
             for ((code, pattern) in EnrichmentRules.COUNTRY_NAMES) {
                 val m = pattern.matcher(text)
                 val nextM = capped(m)

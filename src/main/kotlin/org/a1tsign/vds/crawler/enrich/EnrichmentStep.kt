@@ -4,9 +4,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import org.a1tsign.vds.config.EnrichmentConfig
 import org.a1tsign.vds.crawler.fetch.EnrichmentFetcher
-import org.a1tsign.vds.crawler.model.EnrichmentReport
-import org.a1tsign.vds.crawler.model.ProviderSnapshot
-import org.a1tsign.vds.crawler.write.CatalogApiClient
 import org.a1tsign.vds.crawler.write.CatalogApiException
 import org.a1tsign.vds.crawler.write.CatalogProviderDetail
 import org.a1tsign.vds.crawler.write.CrawlWriter
@@ -14,47 +11,37 @@ import org.a1tsign.vds.crawler.write.EnrichmentApplyWrite
 import org.a1tsign.vds.crawler.write.EvidenceItemWrite
 import org.a1tsign.vds.crawler.write.LegalFindingWrite
 import org.a1tsign.vds.crawler.write.ValueFindingWrite
-import org.a1tsign.vds.domain.EnrichmentFacet
 import org.a1tsign.vds.domain.EnrichmentOutcome
 import java.net.URI
-import java.time.Clock
-import java.time.Duration
 import java.util.concurrent.TimeUnit
 
 /** The catalog keeps at most this much of an attempt's message. */
 private const val MAX_MESSAGE = 500
 
+private const val FORBIDDEN = 403
+
 /**
- * The enrichment step of a crawl run for one provider, after its adapter's reconcile.
- *
- * Reads the provider through [catalog] (both modes read the real catalog), decides whether it is
- * due, crawls its site under its own time budget and hands the result to the run's [CrawlWriter].
- * Everything that goes wrong becomes this provider's [EnrichmentReport]; only
- * [CancellationException] and [CatalogApiException.Unauthorized] leave, and the caller records the
- * report before letting them through.
+ * The catalog refused the write itself: the account lacks `EDITOR`, so every further provider would
+ * be crawled in full only to be refused the same way.
+ */
+class ForbiddenSubmit(cause: CatalogApiException.ClientError) : Exception(cause.message, cause)
+
+/**
+ * Enriches one provider: crawls its site under its own time budget and hands the result to the
+ * [CrawlWriter]. Everything that goes wrong becomes this provider's [EnrichmentReport]; only
+ * [CancellationException], [CatalogApiException.Unauthorized] and [ForbiddenSubmit] leave.
  */
 class EnrichmentStep(
-    private val config: EnrichmentConfig,
+    config: EnrichmentConfig,
     fetcher: EnrichmentFetcher,
-    private val catalog: CatalogApiClient,
-    private val clock: Clock,
-    /** The shared fetcher's cumulative page counter; a provider's pages are the difference. */
+    /** The fetcher's cumulative page counter; a provider's pages are the difference. */
     private val pagesFetched: () -> Long,
     val providerTimeoutMs: Long = TimeUnit.MINUTES.toMillis(config.providerTimeoutMinutes),
 ) {
     private val crawler = SiteCrawler(fetcher, config)
 
-    /**
-     * [snapshot] is what the adapter observed this run, `null` when it produced none.
-     * [remainingRunMs] is what is left of the run's budget.
-     */
-    suspend fun enrich(
-        slug: String,
-        snapshot: ProviderSnapshot?,
-        writer: CrawlWriter,
-        mode: EnrichmentMode,
-        remainingRunMs: Long,
-    ): EnrichmentReport {
+    /** [detail] is the provider as just re-read from the catalog; the dry-run writer plans against it. */
+    suspend fun enrich(target: EnrichmentTarget, detail: CatalogProviderDetail, writer: CrawlWriter): EnrichmentReport {
         val startedNanos = System.nanoTime()
         val pagesBefore = pagesFetched()
         fun report(outcome: EnrichmentOutcome, message: String?, valuesApplied: Int = 0) = EnrichmentReport(
@@ -64,47 +51,29 @@ class EnrichmentStep(
             valuesApplied = valuesApplied,
             message = message?.take(MAX_MESSAGE),
         )
+        val slug = target.slug
+        val providerId = target.id
 
-        if (mode == EnrichmentMode.SKIP) return report(EnrichmentOutcome.SKIPPED, "Skipped by the run's trigger")
-        if (remainingRunMs < providerTimeoutMs) {
-            return report(EnrichmentOutcome.DEFERRED, "Not started: ${remainingRunMs}ms of the run budget left, ${providerTimeoutMs}ms needed")
-        }
-
-        val providerId: Long
-        val detail: CatalogProviderDetail
-        try {
-            providerId = catalog.findProviderBySlug(slug)?.id
-                ?: return report(EnrichmentOutcome.NO_PROVIDER, "Provider $slug is not in the catalog")
-            detail = catalog.getProvider(providerId)
-        } catch (unauthorized: CatalogApiException.Unauthorized) {
-            throw unauthorized
-        } catch (failure: CatalogApiException) {
-            return report(EnrichmentOutcome.FAILED, "Catalog read failed: ${failure.message}")
-        }
-        if (mode == EnrichmentMode.DUE && !isDue(detail)) {
-            return report(EnrichmentOutcome.NOT_DUE, "Last attempt ${detail.enrichment?.lastAttemptAt}")
-        }
-
-        val target = siteTarget(slug, snapshot?.provider?.websiteUrl ?: detail.provider.websiteUrl, snapshot?.sourceUrls.orEmpty())
+        val site = siteTarget(slug, detail.provider.websiteUrl, listOfNotNull(target.pricingUrl))
             ?: return report(EnrichmentOutcome.FAILED, "Website URL of $slug is not an absolute http(s) URL")
 
         val (outcome, message, findings) = try {
-            when (val crawl = withTimeoutOrNull(providerTimeoutMs) { crawler.crawl(target) }) {
+            when (val crawl = withTimeoutOrNull(providerTimeoutMs) { crawler.crawl(site) }) {
                 null -> Triple(EnrichmentOutcome.TIMEOUT, "Timed out after ${providerTimeoutMs}ms", null)
                 is CrawlOutcome.Blocked -> Triple(EnrichmentOutcome.BLOCKED, crawl.reason, null)
                 is CrawlOutcome.Unreachable -> Triple(EnrichmentOutcome.UNREACHABLE, crawl.reason, null)
                 CrawlOutcome.RobotsDisallowed ->
-                    Triple(EnrichmentOutcome.ROBOTS_DISALLOWED, "robots.txt disallows ${target.origin}/ and ${target.pricingUrl}", null)
+                    Triple(EnrichmentOutcome.ROBOTS_DISALLOWED, "robots.txt disallows ${site.origin}/ and ${site.pricingUrl}", null)
                 is CrawlOutcome.Analysed -> if (crawl.findings.anySignal) {
                     Triple(EnrichmentOutcome.SUCCESS, summary(crawl.findings), crawl.findings)
                 } else {
-                    Triple(EnrichmentOutcome.NOTHING_FOUND, "No legal, payment or location signal on ${target.origin}", null)
+                    Triple(EnrichmentOutcome.NOTHING_FOUND, "No legal, payment or location signal on ${site.origin}", null)
                 }
             }
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (failure: Throwable) {
-            // Including a StackOverflowError from hostile input: one site never ends the run.
+            // Including a StackOverflowError from hostile input: one site never ends the launch.
             Triple(EnrichmentOutcome.FAILED, "${failure.javaClass.simpleName}: ${failure.message}", null)
         }
 
@@ -113,7 +82,7 @@ class EnrichmentStep(
             outcome = outcome.name,
             message = message?.take(MAX_MESSAGE),
             pagesFetched = pages,
-            observedFacets = observedFacets(snapshot).map { it.name },
+            observedFacets = target.observedFacets.map { it.name },
             legalEntityName = findings?.legalEntityName?.toWrite(),
             registrationCountry = findings?.registrationCountry?.toWrite(),
             paymentMethods = findings?.paymentMethods.orEmpty().map { it.toWrite() },
@@ -126,24 +95,9 @@ class EnrichmentStep(
         } catch (unauthorized: CatalogApiException.Unauthorized) {
             throw unauthorized
         } catch (failure: CatalogApiException) {
+            if (failure is CatalogApiException.ClientError && failure.status == FORBIDDEN) throw ForbiddenSubmit(failure)
             report(EnrichmentOutcome.FAILED, "Submitting $outcome failed: ${failure.message}")
         }
-    }
-
-    private fun isDue(detail: CatalogProviderDetail): Boolean {
-        val last = detail.enrichment?.lastAttemptAt ?: return true
-        return !last.plus(Duration.ofHours(config.intervalHours)).isAfter(clock.instant())
-    }
-
-    /** A non-null snapshot section is a facet the adapter observes; enrichment leaves it alone. */
-    private fun observedFacets(snapshot: ProviderSnapshot?): Set<EnrichmentFacet> = buildSet {
-        if (snapshot == null) return@buildSet
-        if (snapshot.legalInfo != null) {
-            add(EnrichmentFacet.LEGAL_ENTITY_NAME)
-            add(EnrichmentFacet.REGISTRATION_COUNTRY)
-        }
-        if (snapshot.paymentMethods != null) add(EnrichmentFacet.PAYMENT_METHOD)
-        if (snapshot.locations != null) add(EnrichmentFacet.LOCATION)
     }
 
     private fun summary(findings: EnrichmentFindings): String =

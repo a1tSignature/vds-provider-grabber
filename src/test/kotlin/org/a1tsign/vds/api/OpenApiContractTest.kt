@@ -140,7 +140,7 @@ class OpenApiContractTest : AbstractDbTest() {
     @Test
     fun `no money or coordinate field is typed as a JSON number`() {
         val document = parsedDocument()
-        val moneyFields = setOf("amount", "amountUsd", "usdRate", "minMonthlyPriceUsd", "maxPriceUsd", "latitude", "longitude")
+        val moneyFields = setOf("amount", "amountUsd", "usdRate", "minMonthlyPriceUsd", "minAnnualPriceUsdPerMonth", "maxPriceUsd", "latitude", "longitude")
         val found = mutableListOf<Pair<String, Any?>>()
         collectPropertyTypes(document, moneyFields, found)
         assertTrue(found.isNotEmpty(), "none of $moneyFields were found in the document at all -- the walk is broken")

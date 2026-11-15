@@ -36,6 +36,9 @@ private const val READ_BUFFER_BYTES = 8 * 1024
 
 private const val CONNECT_TIMEOUT_MS = 5_000L
 
+/** The vendor's documented maximum for `exclude_domains`. */
+const val TAVILY_MAX_EXCLUDED_DOMAINS: Int = 150
+
 /**
  * The pinned request body. **Declared without default values on purpose**: kotlinx omits a property
  * equal to its default unless `encodeDefaults` is set, and these four fields are acceptance
@@ -49,6 +52,8 @@ private data class TavilySearchRequest(
     @SerialName("include_answer") val includeAnswer: Boolean,
     @SerialName("include_raw_content") val includeRawContent: Boolean,
     @SerialName("max_results") val maxResults: Int,
+    /** Left out of the body when `null`, i.e. when nothing is excluded. */
+    @SerialName("exclude_domains") val excludeDomains: List<String>?,
 )
 
 /**
@@ -119,8 +124,10 @@ fun tavilySearchHttpClient(requestTimeoutMs: Long): HttpClient = HttpClient(CIO)
  * | `include_raw_content` | `false` | it would carry full page content -- against "URL + snippet only", and unbounded on a 192 MB heap |
  * | `max_results` | configured, 1..20 | the vendor's own maximum; validated in `loadConfig` |
  *
- * Deliberately **absent**: `include_images`, `include_domains`/`exclude_domains`, and
- * `max_age_hours` -- the last one opts into the flex tier and its `434` response.
+ * | `exclude_domains` | the first [TAVILY_MAX_EXCLUDED_DOMAINS] of [excludeDomains], omitted when empty | the denylist applied before ranking, so excluded sites do not take result slots; the credit is spent per request either way |
+ *
+ * Deliberately **absent**: `include_images`, `include_domains`, and `max_age_hours` -- the last
+ * one opts into the flex tier and its `434` response.
  *
  * ### The key
  *
@@ -155,11 +162,15 @@ class TavilySearchProvider(
     requestTimeoutMs: Long = 10_000,
     private val maxResponseBytes: Long = 512L * 1024,
     val client: HttpClient = tavilySearchHttpClient(requestTimeoutMs),
+    /** Canonical domains; only the first [TAVILY_MAX_EXCLUDED_DOMAINS] are sent, the rest is filtered locally. */
+    excludeDomains: List<String> = emptyList(),
     /** The `Retry-After` wait. Injectable so a rate-limit test does not add seconds to the suite. */
     private val sleep: suspend (Long) -> Unit = { millis -> delay(millis) },
 ) : SearchProvider {
 
     private val searchUrl = endpoint.trimEnd('/') + "/search"
+
+    private val excluded: List<String>? = excludeDomains.distinct().take(TAVILY_MAX_EXCLUDED_DOMAINS).ifEmpty { null }
 
     private val usageUrl = endpoint.trimEnd('/') + "/usage"
 
@@ -182,6 +193,7 @@ class TavilySearchProvider(
                 includeAnswer = false,
                 includeRawContent = false,
                 maxResults = limit,
+                excludeDomains = excluded,
             ),
         )
         var retried = false
@@ -390,6 +402,7 @@ class TavilySearchProvider(
             isLenient = false
             allowSpecialFloatingPointValues = false
             coerceInputValues = false
+            explicitNulls = false
         }
 
         private val logger = LoggerFactory.getLogger(TavilySearchProvider::class.java)

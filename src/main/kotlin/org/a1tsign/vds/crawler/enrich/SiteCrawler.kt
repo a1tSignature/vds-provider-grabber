@@ -5,6 +5,7 @@ import org.a1tsign.vds.crawler.fetch.ChallengeMarkers
 import org.a1tsign.vds.crawler.fetch.EnrichmentFetcher
 import org.a1tsign.vds.crawler.fetch.FetchException
 import org.a1tsign.vds.crawler.fetch.FetchKind
+import org.a1tsign.vds.crawler.fetch.FetchedPage
 import org.jsoup.parser.Parser
 import java.net.URI
 
@@ -18,12 +19,21 @@ private const val MAX_CANDIDATES = 5_000
 /** Visible text below which a first page carrying a CAPTCHA widget is taken for a challenge page. */
 private const val CHALLENGE_PAGE_MAX_TEXT = 600
 
+/** When every analysed page has less visible text than this, the site is an SPA shell: its copy lives in JS. */
+private const val SPA_SHELL_MAX_TEXT = 600
+
+/** JS files read per SPA site, entry scripts included; each also counts as a page fetch. */
+private const val MAX_SCRIPT_FILES = 6
+private const val MAX_ENTRY_SCRIPTS = 20
+private const val MAX_CHUNK_URLS = 500
+
 /** Thrown inside a crawl to stop every further request to the site. */
 private class SiteBlocked(val reason: String) : Exception(reason, null, false, false)
 
 /**
  * Crawls one site: robots.txt → `/` → the pricing page → sitemaps → link candidates ranked by URL
  * and anchor hints, under the page, section and sitemap budgets. Pages are fetched and analysed one at a time; only their signals are kept.
+ * A site whose pages carry no text is read from its same-origin JS files instead of more pages.
  *
  * Every request goes through [fetcher] (the shared polite fetcher, which always honours robots.txt
  * for enrichment). An anti-bot challenge anywhere ends the crawl with no further request.
@@ -57,6 +67,9 @@ internal class SiteCrawler(
         private var firstFetched = true
         private var firstFailure: String? = null
         private var disallowed = 0
+        private var allPagesSparse = true
+        private val entryScripts = LinkedHashSet<String>()
+        private var scriptsRead = 0
 
         suspend fun execute(): CrawlOutcome {
             val robotsSitemaps = fetcher.robotsSitemaps(target.origin + "/")
@@ -77,6 +90,11 @@ internal class SiteCrawler(
             }
 
             readSitemaps(robotsSitemaps)
+
+            if (allPagesSparse) {
+                readScripts()
+                return CrawlOutcome.Analysed(Decisions.findings(signals))
+            }
 
             while (pagesCounted < limits.maxPages) {
                 val next = candidates.entries
@@ -120,8 +138,71 @@ internal class SiteCrawler(
             }
             if (primaryLocale == null) primaryLocale = localeOf(finalUri.rawPath.orEmpty())
             pagesAnalysed++
+            if (content.text.length >= SPA_SHELL_MAX_TEXT) allPagesSparse = false
+            content.scriptUrls.forEach { script ->
+                if (entryScripts.size < MAX_ENTRY_SCRIPTS && parse(script)?.let(::isSameSite) == true) entryScripts += script
+            }
             PageAnalyzer.analyze(content, url, kindsOf(url), isPricing = url == target.pricingUrl, signals)
             content.links.forEach { consider(it.url, it.text) }
+        }
+
+        /**
+         * Reads the entry scripts, then the chunks they import, best-ranked first, until
+         * [MAX_SCRIPT_FILES] JS files have been requested.
+         */
+        private suspend fun readScripts() {
+            val chunks = LinkedHashSet<String>()
+            for (entry in entryScripts) {
+                val script = fetchScript(entry) ?: continue
+                for (ref in analyseScript(entry, script.body)) {
+                    if (chunks.size >= MAX_CHUNK_URLS) break
+                    val chunk = parse(script.finalUrl)?.let { base -> runCatching { base.resolve(ref) }.getOrNull() } ?: continue
+                    if (isSameSite(chunk)) chunks += normalised(chunk)
+                }
+            }
+            val locale = primaryLocale.orEmpty().ifEmpty { "en" }
+            val ranked = chunks.map { it to chunkRank(it, locale) }.filter { it.second >= 0 }.sortedByDescending { it.second }
+            for ((chunk, _) in ranked) {
+                val script = fetchScript(chunk) ?: continue
+                analyseScript(chunk, script.body)
+            }
+        }
+
+        /** `null` when the file was not read; every request made counts against both budgets. */
+        private suspend fun fetchScript(url: String): FetchedPage? {
+            if (scriptsRead >= MAX_SCRIPT_FILES || pagesCounted >= limits.maxPages) return null
+            if (!visited.add(url.trimEnd('/'))) return null
+            return try {
+                fetcher.fetch(url, FetchKind.SCRIPT)
+            } catch (_: FetchException.RobotsDisallowed) {
+                return null
+            } catch (challenge: FetchException.Challenged) {
+                throw SiteBlocked(challenge.reason)
+            } catch (_: FetchException) {
+                null
+            }.also {
+                scriptsRead++
+                pagesCounted++
+            }
+        }
+
+        /** Analyses one JS file as SPA text, with its own URL as evidence; returns its chunk imports. */
+        private fun analyseScript(url: String, body: String): List<String> {
+            val script = ScriptReader.read(body)
+            val content = PageContent(
+                text = script.text,
+                footer = "",
+                attributes = script.assets.map { "asset" to it },
+                resourceUrls = emptyList(),
+                scriptUrls = emptyList(),
+                jsonLd = emptyList(),
+                inlineScripts = PageReader.unescapeJs(body),
+                siteName = null,
+                links = emptyList(),
+            )
+            val kinds = pageKinds("/" + fileName(url).substringBefore('.'))
+            PageAnalyzer.analyze(content, url, kinds, isPricing = false, signals, spa = true)
+            return script.chunkRefs
         }
 
         private suspend fun readSitemaps(robotsSitemaps: List<String>) {
@@ -193,6 +274,22 @@ internal class SiteCrawler(
 
         private fun kindsOf(url: String): Set<String> = pageKinds(parse(url)?.path.orEmpty())
     }
+
+    /**
+     * Rank of a JS chunk by its file name; negative for another locale's dictionary chunk, which is
+     * never read.
+     */
+    private fun chunkRank(url: String, locale: String): Int {
+        val name = fileName(url)
+        val primary = name.startsWith("$locale.")
+        if (!primary && EnrichmentRules.LOCALE_CHUNK.matcher(name).find()) return -1
+        var score = if (primary) EnrichmentRules.PRIMARY_LOCALE_CHUNK_BONUS else 0
+        score += EnrichmentRules.LINK_HINTS.values.sumOf { (pattern, weight) -> if (pattern.matcher(name).find()) weight else 0 }
+        if (EnrichmentRules.CHUNK_NAME_HINT.matcher(name).find()) score += EnrichmentRules.CHUNK_NAME_HINT_WEIGHT
+        return score
+    }
+
+    private fun fileName(url: String): String = parse(url)?.path.orEmpty().substringAfterLast('/').lowercase()
 
     private fun localeOf(path: String): String {
         val m = EnrichmentRules.LOCALE_SEGMENT.matcher(path)

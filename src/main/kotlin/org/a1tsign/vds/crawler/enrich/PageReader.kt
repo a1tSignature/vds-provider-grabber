@@ -17,6 +17,7 @@ private const val MAX_JSON_LD_CHARS = 256 * 1024
 private const val MAX_INLINE_SCRIPT_CHARS = 1024 * 1024
 private const val MAX_ANCHOR_TEXT_CHARS = 200
 private const val MAX_LINKS = 2_000
+private const val MAX_SCRIPT_URLS = 50
 
 /** A link of the page: the resolved URL and its anchor text. */
 internal data class PageLink(val url: String, val text: String)
@@ -32,6 +33,8 @@ internal class PageContent(
     val attributes: List<Pair<String, String>>,
     /** `src` of scripts and iframes, `href` of `<link>`: where payment gateways show up. */
     val resourceUrls: List<String>,
+    /** Absolute `src` of `<script>` elements whose path ends in `.js`: the entry points of an SPA. */
+    val scriptUrls: List<String>,
     val jsonLd: List<String>,
     /** Inline (non-`src`) script bodies with `\uXXXX` escapes resolved. */
     val inlineScripts: String,
@@ -53,6 +56,7 @@ internal object PageReader {
         val footer = CappedJoin(MAX_FOOTER_CHARS)
         val attributes = mutableListOf<Pair<String, String>>()
         val resources = mutableListOf<String>()
+        val scripts = mutableListOf<String>()
         val jsonLd = mutableListOf<String>()
         val inline = StringBuilder()
         var siteName: String? = null
@@ -99,6 +103,9 @@ internal object PageReader {
                             val src = element.attr("src")
                             if (src.isNotEmpty()) {
                                 resources += src
+                                if (src.substringBefore('?').endsWith(".js") && scripts.size < MAX_SCRIPT_URLS) {
+                                    element.absUrl("src").takeIf { it.isNotEmpty() }?.let(scripts::add)
+                                }
                             } else {
                                 val data = element.data()
                                 if (element.attr("type").equals("application/ld+json", ignoreCase = true) && data.length <= MAX_JSON_LD_CHARS) {
@@ -133,6 +140,7 @@ internal object PageReader {
             footer = footer.toString(),
             attributes = attributes,
             resourceUrls = resources,
+            scriptUrls = scripts,
             jsonLd = jsonLd,
             inlineScripts = unescapeJs(inline),
             siteName = siteName,
@@ -188,8 +196,10 @@ internal object PageReader {
 }
 
 /** `" \n".join(chunks)`, stopping once [limit] characters are reached. */
-private class CappedJoin(private val limit: Int) {
+internal class CappedJoin(private val limit: Int) {
     private val builder = StringBuilder()
+
+    val isFull: Boolean get() = builder.length >= limit
 
     fun add(chunk: String) {
         if (builder.length >= limit) return

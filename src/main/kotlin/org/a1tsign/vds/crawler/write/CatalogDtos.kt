@@ -114,6 +114,8 @@ data class CatalogProviderSummary(
     val websiteUrl: String = "",
     val status: String = "",
     val systemStatus: String = "",
+    /** Absent until the provider's first enrichment attempt was recorded. */
+    @Serializable(with = OffsetInstantSerializer::class) val enrichmentLastAttemptAt: Instant? = null,
 )
 
 @Serializable

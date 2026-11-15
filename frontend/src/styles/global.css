@@ -230,6 +230,15 @@ th.num {
   gap: var(--sp-1);
 }
 
+.btn-link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--acc);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 .pm-option {
   display: inline-flex;
   align-items: center;
@@ -541,4 +550,54 @@ a.btn-primary {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
+}
+
+.origin-badge {
+  display: inline-block;
+  font-size: var(--fs-1);
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-1);
+  white-space: nowrap;
+}
+
+.origin-presumed {
+  background: var(--dnbg);
+  color: var(--dn);
+}
+
+.origin-auto {
+  background: var(--s3);
+  color: var(--t2);
+}
+
+.provenance-action {
+  display: inline-flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-left: var(--sp-2);
+}
+
+.provenance-details {
+  font-size: var(--fs-2);
+  color: var(--t2);
+}
+
+.provenance-details p {
+  margin: var(--sp-1) 0;
+}
+
+.evidence-list {
+  margin: var(--sp-1) 0;
+  padding-left: var(--sp-4);
+  overflow-wrap: anywhere;
+}
+
+.evidence-snippet {
+  display: block;
+  color: var(--t1);
+}
+
+.enrichment-status {
+  color: var(--t2);
+  font-size: var(--fs-2);
 }

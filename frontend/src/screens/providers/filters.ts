@@ -60,6 +60,8 @@ export function buildProviderFiltersSchema(dictionaries: DictionariesDto) {
     locationCountry: countryCodeField(),
     paymentMethod: repeatableEnumField(dictionaries.paymentMethods),
     hasActiveTariffs: booleanField(),
+    // Repeatable, sent to the API as is; none selected means the backend's default, CONFIGURED only.
+    systemStatus: repeatableEnumField(dictionaries.systemStatuses),
     page: intField(0, 0),
     size: pageSizeField(),
     sort: sortField(PROVIDER_SORT_FIELDS),

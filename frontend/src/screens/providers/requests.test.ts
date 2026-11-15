@@ -49,6 +49,7 @@ const location: LocationDto = {
   longitude: "4.8900",
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-01T00:00:00Z",
+  origin: "ORIGIN_A",
 };
 
 function expectNoReadOnlyKeys(body: object) {
@@ -76,7 +77,7 @@ describe("buildProviderRequest", () => {
 
 describe("buildLegalInfoRequest", () => {
   it("round-trips every loaded field, verifiedAt included", () => {
-    const body = buildLegalInfoRequest(legalInfoFormValues(legalInfo));
+    const body = buildLegalInfoRequest(legalInfoFormValues(legalInfo), legalInfo);
     expect(body).toEqual({
       legalEntityName: "Hoster LLC",
       registrationCountry: "DE",
@@ -103,7 +104,10 @@ describe("buildLegalInfoRequest", () => {
 
 describe("buildPaymentMethodsRequest", () => {
   it("sends the whole set as an array of {method, note?}", () => {
-    const rows = paymentMethodRows([{ method: "METHOD_A", note: "EUR only" }, { method: "METHOD_B" }]);
+    const rows = paymentMethodRows([
+      { method: "METHOD_A", note: "EUR only", origin: "ORIGIN_A" },
+      { method: "METHOD_B", origin: "ORIGIN_B" },
+    ]);
     expect(buildPaymentMethodsRequest(rows)).toEqual([{ method: "METHOD_A", note: "EUR only" }, { method: "METHOD_B" }]);
   });
 

@@ -19,7 +19,7 @@ enum class PassStatus { RUNNING, COMPLETED, CANCELLED }
 
 /** Why one search hit did not become a candidate. Every rejection is counted under exactly one. */
 enum class RejectionReason {
-    /** The normalized domain is on the configured denylist (or is a subdomain of an entry). */
+    /** The host, or the domain it collapses to, is on the configured denylist (or under an entry). */
     DENYLIST,
 
     /** Neither title nor snippet contains any of `VDS_DISCOVERY_REQUIRED_KEYWORDS`. */
@@ -33,6 +33,9 @@ enum class RejectionReason {
 
     /** Already in the catalog (any `systemStatus`), already created by this pass, or a `409` on create. */
     ALREADY_KNOWN,
+
+    /** A ranking or comparison page by its title or URL path, not a provider's own page. */
+    LISTICLE,
 }
 
 /** Why a pass stopped before running through its queries. `null` on a pass that did not stop early. */

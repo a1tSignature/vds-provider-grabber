@@ -5,6 +5,7 @@
 .kotlin
 build
 scripts
+!scripts/enrich-launch.sh
 .env
 .env.*
 **/.DS_Store

@@ -218,6 +218,35 @@ class DiscoveryRunnerTest {
     }
 
     @Test
+    fun `service and edition subdomains collapse to the parent before dedup and candidate creation`() = runBlocking {
+        val known = CatalogProviderSummary(1, "virmach-com", "VirMach", websiteUrl = "https://virmach.com/", systemStatus = "CANDIDATE")
+        val hits = listOf("billing.virmach.com", "kb.gozenhost.com", "us.gozenhost.com", "vps.xserver.ne.jp", "en.co.uk").map(::vpsHit)
+        val catalog = FakeCatalog(existing = listOf(known))
+
+        val summary = runner(config(), StubSearchProvider(next = Result.success(hits)), catalog).runOnce()
+
+        assertEquals(listOf("gozenhost-com", "vps-xserver-ne-jp", "en-co-uk"), catalog.created.map { it.slug })
+        assertEquals("https://gozenhost.com/", catalog.created.first().websiteUrl)
+        assertEquals(2, summary.resultsRejected[RejectionReason.ALREADY_KNOWN])
+    }
+
+    @Test
+    fun `ranking pages are rejected as listicles while a provider's own blog post is kept`() = runBlocking {
+        val hits = listOf(
+            SearchHit("https://ranker.example/", "Top 10 VPS hosting in Germany 2026", "best vps"),
+            SearchHit("https://vergleich.example/", "vServer Vergleich 2026", "vps"),
+            SearchHit("https://tags.example/tag/cheap-vps", "Cheap VPS", "vps"),
+            SearchHit("https://provider.example/blog/nvme-vps", "NVMe VPS Hosting: the complete guide", "vps"),
+        )
+        val catalog = FakeCatalog()
+
+        val summary = runner(config(), StubSearchProvider(next = Result.success(hits)), catalog).runOnce()
+
+        assertEquals(listOf("provider-example"), catalog.created.map { it.slug })
+        assertEquals(3, summary.resultsRejected[RejectionReason.LISTICLE])
+    }
+
+    @Test
     fun `a hit with an oversized URL is rejected as malformed and never kept in a dry run's plan`() = runBlocking {
         val oversized = SearchHit("https://long.example/" + "a".repeat(RESULT_URL_MAX_LENGTH), "long VPS", "cheap vps")
         val search = StubSearchProvider(next = Result.success(listOf(oversized, vpsHit("ok.example"))))

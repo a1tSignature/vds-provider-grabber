@@ -35,7 +35,6 @@ import org.a1tsign.vds.crawler.SnapshotValidator
 import org.a1tsign.vds.crawler.adapters.DeclarativeAdapter
 import org.a1tsign.vds.crawler.config.SourceConfigLoader
 import org.a1tsign.vds.crawler.config.SourceLoadReport
-import org.a1tsign.vds.crawler.enrich.EnrichmentStep
 import org.a1tsign.vds.crawler.fetch.KtorPageFetcher
 import org.a1tsign.vds.crawler.fetch.crawlerHttpClient
 import org.a1tsign.vds.crawler.write.ApiCrawlWriter
@@ -49,6 +48,7 @@ import org.a1tsign.vds.discovery.CreditLedger
 import org.a1tsign.vds.discovery.DiscoveryRunner
 import org.a1tsign.vds.discovery.SearchProvider
 import org.a1tsign.vds.discovery.TavilySearchProvider
+import org.a1tsign.vds.discovery.canonicalDomains
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import io.ktor.client.HttpClient
@@ -363,12 +363,6 @@ fun buildComponents(
             adapterConfig = { adapterId -> crawlerAdapterConfig(adapterId, config.crawler.adapterEnv.reveal()) },
             pagesFetched = { fetcher.pagesFetched },
             slot = runSlot,
-            // The same fetcher as the adapters, so the per-host delay and the robots cache are shared.
-            enrichment = if (config.crawler.enrichment.enabled) {
-                EnrichmentStep(config.crawler.enrichment, fetcher, catalogClient, clock, pagesFetched = { fetcher.pagesFetched })
-            } else {
-                null
-            },
         )
         crawlerRegistry = registry
         crawlerFetchHttpClient = fetchClient
@@ -385,6 +379,7 @@ fun buildComponents(
                     apiKey = checkNotNull(discovery.searchApiKey) { "VDS_DISCOVERY_SEARCH_API_KEY is required" },
                     requestTimeoutMs = TimeUnit.SECONDS.toMillis(discovery.searchTimeoutSeconds),
                     maxResponseBytes = discovery.maxResponseBytes,
+                    excludeDomains = canonicalDomains(discovery.domainDenylist),
                 )
                 discoverySearchProvider = tavily
                 discoverySearchHttpClient = tavily.client

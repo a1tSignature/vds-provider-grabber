@@ -55,10 +55,17 @@ export interface ProviderSummaryDto {
   status: string;
   systemStatus: string;
   registrationCountry?: string;
+  legalEntityName?: string;
+  legalEntityNameOrigin?: string;
+  registrationCountryOrigin?: string;
   paymentMethods: string[];
   locationCountryCodes: string[];
   activeTariffCount: number;
   minMonthlyPriceUsd?: string;
+  /** The cheapest current ANNUAL price divided by 12; both minimums count only active, in-stock tariffs. */
+  minAnnualPriceUsdPerMonth?: string;
+  /** ISO-8601; absent when the provider was never attempted. */
+  enrichmentLastAttemptAt?: string;
 }
 
 export interface LegalInfoDto {
@@ -72,11 +79,15 @@ export interface LegalInfoDto {
   sourceUrl?: string;
   verifiedAt?: string;
   updatedAt: string;
+  /** Absent: nobody claimed the field, automation may fill it. */
+  legalEntityNameOrigin?: string;
+  registrationCountryOrigin?: string;
 }
 
 export interface ProviderPaymentMethodDto {
   method: string;
   note?: string;
+  origin: string;
 }
 
 export interface LocationDto {
@@ -90,6 +101,7 @@ export interface LocationDto {
   longitude?: string;
   createdAt: string;
   updatedAt: string;
+  origin: string;
 }
 
 export interface TariffDto {
@@ -144,6 +156,48 @@ export interface ProviderDetailDto {
   paymentMethods: ProviderPaymentMethodDto[];
   locations: LocationDto[];
   tariffs: TariffWithPricesDto[];
+  /** Absent when enrichment never ran for this provider. */
+  enrichment?: ProviderEnrichmentDto;
+}
+
+/** Third-party text: render as plain text only. `url` is not guaranteed to be http(s). */
+export interface EvidenceItemDto {
+  url: string;
+  kind: string;
+  snippet: string;
+}
+
+export interface LegalFindingDto {
+  value: string;
+  status: string;
+  basis: string[];
+  alternatives: string[];
+  evidence: EvidenceItemDto[];
+}
+
+/** For a location `value` is a country code. */
+export interface ValueFindingDto {
+  value: string;
+  confidence: string;
+  pages: number;
+  evidence: EvidenceItemDto[];
+}
+
+/** Every finding of the latest successful enrichment, including ones that were not written. */
+export interface EnrichmentEvidenceDto {
+  legalEntityName?: LegalFindingDto;
+  registrationCountry?: LegalFindingDto;
+  paymentMethods: ValueFindingDto[];
+  locations: ValueFindingDto[];
+}
+
+export interface ProviderEnrichmentDto {
+  lastAttemptAt: string;
+  lastOutcome: string;
+  lastMessage?: string;
+  lastPagesFetched: number;
+  lastSuccessAt?: string;
+  evidence?: EnrichmentEvidenceDto;
 }
 
 export interface TariffSearchItemDto {

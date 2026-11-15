@@ -188,16 +188,19 @@ class CatalogApiClient(
     }
 
     /**
-     * One page of providers of every `systemStatus`, ordered by `id` so consecutive pages neither
-     * skip nor repeat a row that existed when the walk started. The caller bounds the walk.
+     * One page of providers with one of [systemStatuses], ordered by `id` so consecutive pages
+     * neither skip nor repeat a row that existed when the walk started. The caller bounds the walk.
      */
-    suspend fun listProvidersPage(page: Int): CatalogPage<CatalogProviderSummary> =
+    suspend fun listProvidersPage(
+        page: Int,
+        systemStatuses: Collection<SystemStatus> = SystemStatus.entries,
+    ): CatalogPage<CatalogProviderSummary> =
         call(
             HttpMethod.Get,
             PROVIDERS_PATH,
             CatalogPage.serializer(CatalogProviderSummary.serializer()),
             query = listOf("page" to page.toString(), "size" to pageSize.toString(), "sort" to "id,asc") +
-                SystemStatus.entries.map { "systemStatus" to it.name },
+                systemStatuses.map { "systemStatus" to it.name },
         ).value
 
     /** `GET /api/v1/providers/{id}`; its `tariffs` are the active ones only. */

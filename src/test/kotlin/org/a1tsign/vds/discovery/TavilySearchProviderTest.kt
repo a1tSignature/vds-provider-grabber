@@ -4,6 +4,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.a1tsign.vds.config.Secret
@@ -38,6 +39,7 @@ class TavilySearchProviderTest {
         maxResponseBytes: Long = 512L * 1024,
         requestTimeoutMs: Long = 5_000,
         waits: MutableList<Long>? = null,
+        excludeDomains: List<String> = emptyList(),
         block: (TavilySearchProvider) -> T,
     ): T {
         val provider = TavilySearchProvider(
@@ -46,6 +48,7 @@ class TavilySearchProviderTest {
             requestTimeoutMs = requestTimeoutMs,
             maxResponseBytes = maxResponseBytes,
             sleep = { millis -> waits?.add(millis) },
+            excludeDomains = excludeDomains,
         )
         return try {
             block(provider)
@@ -78,7 +81,8 @@ class TavilySearchProviderTest {
             assertFalse(body.getValue("include_answer").jsonPrimitive.boolean)
             assertFalse(body.getValue("include_raw_content").jsonPrimitive.boolean)
             assertEquals(7, body.getValue("max_results").jsonPrimitive.int)
-            // Never sent: images, a domain filter, and max_age_hours (which buys into the flex tier).
+            // Never sent: images, an include filter, and max_age_hours (which buys into the flex tier);
+            // exclude_domains only when there is something to exclude.
             listOf("include_images", "include_domains", "exclude_domains", "max_age_hours").forEach {
                 assertNull(body[it], "$it must not be sent")
             }
@@ -93,6 +97,23 @@ class TavilySearchProviderTest {
             assertEquals(SearchHit("https://beta.example/", null, null), hits[1])
             assertFalse(hits.toString().contains(TAVILY_RAW_CONTENT_MARKER))
             assertFalse(logs.leaksKey(), "no log line may carry the API key")
+        }
+    }
+
+    @Test
+    fun `excluded domains are sent deduplicated and capped at the vendor's limit`() {
+        TavilyFixtureServer().use { server ->
+            server.onSearch(TavilyReply(body = tavilySearchBody()))
+            val domains = listOf("a.example", "a.example") + (1..200).map { "d$it.example" }
+
+            withProvider(server.url(), excludeDomains = domains) { provider ->
+                runBlocking { provider.search("vps hosting", 5) }
+            }
+
+            val body = Json.parseToJsonElement(server.requests().single().body).jsonObject
+            val sent = body.getValue("exclude_domains").jsonArray.map { it.jsonPrimitive.content }
+            assertEquals(TAVILY_MAX_EXCLUDED_DOMAINS, sent.size)
+            assertEquals(listOf("a.example", "d1.example"), sent.take(2))
         }
     }
 

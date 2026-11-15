@@ -1,4 +1,5 @@
 import type { LegalInfoDto, LocationDto, ProviderDto, ProviderPaymentMethodDto } from "../../api/types";
+import { legalOriginForWrite } from "../../domain/provenanceLabels";
 import { dateTimeInputToIsoZ, isoToDateTimeInput } from "../../forms/dateTime";
 import { optionalText, withoutUndefined } from "../../forms/requestFields";
 
@@ -25,6 +26,13 @@ export interface LegalInfoWriteRequest {
   confidence: string;
   sourceUrl?: string;
   verifiedAt?: string;
+  legalEntityNameOrigin?: string;
+  registrationCountryOrigin?: string;
+}
+
+/** Body of `POST …/legal-info/confirm` and `…/release`. */
+export interface LegalFieldsRequest {
+  fields: string[];
 }
 
 export interface PaymentMethodWriteRequest {
@@ -97,29 +105,47 @@ export function legalInfoFormValues(legalInfo?: LegalInfoDto): LegalInfoFormValu
   };
 }
 
-export function buildLegalInfoRequest(values: LegalInfoFormValues): LegalInfoWriteRequest {
+/** `loaded` is the record the form was opened with: an untouched automatic value keeps its origin. */
+export function buildLegalInfoRequest(values: LegalInfoFormValues, loaded?: LegalInfoDto): LegalInfoWriteRequest {
+  const legalEntityName = optionalText(values.legalEntityName);
+  const registrationCountry = optionalText(values.registrationCountry);
   return withoutUndefined<LegalInfoWriteRequest>({
-    legalEntityName: optionalText(values.legalEntityName),
-    registrationCountry: optionalText(values.registrationCountry),
+    legalEntityName,
+    registrationCountry,
     registrationNumber: optionalText(values.registrationNumber),
     legalAddress: optionalText(values.legalAddress),
     dataSource: values.dataSource,
     confidence: values.confidence,
     sourceUrl: optionalText(values.sourceUrl),
     verifiedAt: dateTimeInputToIsoZ(values.verifiedAt),
+    legalEntityNameOrigin: legalOriginForWrite(
+      legalEntityName,
+      loaded?.legalEntityName,
+      loaded?.legalEntityNameOrigin,
+    ),
+    registrationCountryOrigin: legalOriginForWrite(
+      registrationCountry,
+      loaded?.registrationCountry,
+      loaded?.registrationCountryOrigin,
+    ),
   });
 }
 
+/** `origin` is absent for a row added in the editor. */
 export interface PaymentMethodRow {
   method: string;
   note: string;
+  origin?: string;
 }
 
 export function paymentMethodRows(methods: ProviderPaymentMethodDto[]): PaymentMethodRow[] {
-  return methods.map((method) => ({ method: method.method, note: method.note ?? "" }));
+  return methods.map((method) => ({ method: method.method, note: method.note ?? "", origin: method.origin }));
 }
 
-/** The whole set, one entry per method: the `PUT` replaces every method the provider had. */
+/**
+ * The whole set, one entry per method: the `PUT` replaces every method the provider had. No origin
+ * is sent: the server keeps the origin of rows that already existed.
+ */
 export function buildPaymentMethodsRequest(rows: PaymentMethodRow[]): PaymentMethodWriteRequest[] {
   return rows.map((row) =>
     withoutUndefined<PaymentMethodWriteRequest>({ method: row.method, note: optionalText(row.note) }),

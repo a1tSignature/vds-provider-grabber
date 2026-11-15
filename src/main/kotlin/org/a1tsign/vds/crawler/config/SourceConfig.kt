@@ -172,9 +172,10 @@ data class DecimalSpec(
 
 /**
  * One advertised price: which [billingPeriod] it is, where to read it, which currency its symbol
- * stands for and how the page writes its number. The amount is the first number after the currency
- * symbol (the first number in the value when the currency is `fixed`), so `From $8.50 /month`
- * reads as 8.50.
+ * stands for and how the page writes its number. The amount is the number right next to the
+ * currency symbol, after it or before it, so `From $8.50 /month` reads 8.50 and `6.00 € −37%` reads
+ * 6.00; failing that, the first number after (then before) the symbol. With a `fixed` currency it
+ * is the first number in the value.
  *
  * [maxFractionDigits] is bounded by [SourceConfigFormat.MONEY_SCALE] -- the `NUMERIC(12, 4)` the
  * catalog stores. An amount with more fraction digits than that is refused rather than rounded: the
@@ -194,6 +195,13 @@ data class PriceSpec(
     override val attr: String? = null,
     override val required: Boolean = true,
     override val value: String? = null,
+    /**
+     * `false` (the default): struck-out amounts (`del`, `s`, `strike`, or a `line-through` /
+     * `strike` / `old-price` class or style) inside the selected element are ignored, so the price
+     * a customer pays now is read. `true` reads the struck regular price instead, from inside the
+     * selected element or next to it.
+     */
+    val regularPrice: Boolean = false,
 ) : FieldSpec
 
 /**
@@ -295,6 +303,13 @@ data class TariffsSection(
      */
     val locationKeys: String = SourceConfigFormat.LOCATIONS_NOT_OBSERVED,
     val minRows: Int = 1,
+    /**
+     * `true`: tariffs whose names (or external ids) collide are prefixed with the first of disk,
+     * RAM, vCPU -- or a combination -- that tells them apart, e.g. `150 GB disk · 16 GB RAM`. Off by
+     * default, because a colliding name is usually a selector that matches the same element in
+     * every row.
+     */
+    val disambiguateNames: Boolean = false,
 )
 
 /** The outcome of reading **one** file: the config (possibly with warnings) or its problems. */

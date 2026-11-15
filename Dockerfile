@@ -30,9 +30,13 @@ RUN --mount=type=cache,target=/root/.gradle \
 
 FROM eclipse-temurin:21-jre
 LABEL org.opencontainers.image.title="vds-provider-grabber"
-RUN useradd --system --uid 10001 --home-dir /app vds
+RUN useradd --system --uid 10001 --home-dir /app vds \
+ && mkdir -p /var/lock/vds-enrich \
+ && chown vds /var/lock/vds-enrich
 WORKDIR /app
 COPY --from=build /src/build/libs/vds-provider-grabber-1.0-SNAPSHOT-all.jar app.jar
+# The enrichment process's launcher; the service ENTRYPOINT below does not use it.
+COPY --chmod=0755 scripts/enrich-launch.sh /app/enrich-launch.sh
 
 # Heap follows the container memory limit; an OOM kills the process so the restart policy can act
 # instead of leaving a half-alive JVM.

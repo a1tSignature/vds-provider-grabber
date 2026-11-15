@@ -11,6 +11,7 @@ import org.a1tsign.vds.api.ApiJson
 import org.a1tsign.vds.db.EnrichmentRepository
 import org.a1tsign.vds.db.LocationTable
 import org.a1tsign.vds.db.PriceRepository
+import org.a1tsign.vds.db.MinPricesUsd
 import org.a1tsign.vds.db.ProviderListFilter
 import org.a1tsign.vds.db.ProviderRepository
 import org.a1tsign.vds.db.TariffPriceTable
@@ -58,12 +59,12 @@ class CatalogQueryService(
      * Returns `(totalElements, page content)` -- the caller (the route) builds the final
      * `PageResponse`, the same split [UserService.findPage] uses.
      *
-     * Not N+1: exactly seven SQL statements regardless of page size or sort field -- one
+     * Not N+1: exactly eight SQL statements regardless of page size or sort field -- one
      * id/page resolution (filters+order+limit/offset via [ProviderRepository.filteredPage], or
      * filters alone via [ProviderRepository.filteredIds] when sorting by `minMonthlyPriceUsd`,
      * because that value has no column to `ORDER BY`), one `minMonthlyPriceUsd` aggregate (raw
-     * SQL, [ProviderRepository.minMonthlyPriceUsdByProvider]) and one decoration query per
-     * auxiliary fact (payment methods, location countries, active tariff counts, legal info) -- never one query per row.
+     * SQL, [ProviderRepository.minPricesUsdByProvider]) and one decoration query per
+     * auxiliary fact (payment methods, location countries, active tariff counts, legal info, enrichment last attempt) -- never one query per row.
      */
     suspend fun listProviders(
         filter: ProviderListFilter,
@@ -75,18 +76,18 @@ class CatalogQueryService(
             val minPriceSort = sort.firstOrNull { it.field == "minMonthlyPriceUsd" }
             val total: Long
             val pageProviders: List<Provider>
-            val minPriceForPage: Map<Long, BigDecimal?>
+            val minPriceForPage: Map<Long, MinPricesUsd>
             if (minPriceSort != null) {
                 // The sort key has no column: resolve every matching id, compute the aggregate for
                 // all of them (one raw-SQL statement), sort/paginate that already-materialised,
                 // filtered id list in memory -- still a fixed number of SQL statements, not N+1.
                 val allIds = providers.filteredIds(filter)
                 total = allIds.size.toLong()
-                val priceByAll = providers.minMonthlyPriceUsdByProvider(allIds)
+                val priceByAll = providers.minPricesUsdByProvider(allIds)
                 val descending = minPriceSort.descending
                 val orderedIds = allIds.sortedWith { a, b ->
-                    val pa = priceByAll[a]
-                    val pb = priceByAll[b]
+                    val pa = priceByAll[a]?.lowest
+                    val pb = priceByAll[b]?.lowest
                     val primary = when {
                         pa == null && pb == null -> 0
                         pa == null -> 1 // NULLs last in both directions.
@@ -103,13 +104,14 @@ class CatalogQueryService(
             } else {
                 total = providers.countFiltered(filter)
                 pageProviders = providers.filteredPage(filter, sort, size, page * size)
-                minPriceForPage = providers.minMonthlyPriceUsdByProvider(pageProviders.map { it.id })
+                minPriceForPage = providers.minPricesUsdByProvider(pageProviders.map { it.id })
             }
             val ids = pageProviders.map { it.id }
             val paymentMethods = providers.paymentMethodsByProvider(ids)
             val locationCountries = providers.locationCountriesByProvider(ids)
             val activeTariffCounts = providers.activeTariffCountsByProvider(ids)
             val legalInfo = providers.legalInfoByProvider(ids)
+            val lastAttempts = enrichmentState.lastAttemptAtByProvider(ids)
             val summaries = pageProviders.map { p ->
                 ProviderSummaryDto(
                     id = p.id,
@@ -125,7 +127,9 @@ class CatalogQueryService(
                     paymentMethods = paymentMethods[p.id] ?: emptySet(),
                     locationCountryCodes = locationCountries[p.id] ?: emptySet(),
                     activeTariffCount = activeTariffCounts[p.id] ?: 0,
-                    minMonthlyPriceUsd = minPriceForPage[p.id],
+                    minMonthlyPriceUsd = minPriceForPage[p.id]?.monthly,
+                    minAnnualPriceUsdPerMonth = minPriceForPage[p.id]?.annualPerMonth,
+                    enrichmentLastAttemptAt = lastAttempts[p.id],
                 )
             }
             total to summaries

@@ -1,0 +1,12 @@
+# Starts vds-enrich.service daily. A launch still running from the day before makes the new one
+# exit 0 at once (the launcher's flock).
+[Unit]
+Description=Daily vds-provider-grabber site enrichment
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 UTC
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

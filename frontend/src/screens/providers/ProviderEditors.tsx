@@ -3,6 +3,8 @@ import { useApiMutation } from "../../api/hooks";
 import type { LegalInfoDto, LocationDto, ProviderPaymentMethodDto } from "../../api/types";
 import { useDictionaries } from "../../dictionaries/DictionariesContext";
 import { DictionarySelect } from "../../dictionaries/DictionarySelect";
+import { OriginBadge } from "../../components/OriginBadge";
+import { originMarker } from "../../domain/provenanceLabels";
 import { DestructiveAction } from "../../forms/DestructiveAction";
 import { Field, FormStatus } from "../../forms/FormParts";
 import { useForm } from "../../forms/useForm";
@@ -59,7 +61,7 @@ export function LegalInfoEditor({
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
     void form.submit(async (current) => {
-      await mutate(buildLegalInfoRequest(current));
+      await mutate(buildLegalInfoRequest(current, legalInfo));
       onSaved();
     });
   }
@@ -150,20 +152,34 @@ export function PaymentMethodsEditor({
     <form className="form inline-editor" onSubmit={handleSubmit} noValidate>
       <FormStatus error={form.state.error} onRetry={() => void form.retry()} />
       {rows.length === 0 && <p className="muted">способов оплаты нет</p>}
-      {rows.map((row, index) => (
-        <div key={row.method} className="form-row">
-          <span className="form-row-label">{row.method}</span>
-          <input
-            value={row.note}
-            onChange={(e) => updateRow(index, e.target.value)}
-            placeholder="примечание"
-            aria-label={`примечание для ${row.method}`}
-          />
-          <button type="button" onClick={() => form.set({ rows: rows.filter((_, i) => i !== index) })}>
-            Убрать
-          </button>
-        </div>
-      ))}
+      {rows.map((row, index) => {
+        const remove = () => form.set({ rows: rows.filter((_, i) => i !== index) });
+        return (
+          <div key={row.method} className="form-row">
+            <span className="form-row-label">
+              {row.method} <OriginBadge origin={row.origin} />
+            </span>
+            <input
+              value={row.note}
+              onChange={(e) => updateRow(index, e.target.value)}
+              placeholder="примечание"
+              aria-label={`примечание для ${row.method}`}
+            />
+            {originMarker(row.origin) === null ? (
+              <button type="button" onClick={remove}>
+                Убрать
+              </button>
+            ) : (
+              <DestructiveAction
+                label="Убрать"
+                confirmText={`${row.method} добавлен автоматически. Если убрать его и сохранить, автосбор больше не добавит этот способ оплаты.`}
+                run={async () => remove()}
+                onDone={() => undefined}
+              />
+            )}
+          </div>
+        );
+      })}
       {available.length > 0 && (
         <select
           value=""
@@ -235,13 +251,19 @@ function LocationRow({
   const { mutate } = useApiMutation<void, void>("DELETE", `/api/v1/locations/${location.id}`);
   return (
     <li className="form-row">
-      <span>{describeLocation(location)}</span>
+      <span>
+        {describeLocation(location)} <OriginBadge origin={location.origin} />
+      </span>
       <button type="button" onClick={onEdit}>
         Изменить
       </button>
       <DestructiveAction
         label="Удалить"
-        confirmText="Удалить локацию? Тарифы, привязанные к ней, потеряют эту привязку."
+        confirmText={
+          originMarker(location.origin) === null
+            ? "Удалить локацию? Тарифы, привязанные к ней, потеряют эту привязку."
+            : `Удалить локацию? Тарифы, привязанные к ней, потеряют эту привязку. Локация добавлена автоматически: если других локаций в ${location.countryCode} не останется, автосбор больше не добавит эту страну.`
+        }
         run={() => mutate()}
         onDone={onDeleted}
       />

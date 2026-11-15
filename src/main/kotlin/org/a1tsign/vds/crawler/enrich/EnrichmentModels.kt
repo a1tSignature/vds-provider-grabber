@@ -1,18 +1,33 @@
 package org.a1tsign.vds.crawler.enrich
 
 import org.a1tsign.vds.domain.EnrichmentFacet
+import org.a1tsign.vds.domain.EnrichmentOutcome
 
-/** How a run treats the enrichment cadence. The scheduler always uses [DUE]. */
-enum class EnrichmentMode {
-    /** Only providers whose last attempt is older than the configured interval. */
-    DUE,
+/**
+ * A provider as the enrichment queue holds it. [pricingUrl] comes from a declarative source of the
+ * same slug, if any; [observedFacets] are the facets an enabled source of that slug writes itself.
+ */
+data class EnrichmentTarget(
+    val id: Long,
+    val slug: String,
+    val systemStatus: String,
+    val websiteUrl: String,
+    val pricingUrl: String?,
+    val observedFacets: Set<EnrichmentFacet>,
+)
 
-    /** Every provider, ignoring the cadence. */
-    FORCE,
-
-    /** No enrichment in this run. */
-    SKIP,
-}
+/**
+ * What enriching one provider did. [valuesApplied] counts fields and rows the catalog changed; in a
+ * dry run it is the intended count, computed against the catalog read.
+ */
+data class EnrichmentReport(
+    val outcome: EnrichmentOutcome,
+    val durationMs: Long = 0,
+    val pagesFetched: Int = 0,
+    val valuesApplied: Int = 0,
+    /** One line: no page body, no secret. */
+    val message: String? = null,
+)
 
 /**
  * What the crawl starts from. [origin] is `scheme://host[:port]`; [pricingUrl] is an absolute URL on
@@ -73,6 +88,3 @@ sealed interface CrawlOutcome {
 
     data object RobotsDisallowed : CrawlOutcome
 }
-
-/** The facets an adapter's snapshot already observes; enrichment does not write them. */
-typealias ObservedFacets = Set<EnrichmentFacet>

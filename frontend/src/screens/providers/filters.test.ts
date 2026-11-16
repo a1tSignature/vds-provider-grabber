@@ -17,12 +17,12 @@ const dictionaries = {
 const schema = buildProviderFiltersSchema(dictionaries);
 
 describe("provider list filter state", () => {
-  it("round-trips every field, with repeatable paymentMethod order preserved", () => {
+  it("round-trips every field, preserving repeatable filter order", () => {
     const state = {
       q: "ovh",
       status: "FOO" as const,
       registrationCountry: "DE",
-      locationCountry: "US",
+      locationCountry: ["US", "DE"],
       paymentMethod: ["BETA", "GAMMA"],
       hasActiveTariffs: true,
       systemStatus: ["CANDIDATE", "REJECTED"],
@@ -39,7 +39,7 @@ describe("provider list filter state", () => {
       q: "",
       status: undefined,
       registrationCountry: undefined,
-      locationCountry: undefined,
+      locationCountry: [],
       paymentMethod: [],
       hasActiveTariffs: undefined,
       systemStatus: [],
@@ -53,6 +53,12 @@ describe("provider list filter state", () => {
   it("does not double a repeated paymentMethod and keeps first-seen order", () => {
     const state = parseUrlState(schema, "paymentMethod=GAMMA&paymentMethod=ALPHA&paymentMethod=GAMMA");
     expect(state.paymentMethod).toEqual(["GAMMA", "ALPHA"]);
+  });
+
+  it("normalizes and de-duplicates multiple location countries", () => {
+    const state = parseUrlState(schema, "locationCountry=de&locationCountry=US&locationCountry=DE&locationCountry=usa");
+    expect(state.locationCountry).toEqual(["DE", "US"]);
+    expect(serializeUrlState(schema, state)).toBe("locationCountry=DE&locationCountry=US");
   });
 
   it("falls back to defaults for a country code outside the two-letter shape", () => {

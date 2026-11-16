@@ -37,6 +37,14 @@ function countryCodeField(): FieldCodec<string | undefined> {
   };
 }
 
+function countryCodesField(): FieldCodec<string[]> {
+  return {
+    defaultValue: [],
+    parse: (params, key) => [...new Set(params.getAll(key).map(normalizeCountryCode).filter((code): code is string => code !== undefined))],
+    serialize: (value, key, params) => value.forEach((code) => params.append(key, code)),
+  };
+}
+
 function pageSizeField(): FieldCodec<number> {
   return {
     defaultValue: 20,
@@ -57,7 +65,7 @@ export function buildProviderFiltersSchema(dictionaries: DictionariesDto) {
     q: stringField(),
     status: optionalEnumField(dictionaries.providerStatuses),
     registrationCountry: countryCodeField(),
-    locationCountry: countryCodeField(),
+    locationCountry: countryCodesField(),
     paymentMethod: repeatableEnumField(dictionaries.paymentMethods),
     hasActiveTariffs: booleanField(),
     // Repeatable, sent to the API as is; none selected means the backend's default, CONFIGURED only.

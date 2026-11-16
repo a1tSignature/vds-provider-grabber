@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
-import { useApiQuery } from "../../api/hooks";
-import type { PageResponse, ProviderSummaryDto } from "../../api/types";
 import { OriginBadge } from "../../components/OriginBadge";
 import { SystemStatusBadge } from "../../components/SystemStatusBadge";
+import { CountryFlag } from "../../components/CountryFlag";
 import { Pagination } from "../../components/Pagination";
 import { Empty, ErrorView, Loading } from "../../components/StateViews";
 import { DictionarySelect } from "../../dictionaries/DictionarySelect";
 import { PaymentMethodIcon, paymentMethodLabel } from "../../domain/paymentMethods";
 import { systemStatusFilterLabel } from "../../domain/systemStatusLabels";
+import { COUNTRIES } from "../../domain/countries";
+import { useProvidersListQuery } from "./useProvidersListQuery";
 import { EditorOnly } from "../../forms/FormParts";
 import { useDictionaries } from "../../dictionaries/DictionariesContext";
 import { formatMoney, websiteHost } from "../../lib/format";
@@ -80,13 +81,16 @@ export function ProvidersListScreen() {
     filters.registrationCountry,
     (value) => updateFilters({ registrationCountry: value, page: 0 }),
   );
-  const [locationCountryInput, handleLocationCountryChange] = useCountryFilterInput(
-    filters.locationCountry,
-    (value) => updateFilters({ locationCountry: value, page: 0 }),
-  );
+  const [countrySearch, setCountrySearch] = useState("");
 
-  const query = canonicalSearch ? `/api/v1/providers?${canonicalSearch}` : "/api/v1/providers";
-  const { data, error, loading, refetch } = useApiQuery<PageResponse<ProviderSummaryDto>>(query);
+  const { data, error, loading, refetch } = useProvidersListQuery(canonicalSearch);
+
+  function toggleLocationCountry(code: string) {
+    const next = filters.locationCountry.includes(code)
+      ? filters.locationCountry.filter((country) => country !== code)
+      : [...filters.locationCountry, code];
+    updateFilters({ locationCountry: next, page: 0 });
+  }
 
   function toggleSort(field: ProviderSortField) {
     const current = filters.sort;
@@ -115,7 +119,11 @@ export function ProvidersListScreen() {
   return (
     <div className="providers-list">
       <div className="page-header">
-        <h1>Провайдеры</h1>
+        <div>
+          <p className="eyebrow">КАТАЛОГ ИНФРАСТРУКТУРЫ</p>
+          <h1>Провайдеры</h1>
+          <p className="page-description">Сравнивайте условия, страны размещения и способы оплаты.</p>
+        </div>
         <EditorOnly>
           <Link to="/providers/new" className="btn-primary">
             Добавить провайдера
@@ -140,12 +148,41 @@ export function ProvidersListScreen() {
           placeholder="Страна регистрации"
           maxLength={2}
         />
-        <input
-          value={locationCountryInput}
-          onChange={(event) => handleLocationCountryChange(event.target.value)}
-          placeholder="Страна размещения"
-          maxLength={2}
-        />
+        <details className="country-filter">
+          <summary>
+            Страны размещения{filters.locationCountry.length > 0 ? ` · ${filters.locationCountry.length}` : ""}
+          </summary>
+          <div className="country-filter-menu">
+            <input
+              type="search"
+              value={countrySearch}
+              onChange={(event) => setCountrySearch(event.target.value)}
+              placeholder="Найти страну"
+              aria-label="Найти страну размещения"
+            />
+            {filters.locationCountry.length > 0 && (
+              <button type="button" className="btn-link" onClick={() => updateFilters({ locationCountry: [], page: 0 })}>
+                Сбросить выбор
+              </button>
+            )}
+            <div className="country-filter-options">
+              {COUNTRIES.filter(({ code, name }) =>
+                `${name} ${code}`.toLocaleLowerCase("ru").includes(countrySearch.trim().toLocaleLowerCase("ru")),
+              ).map(({ code, name }) => (
+                <label key={code} className="country-filter-option">
+                  <input
+                    type="checkbox"
+                    checked={filters.locationCountry.includes(code)}
+                    onChange={() => toggleLocationCountry(code)}
+                  />
+                  <CountryFlag code={code} />
+                  <span>{name}</span>
+                  <span className="muted">{code}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        </details>
         <label>
           <input
             type="checkbox"
@@ -260,7 +297,13 @@ export function ProvidersListScreen() {
                         ))}
                       </span>
                     </td>
-                    <td>{provider.locationCountryCodes.join(", ")}</td>
+                    <td>
+                      <span className="country-flags">
+                        {provider.locationCountryCodes.length === 0
+                          ? "—"
+                          : provider.locationCountryCodes.map((code) => <CountryFlag key={code} code={code} />)}
+                      </span>
+                    </td>
                     <td className="num">{provider.activeTariffCount}</td>
                   </tr>
                 ))}

@@ -4,24 +4,24 @@
  * choice has been made (html carries no [data-theme]); the toggle's explicit choice always wins.
  */
 :root {
-  --bg: #0f141b;
-  --s1: #161c25;
-  --s2: #1b222c;
-  --s3: #212938;
-  --line: #2a3342;
-  --line2: #343f52;
-  --edge: #5b6f93;
-  --t1: #e8edf3;
-  --t2: #aab4c4;
+  --bg: #10151d;
+  --s1: #171e28;
+  --s2: #1d2632;
+  --s3: #253141;
+  --line: #2b3747;
+  --line2: #3a485c;
+  --edge: #586d88;
+  --t1: #edf2f8;
+  --t2: #a9b6c8;
   --t3: #76829a;
-  --acc: #8fb4ff;
-  --accbg: #1e2b47;
-  --onacc: #0b1220;
+  --acc: #8bb8ff;
+  --accbg: #203553;
+  --onacc: #0b1727;
   --up: #2dd4bf;
   --dn: #fb923c;
   --upbg: #113230;
   --dnbg: #3a2615;
-  --focus: 0 0 0 3px rgba(143, 180, 255, 0.55);
+  --focus: 0 0 0 3px rgba(139, 184, 255, 0.5);
   --backdrop: rgba(5, 8, 12, 0.7);
 
   --f-body: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -43,10 +43,19 @@
   --sp-7: 48px;
 
   --r-1: 8px;
-  --r-2: 8px;
-  --r-3: 10px;
+  --r-2: 12px;
+  --r-3: 16px;
 
   --transition: 120ms ease;
+  --control-y: 9px;
+  --table-cell-y: 11px;
+  --heading-size: clamp(26px, 3vw, 34px);
+  --tracking-tight: -0.04em;
+  --tracking-label: 0.12em;
+  --shadow-header: 0 4px 18px rgba(0, 0, 0, 0.08);
+  --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.06);
+  --shadow-filters: 0 8px 24px rgba(0, 0, 0, 0.06);
+  --shadow-button: 0 5px 14px color-mix(in srgb, var(--acc) 22%, transparent);
 
   /* Payment method chips: brand colours, the same in every theme. */
   --pm-icon-w: 28px;
@@ -81,46 +90,46 @@
 
 @media (prefers-color-scheme: light) {
   html:not([data-theme]) {
-    --bg: #f2f4f7;
+    --bg: #f3f6fa;
     --s1: #ffffff;
     --s2: #eef1f5;
     --s3: #e4e8ee;
-    --line: #d6dce5;
-    --line2: #c3cad6;
+    --line: #dce3ec;
+    --line2: #cbd5e1;
     --edge: #798498;
     --t1: #111827;
     --t2: #44526a;
     --t3: #5b6680;
-    --acc: #1e40af;
-    --accbg: #dbe6fb;
+    --acc: #2454a6;
+    --accbg: #e5efff;
     --onacc: #ffffff;
     --up: #0f766e;
     --dn: #ad3409;
     --upbg: #d8f5f1;
     --dnbg: #fee9db;
-    --focus: 0 0 0 3px rgba(30, 64, 175, 0.45);
+    --focus: 0 0 0 3px rgba(36, 84, 166, 0.35);
     --backdrop: rgba(17, 24, 39, 0.45);
   }
 }
 
 html[data-theme="day"] {
-  --bg: #f2f4f7;
+  --bg: #f3f6fa;
   --s1: #ffffff;
   --s2: #eef1f5;
   --s3: #e4e8ee;
-  --line: #d6dce5;
-  --line2: #c3cad6;
+  --line: #dce3ec;
+  --line2: #cbd5e1;
   --edge: #798498;
   --t1: #111827;
   --t2: #44526a;
   --t3: #5b6680;
-  --acc: #1e40af;
-  --accbg: #dbe6fb;
+  --acc: #2454a6;
+  --accbg: #e5efff;
   --onacc: #ffffff;
   --up: #0f766e;
   --dn: #ad3409;
   --upbg: #d8f5f1;
   --dnbg: #fee9db;
-  --focus: 0 0 0 3px rgba(30, 64, 175, 0.45);
+  --focus: 0 0 0 3px rgba(36, 84, 166, 0.35);
   --backdrop: rgba(17, 24, 39, 0.45);
 }

@@ -388,7 +388,11 @@ class CrawlerEndToEndTest : AbstractDbTest() {
     ) = FixtureHttpServer().use { fixture ->
         fixture.robots(body = robots)
         fixture.html(ExampleStaticAdapter.PAGE_PATH, fixturePage("example-static.html"))
-        CrawlerAppHarness(clock).use { harness ->
+        CrawlerAppHarness(
+            clock,
+            configuredCrawlerUsername = SERVICE_USERNAME,
+            configuredCrawlerPassword = SERVICE_PASSWORD,
+        ).use { harness ->
             ApiProbe(harness.baseUrl).use { probe ->
                 runBlocking {
                     val adminToken = probe.login(BOOTSTRAP_ADMIN, BOOTSTRAP_PASSWORD)

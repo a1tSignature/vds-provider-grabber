@@ -29,7 +29,8 @@ RUN --mount=type=cache,target=/root/.gradle \
       -Porg.gradle.java.installations.auto-download=false
 
 FROM eclipse-temurin:21-jre
-LABEL org.opencontainers.image.title="vds-provider-grabber"
+LABEL org.opencontainers.image.title="VDS Provider Grabber" \
+      org.opencontainers.image.source="https://github.com/a1tSignature/vds-provider-grabber"
 RUN useradd --system --uid 10001 --home-dir /app vds \
  && mkdir -p /var/lock/vds-enrich \
  && chown vds /var/lock/vds-enrich

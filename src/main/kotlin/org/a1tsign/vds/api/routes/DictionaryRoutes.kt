@@ -4,7 +4,6 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import kotlinx.serialization.Serializable
-import org.a1tsign.vds.auth.requireRole
 import org.a1tsign.vds.domain.BillingPeriod
 import org.a1tsign.vds.domain.Confidence
 import org.a1tsign.vds.domain.DiskType
@@ -16,7 +15,6 @@ import org.a1tsign.vds.domain.LegalDataSource
 import org.a1tsign.vds.domain.PaymentMethod
 import org.a1tsign.vds.domain.PriceDataSource
 import org.a1tsign.vds.domain.ProviderStatus
-import org.a1tsign.vds.domain.Role
 import org.a1tsign.vds.domain.SystemStatus
 import org.a1tsign.vds.domain.Virtualization
 
@@ -47,7 +45,6 @@ data class DictionariesDto(
 
 fun Route.dictionaryRoutes() {
     get("/api/v1/dictionaries") {
-        call.requireRole(Role.VIEWER)
         call.respond(
             DictionariesDto(
                 paymentMethods = PaymentMethod.entries.map { it.name },

@@ -1,4 +1,4 @@
-import { clearStoredSession, isExpired, readStoredSession } from "../auth/session";
+import { readStoredSession } from "../auth/session";
 
 export interface ApiErrorDetail {
   field: string;
@@ -29,6 +29,7 @@ interface RequestOptions {
   signal?: AbortSignal;
   /** The login call carries no token and its own 401 is a credential error, not a session wipe. */
   skipAuth?: boolean;
+  optionalAuth?: boolean;
 }
 
 async function request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
@@ -43,11 +44,10 @@ async function requestWithStatus<T>(
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (!options.skipAuth) {
     const session = readStoredSession();
-    if (session === null || isExpired(session.expiresAt)) {
-      clearStoredSession();
+    if (session === null && !options.optionalAuth) {
       throw { kind: "unauthorized", message: "сессия истекла, войдите снова" } satisfies ApiClientError;
     }
-    headers.Authorization = `Bearer ${session.token}`;
+    if (session !== null) headers.Authorization = `Bearer ${session.token}`;
   }
 
   const init: RequestInit = { method, headers };
@@ -113,7 +113,8 @@ export function clientErrorMessage(error: ApiClientError): string {
 }
 
 export const apiClient = {
-  get: <T,>(path: string, options: { signal?: AbortSignal } = {}): Promise<T> => request<T>("GET", path, options),
+  get: <T,>(path: string, options: { signal?: AbortSignal } = {}): Promise<T> =>
+    request<T>("GET", path, { ...options, optionalAuth: true }),
   send: <T,>(
     method: "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,

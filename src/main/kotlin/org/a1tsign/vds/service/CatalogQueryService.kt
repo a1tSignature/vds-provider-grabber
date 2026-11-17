@@ -137,9 +137,14 @@ class CatalogQueryService(
     }
 
     /** `GET /api/v1/providers/{id}` -- `404` if the provider does not exist. */
-    suspend fun getProvider(id: Long): ProviderDetailDto = withContext(Dispatchers.IO) {
+    suspend fun getProvider(id: Long): ProviderDetailDto = getProvider(id, catalogVisibleOnly = true)
+
+    suspend fun getProviderForService(id: Long): ProviderDetailDto = getProvider(id, catalogVisibleOnly = false)
+
+    private suspend fun getProvider(id: Long, catalogVisibleOnly: Boolean): ProviderDetailDto = withContext(Dispatchers.IO) {
         transaction(database) {
-            val provider = providers.find(id) ?: throw NotFoundException("Provider not found")
+            val provider = (if (catalogVisibleOnly) providers.findCatalogVisible(id) else providers.find(id))
+                ?: throw NotFoundException("Provider not found")
             val legalInfo = providers.legalInfo(id)
             val paymentMethods = providers.paymentMethods(id)
             val locations = LocationTable.selectAll().where { LocationTable.providerId eq id }.map { it.toLocation() }
@@ -185,9 +190,27 @@ class CatalogQueryService(
         page: Int,
         size: Int,
         sort: List<SortField>,
+    ): Pair<Long, List<Tariff>> = listProviderTariffs(providerId, activeOnly, page, size, sort, catalogVisibleOnly = true)
+
+    suspend fun listProviderTariffsForService(
+        providerId: Long,
+        activeOnly: Boolean,
+        page: Int,
+        size: Int,
+        sort: List<SortField>,
+    ): Pair<Long, List<Tariff>> = listProviderTariffs(providerId, activeOnly, page, size, sort, catalogVisibleOnly = false)
+
+    private suspend fun listProviderTariffs(
+        providerId: Long,
+        activeOnly: Boolean,
+        page: Int,
+        size: Int,
+        sort: List<SortField>,
+        catalogVisibleOnly: Boolean,
     ): Pair<Long, List<Tariff>> = withContext(Dispatchers.IO) {
         transaction(database) {
-            providers.find(providerId) ?: throw NotFoundException("Provider not found")
+            val provider = if (catalogVisibleOnly) providers.findCatalogVisible(providerId) else providers.find(providerId)
+            provider ?: throw NotFoundException("Provider not found")
             val condition: () -> Op<Boolean> = {
                 if (activeOnly) (TariffTable.providerId eq providerId) and (TariffTable.isActive eq true) else TariffTable.providerId eq providerId
             }
@@ -290,8 +313,8 @@ class CatalogQueryService(
     suspend fun getTariffDetail(id: Long): TariffDetailDto = withContext(Dispatchers.IO) {
         transaction(database) {
             val tariff = tariffs.find(id) ?: throw NotFoundException("Tariff not found")
-            val provider = providers.find(tariff.providerId)
-                ?: error("Tariff ${tariff.id} references missing provider ${tariff.providerId}")
+            val provider = providers.findCatalogVisible(tariff.providerId)
+                ?: throw NotFoundException("Tariff not found")
             val locationIds = tariffs.locationIds(id)
             val locations = if (locationIds.isEmpty()) {
                 emptyList()
@@ -321,7 +344,8 @@ class CatalogQueryService(
         to: Instant?,
     ): List<PriceHistoryItemDto> = withContext(Dispatchers.IO) {
         transaction(database) {
-            tariffs.find(tariffId) ?: throw NotFoundException("Tariff not found")
+            val tariff = tariffs.find(tariffId) ?: throw NotFoundException("Tariff not found")
+            if (providers.findCatalogVisible(tariff.providerId) == null) throw NotFoundException("Tariff not found")
             prices.history(tariffId, billingPeriod, from, to).map { it.toHistoryDto() }
         }
     }

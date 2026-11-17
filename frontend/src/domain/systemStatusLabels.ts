@@ -23,6 +23,12 @@ const FILTER_LABELS: Record<string, string> = {
   REJECTED: "отклонённые",
 };
 
+const BROWSABLE_SYSTEM_STATUSES = ["CONFIGURED", "CANDIDATE"] as const;
+
+export function browsableSystemStatuses(available: readonly string[]): string[] {
+  return BROWSABLE_SYSTEM_STATUSES.filter((status) => available.includes(status));
+}
+
 /** The plural option label of the list filter; the raw value for an enum constant added later. */
 export function systemStatusFilterLabel(systemStatus: string): string {
   return FILTER_LABELS[systemStatus] ?? systemStatus;

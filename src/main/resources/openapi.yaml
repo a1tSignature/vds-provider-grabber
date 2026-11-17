@@ -122,8 +122,9 @@ paths:
     get:
       tags: [Providers]
       summary: List providers
+      security: []
       description: >-
-        Required role: VIEWER. Filters are ANDed together; paymentMethod is repeatable (a provider
+        No authentication required. Filters are ANDed together; paymentMethod is repeatable (a provider
         must have every listed method). Sortable fields: id, name, slug, status, createdAt,
         minMonthlyPriceUsd (sorts by the lower of minMonthlyPriceUsd and minAnnualPriceUsdPerMonth).
       parameters:
@@ -157,10 +158,10 @@ paths:
           explode: true
           schema:
             type: array
-            items: { $ref: "#/components/schemas/SystemStatus" }
+            items: { type: string, enum: [CONFIGURED, CANDIDATE] }
           description: >-
-            Repeatable (OR semantics). Absent means CONFIGURED only, so discovered candidates and
-            rejected rows stay out of the default listing; totalElements/totalPages reflect it.
+            Repeatable (OR semantics). Defaults to CONFIGURED and CANDIDATE. REJECTED is not
+            accepted and is never visible; totalElements/totalPages reflect the visible set.
         - { $ref: "#/components/parameters/PageParam" }
         - { $ref: "#/components/parameters/SizeParam" }
         - name: sort
@@ -174,8 +175,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ProviderSummaryPage" }
         "400": { $ref: "#/components/responses/BadRequestError" }
-        "401": { $ref: "#/components/responses/UnauthorizedError" }
-        "403": { $ref: "#/components/responses/ForbiddenError" }
     post:
       tags: [Providers]
       summary: Create a provider
@@ -204,6 +203,93 @@ paths:
         "413": { $ref: "#/components/responses/PayloadTooLargeError" }
         "415": { $ref: "#/components/responses/UnsupportedMediaTypeError" }
 
+  /api/v1/internal/catalog/providers:
+    get:
+      tags: [Providers]
+      summary: Internal all-status provider index
+      description: >-
+        Required role: EDITOR and exact username configured by VDS_CRAWLER_USERNAME. This service
+        endpoint exists for crawler and discovery reconciliation; it includes REJECTED providers.
+        It is not a public catalog browse route and fails closed when the configured username is absent.
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+          description: Free-text match against name/slug.
+        - name: systemStatus
+          in: query
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: { $ref: "#/components/schemas/SystemStatus" }
+        - { $ref: "#/components/parameters/PageParam" }
+        - { $ref: "#/components/parameters/SizeParam" }
+        - name: sort
+          in: query
+          schema: { type: string }
+          description: "field or field,asc|desc. Allowed fields: id, name, slug, status, createdAt, minMonthlyPriceUsd."
+      responses:
+        "200":
+          description: A page of provider summaries in any system status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderSummaryPage" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+
+  /api/v1/internal/catalog/providers/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    get:
+      tags: [Providers]
+      summary: Internal provider detail for reconciliation
+      description: "Required role: EDITOR and exact username configured by VDS_CRAWLER_USERNAME. Includes any system status."
+      responses:
+        "200":
+          description: Full provider detail including its current data.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderDetailDto" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+
+  /api/v1/internal/catalog/providers/{id}/tariffs:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    get:
+      tags: [Providers, Tariffs]
+      summary: Internal all-tariff provider read for reconciliation
+      description: "Required role: EDITOR and exact username configured by VDS_CRAWLER_USERNAME. Includes tariffs belonging to any system status."
+      parameters:
+        - name: activeOnly
+          in: query
+          schema: { type: boolean, default: false }
+        - { $ref: "#/components/parameters/PageParam" }
+        - { $ref: "#/components/parameters/SizeParam" }
+        - name: sort
+          in: query
+          schema: { type: string }
+          description: "field or field,asc|desc. Allowed fields: id, name, createdAt."
+      responses:
+        "200":
+          description: A page of this provider's tariffs, irrespective of provider system status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TariffPage" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "403": { $ref: "#/components/responses/ForbiddenError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+
   /api/v1/providers/{id}:
     parameters:
       - name: id
@@ -213,15 +299,14 @@ paths:
     get:
       tags: [Providers]
       summary: Get a provider's full detail
-      description: "Required role: VIEWER. Includes legal info, payment methods, locations and active tariffs with their current prices."
+      security: []
+      description: "No authentication required. CONFIGURED and CANDIDATE providers are visible; REJECTED providers return 404. Includes legal info, payment methods, locations and active tariffs with their current prices."
       responses:
         "200":
           description: Full provider detail.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ProviderDetailDto" }
-        "401": { $ref: "#/components/responses/UnauthorizedError" }
-        "403": { $ref: "#/components/responses/ForbiddenError" }
         "404": { $ref: "#/components/responses/NotFoundError" }
     put:
       tags: [Providers]
@@ -270,7 +355,8 @@ paths:
     get:
       tags: [Providers, Tariffs]
       summary: List one provider's tariffs
-      description: "Required role: VIEWER. Sortable fields: id, name, createdAt."
+      security: []
+      description: "No authentication required. REJECTED providers return 404. Sortable fields: id, name, createdAt."
       parameters:
         - name: activeOnly
           in: query
@@ -289,8 +375,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/TariffPage" }
         "400": { $ref: "#/components/responses/BadRequestError" }
-        "401": { $ref: "#/components/responses/UnauthorizedError" }
-        "403": { $ref: "#/components/responses/ForbiddenError" }
         "404": { $ref: "#/components/responses/NotFoundError" }
     post:
       tags: [Tariffs]
@@ -611,8 +695,10 @@ paths:
     get:
       tags: [Tariffs]
       summary: Cross-provider tariff search
+      security: []
       description: >-
-        Required role: VIEWER. billingPeriod defaults to MONTHLY; activeOnly defaults to true;
+        No authentication required. Only tariffs belonging to CONFIGURED and CANDIDATE providers
+        are included. billingPeriod defaults to MONTHLY; activeOnly defaults to true;
         inStock has no default (absent = no filter). Sortable fields: id, priceUsd, ramMb,
         vcpuCount, diskGb, name.
       parameters:
@@ -676,15 +762,14 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/TariffSearchItemPage" }
         "400": { $ref: "#/components/responses/BadRequestError" }
-        "401": { $ref: "#/components/responses/UnauthorizedError" }
-        "403": { $ref: "#/components/responses/ForbiddenError" }
 
   /api/v1/tariffs/by-provider:
     get:
       tags: [Tariffs]
       summary: Cheapest matching monthly tariff per provider
+      security: []
       description: >-
-        Required role: VIEWER. One element per provider that has at least one tariff matching the
+        No authentication required. Only CONFIGURED and CANDIDATE providers are included. One element per provider that has at least one tariff matching the
         filters with a current price. The billing period is fixed to MONTHLY: other periods are
         never converted or used as a fallback, and billingPeriod/hasPrice are not parameters here.
         cheapestTariff is the matching tariff with the smallest amountUsd (a price without amountUsd
@@ -742,8 +827,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ProviderCheapestTariffPage" }
         "400": { $ref: "#/components/responses/BadRequestError" }
-        "401": { $ref: "#/components/responses/UnauthorizedError" }
-        "403": { $ref: "#/components/responses/ForbiddenError" }
 
   /api/v1/tariffs/{id}:
     parameters:
@@ -754,15 +837,14 @@ paths:
     get:
       tags: [Tariffs]
       summary: Get a tariff's full detail
-      description: "Required role: VIEWER. Includes its provider, linked locations and one current price per billing period that has one."
+      security: []
+      description: "No authentication required. Tariffs belonging to REJECTED providers return 404. Includes its provider, linked locations and one current price per billing period that has one."
       responses:
         "200":
           description: Full tariff detail.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TariffDetailDto" }
-        "401": { $ref: "#/components/responses/UnauthorizedError" }
-        "403": { $ref: "#/components/responses/ForbiddenError" }
         "404": { $ref: "#/components/responses/NotFoundError" }
     put:
       tags: [Tariffs]
@@ -811,7 +893,8 @@ paths:
     get:
       tags: [Tariffs, Prices]
       summary: Raw price history for a tariff
-      description: "Required role: VIEWER. An empty history is a valid 200, not a 404."
+      security: []
+      description: "No authentication required. Tariffs belonging to REJECTED providers return 404. An empty history is a valid 200, not a 404."
       parameters:
         - name: billingPeriod
           in: query
@@ -833,8 +916,6 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/PriceHistoryItemDto" }
         "400": { $ref: "#/components/responses/BadRequestError" }
-        "401": { $ref: "#/components/responses/UnauthorizedError" }
-        "403": { $ref: "#/components/responses/ForbiddenError" }
         "404": { $ref: "#/components/responses/NotFoundError" }
 
   /api/v1/tariffs/{id}/locations:
@@ -1301,15 +1382,14 @@ paths:
     get:
       tags: [Dictionaries]
       summary: Every enum value set the frontend needs
-      description: "Required role: VIEWER (any authenticated role)."
+      security: []
+      description: "No authentication required."
       responses:
         "200":
           description: One array per enum.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DictionariesDto" }
-        "401": { $ref: "#/components/responses/UnauthorizedError" }
-        "403": { $ref: "#/components/responses/ForbiddenError" }
 
 components:
   securitySchemes:
@@ -1318,8 +1398,8 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: >-
-        Required for every endpoint except GET /health, GET /health/ready, GET /version and
-        POST /api/v1/auth/login.
+        Required for every endpoint except GET /health, GET /health/ready, GET /version,
+        POST /api/v1/auth/login, and the public catalog GET operations.
 
   parameters:
     PageParam:

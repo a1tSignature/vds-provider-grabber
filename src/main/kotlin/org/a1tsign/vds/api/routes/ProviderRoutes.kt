@@ -14,7 +14,8 @@ import org.a1tsign.vds.api.Validation
 import org.a1tsign.vds.api.dto.*
 import org.a1tsign.vds.api.pageRequest
 import org.a1tsign.vds.api.pageResponse
-import org.a1tsign.vds.auth.requireRole
+import org.a1tsign.vds.auth.requireAuthenticatedRole
+import org.a1tsign.vds.auth.requireCrawlerIdentity
 import org.a1tsign.vds.db.ProviderListFilter
 import org.a1tsign.vds.domain.*
 import org.a1tsign.vds.service.CatalogQueryService
@@ -23,7 +24,7 @@ import org.a1tsign.vds.service.ProviderService
 
 fun Route.providerRoutes(service: ProviderService, queryService: CatalogQueryService) {
     post("/api/v1/providers") {
-        call.requireRole(Role.EDITOR)
+        call.requireAuthenticatedRole(Role.EDITOR)
         val req = call.receive<ProviderWriteRequest>()
         val v = Validation()
         val data = validateProvider(req, v)
@@ -39,7 +40,7 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
     }
 
     put("/api/v1/providers/{id}") {
-        call.requireRole(Role.EDITOR)
+        call.requireAuthenticatedRole(Role.EDITOR)
         val req = call.receive<ProviderWriteRequest>()
         val v = Validation()
         val data = validateProvider(req, v)
@@ -54,7 +55,7 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
     }
 
     put("/api/v1/providers/{id}/system-status") {
-        call.requireRole(Role.EDITOR)
+        call.requireAuthenticatedRole(Role.EDITOR)
         val req = call.receive<ProviderSystemStatusWriteRequest>()
         val v = Validation()
         val systemStatus = v.enumValue("systemStatus", req.systemStatus, SystemStatus.entries.toTypedArray())
@@ -64,14 +65,14 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
     }
 
     delete("/api/v1/providers/{id}") {
-        call.requireRole(Role.EDITOR)
+        call.requireAuthenticatedRole(Role.EDITOR)
         val id = providerId(call.parameters["id"])
         service.delete(id)
         call.respond(HttpStatusCode.NoContent)
     }
 
     put("/api/v1/providers/{id}/legal-info") {
-        call.requireRole(Role.EDITOR)
+        call.requireAuthenticatedRole(Role.EDITOR)
         val req = call.receive<LegalInfoWriteRequest>()
         val v = Validation()
         val mode = parseWriteMode(v, req.writeMode)
@@ -93,7 +94,7 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
 
     // The body is a JSON array, so the write mode travels as `?writeMode=`.
     put("/api/v1/providers/{id}/payment-methods") {
-        call.requireRole(Role.EDITOR)
+        call.requireAuthenticatedRole(Role.EDITOR)
         val req = call.receive<List<PaymentMethodWriteRequest>>()
         val v = Validation()
         val mode = parseWriteMode(v, call.request.queryParameters["writeMode"])
@@ -104,8 +105,58 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
         call.respond(service.putPaymentMethods(id, methods, mode!!).map { it.toDto() })
     }
 
-    get("/api/v1/providers") {
-        call.requireRole(Role.VIEWER)
+    providerListReadRoute("/api/v1/providers", queryService, includeRejected = false)
+
+    get("/api/v1/providers/{id}") {
+        val id = providerId(call.parameters["id"])
+        call.respond(queryService.getProvider(id))
+    }
+
+    get("/api/v1/providers/{id}/tariffs") {
+        val id = providerId(call.parameters["id"])
+        val page = call.pageRequest(setOf("id", "name", "createdAt"))
+        val v = Validation()
+        val activeOnly = parseOptionalBoolean(v, "activeOnly", call.request.queryParameters["activeOnly"]) ?: false
+        v.throwIfInvalid()
+        val (total, items) = queryService.listProviderTariffs(id, activeOnly, page.page, page.size, page.sort)
+        call.respond(pageResponse(total, page.page, page.size, items.map { it.toDto() }))
+    }
+}
+
+fun Route.internalCatalogRoutes(queryService: CatalogQueryService, crawlerUsername: String?) {
+    providerListReadRoute(
+        "/api/v1/internal/catalog/providers",
+        queryService,
+        includeRejected = true,
+        crawlerUsername = crawlerUsername,
+    )
+
+    get("/api/v1/internal/catalog/providers/{id}") {
+        call.requireCrawlerIdentity(crawlerUsername)
+        val id = providerId(call.parameters["id"])
+        call.respond(queryService.getProviderForService(id))
+    }
+
+    get("/api/v1/internal/catalog/providers/{id}/tariffs") {
+        call.requireCrawlerIdentity(crawlerUsername)
+        val id = providerId(call.parameters["id"])
+        val page = call.pageRequest(setOf("id", "name", "createdAt"))
+        val v = Validation()
+        val activeOnly = parseOptionalBoolean(v, "activeOnly", call.request.queryParameters["activeOnly"]) ?: false
+        v.throwIfInvalid()
+        val (total, items) = queryService.listProviderTariffsForService(id, activeOnly, page.page, page.size, page.sort)
+        call.respond(pageResponse(total, page.page, page.size, items.map { it.toDto() }))
+    }
+}
+
+private fun Route.providerListReadRoute(
+    path: String,
+    queryService: CatalogQueryService,
+    includeRejected: Boolean,
+    crawlerUsername: String? = null,
+) {
+    get(path) {
+        if (includeRejected) call.requireCrawlerIdentity(crawlerUsername)
         val page = call.pageRequest(setOf("id", "name", "slug", "status", "createdAt", "minMonthlyPriceUsd"))
         val query = call.request.queryParameters
         val v = Validation()
@@ -115,13 +166,13 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
         val paymentMethods = query.getAll("paymentMethod").orEmpty()
             .mapNotNull { v.enumValue("paymentMethod", it, PaymentMethod.entries.toTypedArray()) }
         val hasActiveTariffs = parseOptionalBoolean(v, "hasActiveTariffs", query["hasActiveTariffs"])
-        // Repeatable, like paymentMethod. Absent means CONFIGURED only, so discovered candidates
-        // stay out of the default listing.
         val requestedSystemStatuses = query.getAll("systemStatus").orEmpty()
         val systemStatuses = requestedSystemStatuses
             .mapNotNull { v.enumValue("systemStatus", it, SystemStatus.entries.toTypedArray()) }
-            .ifEmpty { listOf(SystemStatus.CONFIGURED) }
-        v.throwIfInvalid()
+        if (!includeRejected && SystemStatus.REJECTED in systemStatuses) {
+            v.reject("systemStatus", "REJECTED is not available in the public catalog")
+        }
+        val defaultStatuses = if (includeRejected) SystemStatus.entries else PUBLIC_CATALOG_SYSTEM_STATUSES
         val filter = ProviderListFilter(
             q = query["q"],
             status = status,
@@ -129,27 +180,11 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
             locationCountry = locationCountry,
             paymentMethods = paymentMethods,
             hasActiveTariffs = hasActiveTariffs,
-            systemStatuses = systemStatuses,
+            systemStatuses = systemStatuses.ifEmpty { defaultStatuses.toList() },
         )
+        v.throwIfInvalid()
         val (total, items) = queryService.listProviders(filter, page.page, page.size, page.sort)
         call.respond(pageResponse(total, page.page, page.size, items))
-    }
-
-    get("/api/v1/providers/{id}") {
-        call.requireRole(Role.VIEWER)
-        val id = providerId(call.parameters["id"])
-        call.respond(queryService.getProvider(id))
-    }
-
-    get("/api/v1/providers/{id}/tariffs") {
-        call.requireRole(Role.VIEWER)
-        val id = providerId(call.parameters["id"])
-        val page = call.pageRequest(setOf("id", "name", "createdAt"))
-        val v = Validation()
-        val activeOnly = parseOptionalBoolean(v, "activeOnly", call.request.queryParameters["activeOnly"]) ?: false
-        v.throwIfInvalid()
-        val (total, items) = queryService.listProviderTariffs(id, activeOnly, page.page, page.size, page.sort)
-        call.respond(pageResponse(total, page.page, page.size, items.map { it.toDto() }))
     }
 }
 

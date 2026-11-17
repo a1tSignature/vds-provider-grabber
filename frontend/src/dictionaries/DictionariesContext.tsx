@@ -11,7 +11,6 @@ export function useDictionaries(): DictionariesDto {
   return value;
 }
 
-/** Loaded once, after login (the endpoint needs a token): every enum-valued control reads from this. */
 export function DictionariesProvider({ children }: { children: ReactNode }) {
   const { data, error, loading, refetch } = useApiQuery<DictionariesDto>("/api/v1/dictionaries");
   if (loading) return <Loading />;

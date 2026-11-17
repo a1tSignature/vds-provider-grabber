@@ -50,6 +50,8 @@ class CrawlerAppHarness(
     val clock: MutableTestClock,
     val serviceUsername: String = "crawler-service",
     val servicePassword: String = "crawler-password-1",
+    configuredCrawlerUsername: String = serviceUsername,
+    configuredCrawlerPassword: String = servicePassword,
 ) : AutoCloseable {
 
     private val recorded = CopyOnWriteArrayList<RecordedApiCall>()
@@ -81,7 +83,7 @@ class CrawlerAppHarness(
     fun clearForcedFailures() = forcedFailuresLeft.set(0)
 
     val components: AppComponents = buildComponents(
-        testCrawlerAppConfig(),
+        testCrawlerAppConfig(crawlerUsername = configuredCrawlerUsername, crawlerPassword = configuredCrawlerPassword),
         PostgresSupport.dataSource,
         clock,
         PostgresSupport.database,

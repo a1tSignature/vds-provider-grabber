@@ -79,6 +79,39 @@ class OpenApiContractTest : AbstractDbTest() {
     }
 
     @Test
+    fun `catalog GET operations are public while writes and OpenAPI remain protected`() {
+        val document = parsedDocument()
+        val publicGets = listOf(
+            "/api/v1/providers",
+            "/api/v1/providers/{id}",
+            "/api/v1/providers/{id}/tariffs",
+            "/api/v1/tariffs",
+            "/api/v1/tariffs/by-provider",
+            "/api/v1/tariffs/{id}",
+            "/api/v1/tariffs/{id}/price-history",
+            "/api/v1/dictionaries",
+        )
+        publicGets.forEach { path ->
+            val operation = navigate(document, "paths", path, "get") as Map<*, *>
+            assertEquals(emptyList<Any>(), operation["security"], "$path must explicitly override global security")
+        }
+
+        val providerWrite = navigate(document, "paths", "/api/v1/providers", "post") as Map<*, *>
+        val openApi = navigate(document, "paths", "/openapi.yaml", "get") as Map<*, *>
+        assertFalse("security" in providerWrite, "provider writes inherit bearer security")
+        assertFalse("security" in openApi, "OpenAPI remains behind global bearer security")
+        assertTrue((document["security"] as List<*>).isNotEmpty(), "protected operations inherit bearer security")
+        listOf(
+            "/api/v1/internal/catalog/providers",
+            "/api/v1/internal/catalog/providers/{id}",
+            "/api/v1/internal/catalog/providers/{id}/tariffs",
+        ).forEach { path ->
+            val operation = navigate(document, "paths", path, "get") as Map<*, *>
+            assertFalse("security" in operation, "$path must inherit bearer security")
+        }
+    }
+
+    @Test
     fun `declared operations exactly match the routes the application registers`() = kotlinx.coroutines.runBlocking {
         testAppDb(clock) {
             // Trigger application startup so the routing tree is fully built before inspection.

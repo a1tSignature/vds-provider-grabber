@@ -25,7 +25,7 @@ describe("provider list filter state", () => {
       locationCountry: ["US", "DE"],
       paymentMethod: ["BETA", "GAMMA"],
       hasActiveTariffs: true,
-      systemStatus: ["CANDIDATE", "REJECTED"],
+      systemStatus: ["CANDIDATE"],
       page: 2,
       size: 50,
       sort: { field: "minMonthlyPriceUsd" as const, descending: true },
@@ -42,7 +42,7 @@ describe("provider list filter state", () => {
       locationCountry: [],
       paymentMethod: [],
       hasActiveTariffs: undefined,
-      systemStatus: [],
+      systemStatus: ["CONFIGURED", "CANDIDATE"],
       page: 0,
       size: 20,
       sort: undefined,
@@ -53,6 +53,11 @@ describe("provider list filter state", () => {
   it("does not double a repeated paymentMethod and keeps first-seen order", () => {
     const state = parseUrlState(schema, "paymentMethod=GAMMA&paymentMethod=ALPHA&paymentMethod=GAMMA");
     expect(state.paymentMethod).toEqual(["GAMMA", "ALPHA"]);
+  });
+
+  it("defaults to the public statuses and ignores rejected statuses from old URLs", () => {
+    expect(parseUrlState(schema, "").systemStatus).toEqual(["CONFIGURED", "CANDIDATE"]);
+    expect(parseUrlState(schema, "systemStatus=REJECTED&systemStatus=CANDIDATE").systemStatus).toEqual(["CANDIDATE"]);
   });
 
   it("normalizes and de-duplicates multiple location countries", () => {

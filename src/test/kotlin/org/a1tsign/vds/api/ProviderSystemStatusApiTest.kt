@@ -36,17 +36,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * The read-path audit and the write contract of `provider.systemStatus` (vds-004.2). The two
- * properties worth protecting here are opposite in direction: a candidate must **not** leak into a
- * *listing* (`GET /api/v1/providers`, `GET /api/v1/tariffs`), and it must **still be reachable** by
- * id (`…/providers/{id}`, `…/providers/{id}/tariffs`, `…/tariffs/{id}`) -- the latter is what the ops
- * workflow and the crawler's own converging first run depend on.
- */
+/** Provider visibility and the write contract of `provider.systemStatus`. */
 class ProviderSystemStatusApiTest : AbstractDbTest() {
 
     @Test
-    fun `the default listing shows CONFIGURED only and the repeatable filter selects the others`() = runBlocking {
+    fun `the public listing includes CONFIGURED and CANDIDATE but excludes REJECTED`() = runBlocking {
         testAppDb(clock) {
             val token = adminToken()
             val configured = createProvider(token, "conf-a", systemStatus = null)
@@ -54,18 +48,17 @@ class ProviderSystemStatusApiTest : AbstractDbTest() {
             val rejected = createProvider(token, "rej-c", systemStatus = "REJECTED")
 
             val default = list(token)
-            assertEquals(listOf(configured), default.ids(), "a candidate or a rejected row is not catalog content")
-            assertEquals(1, default.total())
-            assertEquals(listOf("CONFIGURED"), default.systemStatuses(), "the field is on the wire")
+            assertEquals(listOf(configured, candidate), default.ids())
+            assertEquals(2, default.total())
+            assertEquals(setOf("CANDIDATE", "CONFIGURED"), default.systemStatuses().toSet(), "the field is on the wire")
+            assertEquals(HttpStatusCode.NotFound, rawGet(token, "/api/v1/providers/$rejected").status)
 
             assertEquals(listOf(candidate), list(token, "systemStatus" to "CANDIDATE").ids())
-            val union = list(token, "systemStatus" to "CANDIDATE", "systemStatus" to "REJECTED")
-            assertEquals(listOf(candidate, rejected), union.ids(), "a repeated parameter unions")
-            assertEquals(2, union.total(), "totalElements follows the filter, not the table")
             assertEquals(
-                listOf(configured, candidate, rejected),
-                list(token, "systemStatus" to "CANDIDATE", "systemStatus" to "CONFIGURED", "systemStatus" to "REJECTED").ids(),
+                listOf(configured, candidate),
+                list(token, "systemStatus" to "CANDIDATE", "systemStatus" to "CONFIGURED").ids(),
             )
+            assertEquals(HttpStatusCode.BadRequest, rawList(token, "systemStatus" to "REJECTED").status)
 
             // The id-resolving sort path (ProviderRepository.filteredIds) carries the predicate too.
             assertEquals(listOf(candidate), list(token, "systemStatus" to "CANDIDATE", "sort" to "minMonthlyPriceUsd").ids())
@@ -75,7 +68,7 @@ class ProviderSystemStatusApiTest : AbstractDbTest() {
     }
 
     @Test
-    fun `a candidate is reachable by id with its tariffs while the cross-provider search hides it`() = runBlocking {
+    fun `a candidate is visible in detail and cross-provider searches`() = runBlocking {
         testAppDb(clock) {
             val token = adminToken()
             val fixture = CatalogFixture(PostgresSupport.database)
@@ -98,13 +91,16 @@ class ProviderSystemStatusApiTest : AbstractDbTest() {
             )
 
             val search = get(token, "/api/v1/tariffs?size=50").jsonObject
-            assertEquals(listOf(visibleTariff), search.getValue("content").jsonArray.map { it.jsonObject.getValue("tariff").jsonObject.id() })
-            assertEquals(1, search.getValue("totalElements").jsonPrimitive.long)
+            assertEquals(
+                setOf(visibleTariff, candidateTariff),
+                search.getValue("content").jsonArray.map { it.jsonObject.getValue("tariff").jsonObject.id() }.toSet(),
+            )
+            assertEquals(2, search.getValue("totalElements").jsonPrimitive.long)
 
             // By id, a tariff follows the provider-detail rule rather than the listing rule.
             assertEquals(HttpStatusCode.OK, rawGet(token, "/api/v1/tariffs/$candidateTariff").status)
 
-            // Promoting it is the only difference: the very same tariff then surfaces in the search.
+            // Promotion does not change catalog visibility.
             setSystemStatus(token, candidate, "CONFIGURED")
             val afterPromotion = get(token, "/api/v1/tariffs?size=50").jsonObject
             assertEquals(

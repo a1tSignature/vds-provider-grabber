@@ -16,13 +16,15 @@ enum class ProviderStatus { ACTIVE, INACTIVE, UNKNOWN }
  * No combination is forbidden and neither field is derived from the other; a discovered candidate is
  * created as `status = UNKNOWN` + `systemStatus = CANDIDATE`.
  *
- * - [CANDIDATE] -- discovered, not configured. Hidden from the default listing.
+ * - [CANDIDATE] -- discovered, not configured. Visible in the public catalog.
  * - [CONFIGURED] -- a normal catalog member. Set automatically by the **first** crawl run for that
  *   slug that reaches `SUCCESS`/`PARTIAL` **and** performed at least one write.
- * - [REJECTED] -- terminal "won't do". Set only by a human, hidden from the default listing, and
+ * - [REJECTED] -- terminal "won't do". Set only by a human, hidden from the public catalog, and
  *   never promoted automatically.
  */
 enum class SystemStatus { CANDIDATE, CONFIGURED, REJECTED }
+
+val PUBLIC_CATALOG_SYSTEM_STATUSES = setOf(SystemStatus.CONFIGURED, SystemStatus.CANDIDATE)
 
 /** Mirrors `ck_provider_legal_info_data_source` on `provider_legal_info.data_source`. */
 enum class LegalDataSource { MANUAL, CRAWLER, WHOIS, PROVIDER_SITE, UNKNOWN }

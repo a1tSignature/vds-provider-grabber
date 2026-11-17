@@ -157,7 +157,11 @@ export function TariffsListScreen() {
 
   return (
     <div className="tariffs-list">
-      <h1>Тарифы</h1>
+      <div className="page-intro">
+        <p className="eyebrow">СРАВНЕНИЕ ПРЕДЛОЖЕНИЙ</p>
+        <h1>Тарифы</h1>
+        <p className="page-description">Подберите виртуальный сервер по конфигурации, цене и условиям.</p>
+      </div>
       <div className="notice">
         <p>
           Цены взяты с сайтов провайдеров и могут быть акционными (например, при оплате на длительный срок) —

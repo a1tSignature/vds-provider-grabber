@@ -41,6 +41,7 @@ export function TariffCardScreen() {
 
   return (
     <div className="tariff-card">
+      <p className="eyebrow">КАРТОЧКА ТАРИФА</p>
       <h1>{tariff.name}</h1>
       <p>
         <Link to={`/providers/${provider.id}`}>{provider.name}</Link> <SystemStatusBadge systemStatus={provider.systemStatus} />

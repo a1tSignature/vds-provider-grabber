@@ -14,22 +14,16 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginScreen />} />
-      <Route
-        element={
-          <RouteGuard>
-            <AppLayout />
-          </RouteGuard>
-        }
-      >
+      <Route element={<AppLayout />}>
         <Route path="/" element={<Navigate to="/providers" replace />} />
         <Route path="/providers" element={<ProvidersListScreen />} />
-        <Route path="/providers/new" element={<ProviderFormScreen />} />
         <Route path="/providers/:id" element={<ProviderCardScreen />} />
-        <Route path="/providers/:id/edit" element={<ProviderFormScreen />} />
-        <Route path="/providers/:id/tariffs/new" element={<TariffCreateScreen />} />
         <Route path="/tariffs" element={<TariffsListScreen />} />
         <Route path="/tariffs/:id" element={<TariffCardScreen />} />
-        <Route path="/tariffs/:id/edit" element={<TariffEditScreen />} />
+        <Route path="/providers/new" element={<RouteGuard><ProviderFormScreen /></RouteGuard>} />
+        <Route path="/providers/:id/edit" element={<RouteGuard><ProviderFormScreen /></RouteGuard>} />
+        <Route path="/providers/:id/tariffs/new" element={<RouteGuard><TariffCreateScreen /></RouteGuard>} />
+        <Route path="/tariffs/:id/edit" element={<RouteGuard><TariffEditScreen /></RouteGuard>} />
       </Route>
       <Route path="*" element={<NotFoundScreen />} />
     </Routes>

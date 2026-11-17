@@ -168,10 +168,9 @@ class CatalogApiClient(
         while (page < MAX_SLUG_SEARCH_PAGES) {
             val result = call(
                 HttpMethod.Get,
-                PROVIDERS_PATH,
+                INTERNAL_PROVIDERS_PATH,
                 CatalogPage.serializer(CatalogProviderSummary.serializer()),
-                // The listing hides CANDIDATE and REJECTED by default; without them a candidate row
-                // would be missed, the POST would hit uq_provider_slug, and the re-read would miss again.
+                // The service-only index includes every status so an existing slug is reused.
                 query = listOf("q" to slug, "page" to page.toString(), "size" to pageSize.toString()) +
                     SystemStatus.entries.map { "systemStatus" to it.name },
             ).value
@@ -197,15 +196,15 @@ class CatalogApiClient(
     ): CatalogPage<CatalogProviderSummary> =
         call(
             HttpMethod.Get,
-            PROVIDERS_PATH,
+            INTERNAL_PROVIDERS_PATH,
             CatalogPage.serializer(CatalogProviderSummary.serializer()),
             query = listOf("page" to page.toString(), "size" to pageSize.toString(), "sort" to "id,asc") +
                 systemStatuses.map { "systemStatus" to it.name },
         ).value
 
-    /** `GET /api/v1/providers/{id}`; its `tariffs` are the active ones only. */
+    /** Internal catalog read; its `tariffs` are the active ones only. */
     suspend fun getProvider(providerId: Long): CatalogProviderDetail =
-        call(HttpMethod.Get, "$PROVIDERS_PATH/$providerId", CatalogProviderDetail.serializer()).value
+        call(HttpMethod.Get, "$INTERNAL_PROVIDERS_PATH/$providerId", CatalogProviderDetail.serializer()).value
 
     /**
      * Every tariff of the provider, deactivated ones included, paged to completion. Matching needs
@@ -213,7 +212,7 @@ class CatalogApiClient(
      * `uq_tariff_provider_name` forever.
      */
     suspend fun listAllTariffs(providerId: Long): List<CatalogTariff> {
-        val path = "$PROVIDERS_PATH/$providerId/tariffs"
+        val path = "$INTERNAL_PROVIDERS_PATH/$providerId/tariffs"
         val tariffs = mutableListOf<CatalogTariff>()
         var page = 0
         while (page < MAX_TARIFF_PAGES) {
@@ -540,6 +539,7 @@ class CatalogApiClient(
         private const val CONFLICT = 409
 
         private const val PROVIDERS_PATH = "/api/v1/providers"
+        private const val INTERNAL_PROVIDERS_PATH = "/api/v1/internal/catalog/providers"
         private const val TARIFFS_PATH = "/api/v1/tariffs"
         private const val LOGIN_PATH = "/api/v1/auth/login"
 

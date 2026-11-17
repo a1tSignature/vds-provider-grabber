@@ -47,6 +47,35 @@ import kotlin.test.assertTrue
 class ReconcilerTest : AbstractDbTest() {
 
     @Test
+    fun `a rejected provider and its existing tariffs remain reconcilable through the service API`() {
+        withCatalog { ctx ->
+            val initial = ctx.reconcile(coldSnapshot())
+            assertEquals(AdapterRunStatus.SUCCESS, initial.status)
+            val providerId = ctx.providerId()
+            ctx.client.setSystemStatus(providerId, "REJECTED")
+            val tariffIds = ctx.client.listAllTariffs(providerId).map { it.id }.toSet()
+            assertEquals(3, tariffIds.size)
+
+            ctx.harness.clearRecordedCalls()
+            clock.advance(Duration.ofHours(1))
+            val outcome = ctx.reconcile(coldSnapshot())
+
+            assertEquals(AdapterRunStatus.SUCCESS, outcome.status, outcome.message)
+            assertEquals(0, outcome.providersCreated)
+            assertEquals(0, ctx.harness.countCalls("POST", "/api/v1/providers"))
+            assertEquals(
+                "REJECTED",
+                ctx.client.getProvider(providerId).provider.systemStatus,
+                "a successful machine reconciliation never promotes REJECTED",
+            )
+            assertEquals(tariffIds, ctx.client.listAllTariffs(providerId).map { it.id }.toSet())
+            assertEquals(1, ctx.harness.countCalls("GET", "/api/v1/internal/catalog/providers"))
+            assertEquals(2, ctx.harness.countCalls("GET", "/api/v1/internal/catalog/providers/$providerId"))
+            assertTrue(ctx.harness.countCalls("GET", "/api/v1/internal/catalog/providers/$providerId/tariffs") >= 1)
+        }
+    }
+
+    @Test
     fun `a cold create writes every observed section with CRAWLER provenance and counts it`() {
         withCatalog { ctx ->
             val outcome = ctx.reconcile(coldSnapshot())

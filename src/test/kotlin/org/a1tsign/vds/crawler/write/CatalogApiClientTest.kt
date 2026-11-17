@@ -66,7 +66,7 @@ class CatalogApiClientTest : AbstractDbTest() {
 
             assertEquals("acme", found?.slug)
             assertEquals(
-                listOf("POST /api/v1/auth/login", "GET /api/v1/providers"),
+                listOf("POST /api/v1/auth/login", "GET /api/v1/internal/catalog/providers"),
                 harness.calls().map { "${it.method} ${it.path}" },
                 "the re-login must precede the request, not follow a failure",
             )
@@ -85,9 +85,9 @@ class CatalogApiClientTest : AbstractDbTest() {
             assertEquals("acme", detail.provider.slug)
             assertEquals(
                 listOf(
-                    "GET /api/v1/providers/${provider.id}",
+                    "GET /api/v1/internal/catalog/providers/${provider.id}",
                     "POST /api/v1/auth/login",
-                    "GET /api/v1/providers/${provider.id}",
+                    "GET /api/v1/internal/catalog/providers/${provider.id}",
                 ),
                 harness.calls().map { "${it.method} ${it.path}" },
                 "one rejected attempt, one re-login, one successful retry",
@@ -119,9 +119,9 @@ class CatalogApiClientTest : AbstractDbTest() {
 
             assertEquals(
                 listOf(
-                    "GET /api/v1/providers",
+                    "GET /api/v1/internal/catalog/providers",
                     "POST /api/v1/auth/login",
-                    "GET /api/v1/providers",
+                    "GET /api/v1/internal/catalog/providers",
                 ),
                 harness.calls().map { "${it.method} ${it.path}" },
                 "exactly one re-login and exactly two attempts of the call",
@@ -182,11 +182,11 @@ class CatalogApiClientTest : AbstractDbTest() {
             harness.clearRecordedCalls()
 
             assertEquals(exact.id, client.findProviderBySlug("acme")?.id)
-            assertEquals(2, harness.countCalls("GET", "/api/v1/providers"), "page 0 then page 1")
+            assertEquals(2, harness.countCalls("GET", "/api/v1/internal/catalog/providers"), "page 0 then page 1")
 
             harness.clearRecordedCalls()
             assertNull(client.findProviderBySlug("ghost"))
-            assertEquals(1, harness.countCalls("GET", "/api/v1/providers"), "an empty result stops immediately")
+            assertEquals(1, harness.countCalls("GET", "/api/v1/internal/catalog/providers"), "an empty result stops immediately")
         }
     }
 
@@ -198,7 +198,7 @@ class CatalogApiClientTest : AbstractDbTest() {
             harness.clearRecordedCalls()
 
             assertNull(client.findProviderBySlug("acme"), "beyond the bound the slug is reported as absent")
-            assertEquals(10, harness.countCalls("GET", "/api/v1/providers"))
+            assertEquals(10, harness.countCalls("GET", "/api/v1/internal/catalog/providers"))
         }
     }
 
@@ -224,7 +224,7 @@ class CatalogApiClientTest : AbstractDbTest() {
             )
             assertEquals(
                 3,
-                harness.countCalls("GET", "/api/v1/providers/${provider.id}/tariffs"),
+                harness.countCalls("GET", "/api/v1/internal/catalog/providers/${provider.id}/tariffs"),
                 "one request per page, and the loop stops at totalPages",
             )
         }
@@ -403,7 +403,7 @@ class CatalogApiClientTest : AbstractDbTest() {
 
             harness.failNextCatalogCalls(times = 1)
             assertEquals(created.id, client.findProviderBySlug("acme")?.id, "a single 503 is retried, not surfaced")
-            assertEquals(2, harness.countCalls("GET", "/api/v1/providers"), "the rejected attempt plus one retry")
+            assertEquals(2, harness.countCalls("GET", "/api/v1/internal/catalog/providers"), "the rejected attempt plus one retry")
             assertEquals(listOf(1_000L), waits)
 
             harness.clearRecordedCalls()
@@ -412,8 +412,8 @@ class CatalogApiClientTest : AbstractDbTest() {
             val failure = assertFailsWith<CatalogApiException.ServerError> { client.findProviderBySlug("acme") }
 
             assertEquals(503, failure.status)
-            assertEquals("/api/v1/providers", failure.path)
-            assertEquals(3, harness.countCalls("GET", "/api/v1/providers"), "one attempt and exactly two retries")
+            assertEquals("/api/v1/internal/catalog/providers", failure.path)
+            assertEquals(3, harness.countCalls("GET", "/api/v1/internal/catalog/providers"), "one attempt and exactly two retries")
             assertEquals(listOf(1_000L, 2_000L), waits, "base 1 s doubling, the same budget as the transport path")
         }
     }

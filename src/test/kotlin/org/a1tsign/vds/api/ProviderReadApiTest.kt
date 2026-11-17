@@ -199,7 +199,7 @@ class ProviderReadApiTest : AbstractDbTest() {
         }
     }
 
-    @Test fun readEndpointsAllowAnyAuthenticatedRoleAndRequireAToken() = kotlinx.coroutines.runBlocking {
+    @Test fun readEndpointsAllowAnonymousAndAuthenticatedCallers() = kotlinx.coroutines.runBlocking {
         testAppDb(clock) {
             val fixture = SearchFixture(PostgresSupport.database)
             val viewerToken = loginAs(
@@ -212,7 +212,7 @@ class ProviderReadApiTest : AbstractDbTest() {
                 { t -> client.get("$root/providers/${fixture.nimbus.id}/tariffs") { if (t != null) header(auth(t).first, auth(t).second) } },
             )
             calls.forEach { call ->
-                assertEquals(HttpStatusCode.Unauthorized, call(null).status)
+                assertEquals(HttpStatusCode.OK, call(null).status)
                 assertEquals(HttpStatusCode.OK, call(viewerToken).status)
             }
         }

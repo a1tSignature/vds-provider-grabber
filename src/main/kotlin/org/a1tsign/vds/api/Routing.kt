@@ -18,6 +18,7 @@ import org.a1tsign.vds.api.routes.enrichmentRoutes
 import org.a1tsign.vds.api.routes.tariffRoutes
 import org.a1tsign.vds.api.routes.priceRoutes
 import org.a1tsign.vds.api.routes.openApiRoutes
+import org.a1tsign.vds.api.routes.internalCatalogRoutes
 import org.a1tsign.vds.api.routes.staticRoutes
 
 /** Registers every route group, one line per group. [staticBasePackage] lets tests point the SPA fallback at a fixture. */
@@ -28,7 +29,13 @@ fun Application.registerRoutes(components: AppComponents, staticBasePackage: Str
         if (components.isConfigured) {
             authRoutes(components.authService, components.config.http.trustForwardedFor)
             staticRoutes(staticBasePackage)
+            authenticate("bearer-jwt-optional", optional = true) {
+                providerRoutes(components.providerService, components.catalogQueryService)
+                tariffRoutes(components.tariffService, components.catalogQueryService)
+                dictionaryRoutes()
+            }
             authenticate("bearer-jwt") {
+                internalCatalogRoutes(components.catalogQueryService, components.config.crawler.username)
                 adminUserRoutes(components.userService)
                 fxRoutes(components.fxRefreshService)
                 crawlerRoutes(
@@ -39,12 +46,9 @@ fun Application.registerRoutes(components: AppComponents, staticBasePackage: Str
                     components.crawlerAdminRunJob,
                 )
                 discoveryRoutes(components.discoveryRunner, components.discoveryScope, components.discoverySources, components.discoveryAdminPassJob)
-                providerRoutes(components.providerService, components.catalogQueryService)
                 locationRoutes(components.locationService)
                 enrichmentRoutes(components.enrichmentService)
-                tariffRoutes(components.tariffService, components.catalogQueryService)
                 priceRoutes(components.priceService)
-                dictionaryRoutes()
                 openApiRoutes()
             }
         }

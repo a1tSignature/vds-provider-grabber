@@ -8,6 +8,7 @@ import {
   stringField,
   type FieldCodec,
 } from "../../lib/urlState";
+import { browsableSystemStatuses } from "../../domain/systemStatusLabels";
 
 export const PROVIDER_SORT_FIELDS = ["name", "slug", "status", "createdAt", "minMonthlyPriceUsd", "id"] as const;
 export type ProviderSortField = (typeof PROVIDER_SORT_FIELDS)[number];
@@ -60,7 +61,24 @@ function pageSizeField(): FieldCodec<number> {
   };
 }
 
+function systemStatusField(available: readonly string[]): FieldCodec<string[]> {
+  const defaultValue = [...available];
+  return {
+    defaultValue,
+    parse(params, key) {
+      const raw = params.getAll(key);
+      if (raw.length === 0) return [...defaultValue];
+      return [...new Set(raw.filter((value) => available.includes(value)))];
+    },
+    serialize(value, key, params) {
+      if (value.length === defaultValue.length && value.every((item, index) => item === defaultValue[index])) return;
+      value.forEach((item) => params.append(key, item));
+    },
+  };
+}
+
 export function buildProviderFiltersSchema(dictionaries: DictionariesDto) {
+  const systemStatuses = browsableSystemStatuses(dictionaries.systemStatuses);
   return {
     q: stringField(),
     status: optionalEnumField(dictionaries.providerStatuses),
@@ -68,8 +86,7 @@ export function buildProviderFiltersSchema(dictionaries: DictionariesDto) {
     locationCountry: countryCodesField(),
     paymentMethod: repeatableEnumField(dictionaries.paymentMethods),
     hasActiveTariffs: booleanField(),
-    // Repeatable, sent to the API as is; none selected means the backend's default, CONFIGURED only.
-    systemStatus: repeatableEnumField(dictionaries.systemStatuses),
+    systemStatus: systemStatusField(systemStatuses),
     page: intField(0, 0),
     size: pageSizeField(),
     sort: sortField(PROVIDER_SORT_FIELDS),

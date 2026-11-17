@@ -5,6 +5,7 @@ import org.a1tsign.vds.config.toUtcOffset
 import org.a1tsign.vds.domain.BillingPeriod
 import org.a1tsign.vds.domain.DiskType
 import org.a1tsign.vds.domain.PaymentMethod
+import org.a1tsign.vds.domain.PUBLIC_CATALOG_SYSTEM_STATUSES
 import org.a1tsign.vds.domain.SystemStatus
 import org.a1tsign.vds.domain.Tariff
 import org.a1tsign.vds.domain.Virtualization
@@ -299,11 +300,12 @@ class TariffRepository {
         val clauses = mutableListOf<String>()
         val args = mutableListOf<Pair<IColumnType<*>, Any?>>()
 
-        // The cross-provider search is a *listing*: a tariff whose provider is not CONFIGURED (a
-        // discovered candidate, or one a human rejected) must not surface here. EXISTS rather than
+        // The cross-provider search is a *listing*: a tariff whose provider is not catalog-visible
+        // must not surface here. EXISTS rather than
         // a join so the row cannot be duplicated, and the value is bound, never concatenated.
-        clauses += "EXISTS (SELECT 1 FROM provider p WHERE p.id = t.provider_id AND p.system_status = ?)"
-        args += VarCharColumnType() to SystemStatus.CONFIGURED.name
+        val visibleStatuses = PUBLIC_CATALOG_SYSTEM_STATUSES.map { it.name }
+        clauses += "EXISTS (SELECT 1 FROM provider p WHERE p.id = t.provider_id AND p.system_status IN (${visibleStatuses.joinToString(",") { "?" }}))"
+        visibleStatuses.forEach { args += VarCharColumnType() to it }
         if (filter.activeOnly) clauses += "t.is_active = TRUE"
         filter.providerId?.let { clauses += "t.provider_id = ?"; args += LongColumnType() to it }
         filter.diskType?.let { clauses += "t.disk_type = ?"; args += VarCharColumnType() to it.name }

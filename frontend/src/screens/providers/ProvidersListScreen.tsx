@@ -7,7 +7,7 @@ import { Pagination } from "../../components/Pagination";
 import { Empty, ErrorView, Loading } from "../../components/StateViews";
 import { DictionarySelect } from "../../dictionaries/DictionarySelect";
 import { PaymentMethodIcon, paymentMethodLabel } from "../../domain/paymentMethods";
-import { systemStatusFilterLabel } from "../../domain/systemStatusLabels";
+import { browsableSystemStatuses, systemStatusFilterLabel } from "../../domain/systemStatusLabels";
 import { COUNTRIES } from "../../domain/countries";
 import { useProvidersListQuery } from "./useProvidersListQuery";
 import { EditorOnly } from "../../forms/FormParts";
@@ -49,6 +49,7 @@ function useCountryFilterInput(
 
 export function ProvidersListScreen() {
   const dictionaries = useDictionaries();
+  const systemStatuses = browsableSystemStatuses(dictionaries.systemStatuses);
   const schema = useMemo(() => buildProviderFiltersSchema(dictionaries), [dictionaries]);
   const location = useLocation();
   const navigate = useNavigate();
@@ -193,7 +194,7 @@ export function ProvidersListScreen() {
         </label>
         <fieldset className="payment-methods-filter">
           <legend>Статус в системе</legend>
-          {dictionaries.systemStatuses.map((systemStatus) => (
+          {systemStatuses.map((systemStatus) => (
             <label key={systemStatus} className="pm-option">
               <input
                 type="checkbox"
@@ -206,11 +207,11 @@ export function ProvidersListScreen() {
           <button
             type="button"
             className="btn-link"
-            onClick={() => updateFilters({ systemStatus: [...dictionaries.systemStatuses], page: 0 })}
+            onClick={() => updateFilters({ systemStatus: [...systemStatuses], page: 0 })}
           >
             все
           </button>
-          {filters.systemStatus.length === 0 && <span className="muted">не выбрано — только настроенные</span>}
+          {filters.systemStatus.length === 0 && <span className="muted">не выбрано — настроенные и кандидаты</span>}
         </fieldset>
         <fieldset className="payment-methods-filter">
           <legend>Способы оплаты</legend>

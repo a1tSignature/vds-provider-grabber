@@ -59,7 +59,7 @@ class TariffsByProviderApiTest : AbstractDbTest() {
             val token = loginForToken("bootstrap-admin", "bootstrap-password-1")
             val fixture = SearchFixture(PostgresSupport.database)
 
-            assertEquals(HttpStatusCode.Unauthorized, client.get("$root/tariffs/by-provider").status)
+            assertEquals(HttpStatusCode.OK, client.get("$root/tariffs/by-provider").status)
 
             // wayfarer (ANNUAL-only and unpriced tariffs) and dormant (inactive) match nothing;
             // nimbus's closed 20.00 row and ANNUAL-only tariff do not count; vertex's cheaper
@@ -156,21 +156,24 @@ class TariffsByProviderApiTest : AbstractDbTest() {
             provider("charlie", "4.0000")
             provider("bravo", null)
             provider("alpha", "9.0000")
-            provider("hidden-candidate", "1.0000", SystemStatus.CANDIDATE)
+            provider("visible-candidate", "1.0000", SystemStatus.CANDIDATE)
             provider("hidden-rejected", "1.0000", SystemStatus.REJECTED)
 
             val byPrice = byProvider(token)
-            assertEquals(listOf("delta: First x2", "charlie: Only x1", "alpha: Only x1", "bravo: Only x1"), byPrice.headlines())
-            assertEquals(4L, byPrice.total())
+            assertEquals(
+                listOf("visible-candidate: Only x1", "delta: First x2", "charlie: Only x1", "alpha: Only x1", "bravo: Only x1"),
+                byPrice.headlines(),
+            )
+            assertEquals(5L, byPrice.total())
             assertEquals(byPrice, byProvider(token, "sort=priceUsd,asc"))
-            assertEquals(listOf("alpha", "delta", "charlie", "bravo"), byProvider(token, "sort=priceUsd,desc").slugs())
-            assertEquals(listOf("alpha", "bravo", "charlie", "delta"), byProvider(token, "sort=name").slugs())
-            assertEquals(listOf("alpha", "bravo", "charlie", "delta"), byProvider(token, "sort=id,desc").slugs())
+            assertEquals(listOf("alpha", "delta", "charlie", "visible-candidate", "bravo"), byProvider(token, "sort=priceUsd,desc").slugs())
+            assertEquals(listOf("alpha", "bravo", "charlie", "delta", "visible-candidate"), byProvider(token, "sort=name").slugs())
+            assertEquals(listOf("visible-candidate", "alpha", "bravo", "charlie", "delta"), byProvider(token, "sort=id,desc").slugs())
 
             val pages = (0..2).map { byProvider(token, "size=2&page=$it") }
             assertEquals(byPrice.slugs(), pages.flatMap { it.slugs() })
-            assertEquals(listOf(4L, 4L, 4L), pages.map { it.total() })
-            assertEquals(2, pages[0].getValue("totalPages").jsonPrimitive.int)
+            assertEquals(listOf(5L, 5L, 5L), pages.map { it.total() })
+            assertEquals(3, pages[0].getValue("totalPages").jsonPrimitive.int)
 
             val unknownSort = client.get("$root/tariffs/by-provider?sort=ramMb") { bearerAuth(token) }
             assertEquals(HttpStatusCode.BadRequest, unknownSort.status)

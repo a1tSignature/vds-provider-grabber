@@ -53,12 +53,8 @@ data class ProviderListFilter(
     val locationCountry: String? = null,
     val paymentMethods: List<PaymentMethod> = emptyList(),
     val hasActiveTariffs: Boolean? = null,
-    /**
-     * The one filter that is **never** "no constraint": a listing shows [SystemStatus.CONFIGURED]
-     * only unless the caller names other values explicitly, so a discovered candidate cannot leak
-     * into the public catalog by someone forgetting to pass a filter.
-     */
-    val systemStatuses: List<SystemStatus> = listOf(SystemStatus.CONFIGURED),
+    /** Restricts catalog listings to visible statuses; every list query applies it before counting. */
+    val systemStatuses: List<SystemStatus> = PUBLIC_CATALOG_SYSTEM_STATUSES.toList(),
 )
 
 /** Repository methods require a transaction opened by [org.a1tsign.vds.service.ProviderService]. */
@@ -82,6 +78,9 @@ class ProviderRepository {
         return find(id)!!
     }
     fun find(id: Long): Provider? = ProviderTable.selectAll().where { ProviderTable.id eq id }.firstOrNull()?.toProvider()
+    fun findCatalogVisible(id: Long): Provider? = ProviderTable.selectAll()
+        .where { (ProviderTable.id eq id) and (ProviderTable.systemStatus inList PUBLIC_CATALOG_SYSTEM_STATUSES.map { it.name }) }
+        .firstOrNull()?.toProvider()
     fun lockProvider(id: Long): Provider? = ProviderTable.selectAll()
         .where { ProviderTable.id eq id }
         .forUpdate(ForUpdateOption.ForUpdate)

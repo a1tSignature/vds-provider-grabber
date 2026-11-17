@@ -114,7 +114,7 @@ class PriceHistoryApiTest : AbstractDbTest() {
         }
     }
 
-    @Test fun priceHistoryRequiresAuthAndAllowsViewer() = runBlocking {
+    @Test fun priceHistoryAllowsAnonymousAndAuthenticatedCallers() = runBlocking {
         testAppDb(clock) {
             val fixture = SearchFixture(PostgresSupport.database)
             val adminToken = loginForToken("bootstrap-admin", "bootstrap-password-1")
@@ -123,7 +123,7 @@ class PriceHistoryApiTest : AbstractDbTest() {
                 UserFixture(PostgresSupport.database, UserRepository(), PasswordHasher()),
                 "history-viewer", "long-password-history", setOf(Role.VIEWER), clock.instant(),
             )
-            assertEquals(HttpStatusCode.Unauthorized, client.get("$root/tariffs/$historyId/price-history").status)
+            assertEquals(HttpStatusCode.OK, client.get("$root/tariffs/$historyId/price-history").status)
             assertEquals(HttpStatusCode.OK, history(viewerToken, historyId).status)
         }
     }

@@ -29,9 +29,8 @@ services:
     logging: *logging
 
   app:
-    build:
-      context: ../..
-    image: ${VDS_IMAGE:-vds-provider-grabber:stand}
+    image: ${VDS_IMAGE:?set VDS_IMAGE in .env}
+    pull_policy: always
     restart: unless-stopped
     depends_on:
       postgres:
@@ -68,7 +67,7 @@ services:
   # `docker compose --profile enrich run --rm --no-deps enrich`; never by `docker compose up`.
   enrich:
     profiles: [enrich]
-    image: ${VDS_IMAGE:-vds-provider-grabber:stand}
+    image: ${VDS_IMAGE:?set VDS_IMAGE in .env}
     entrypoint: ["/app/enrich-launch.sh"]
     restart: "no"
     environment:

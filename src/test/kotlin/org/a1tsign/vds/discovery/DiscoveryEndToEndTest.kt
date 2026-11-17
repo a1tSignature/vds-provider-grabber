@@ -43,7 +43,7 @@ import kotlin.test.assertTrue
 class DiscoveryEndToEndTest : AbstractDbTest() {
 
     @Test
-    fun `search hits become hidden CANDIDATE rows, deduplicated against every status and filtered into buckets`(
+    fun `search hits become public CANDIDATE rows, deduplicated against every status and filtered into buckets`(
         @TempDir dir: Path,
     ) {
         val longDomain = "a".repeat(60) + ".example"
@@ -122,7 +122,7 @@ class DiscoveryEndToEndTest : AbstractDbTest() {
                 runBlocking {
                     val viewer = app.token(Role.VIEWER)
                     val default = slugs(app.get("/api/v1/providers?size=100", viewer).bodyAsText())
-                    assertTrue("newhost-example" !in default && "second-example" !in default, "hidden by default: $default")
+                    assertTrue(default.containsAll(listOf("newhost-example", "second-example")), "visible by default: $default")
                     val candidates = slugs(app.get("/api/v1/providers?size=100&systemStatus=CANDIDATE", viewer).bodyAsText())
                     assertTrue(candidates.containsAll(listOf("newhost-example", "second-example")), "$candidates")
                 }

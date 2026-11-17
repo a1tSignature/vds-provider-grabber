@@ -17,7 +17,7 @@ import org.a1tsign.vds.api.dto.TariffWriteRequest
 import org.a1tsign.vds.api.dto.toDto
 import org.a1tsign.vds.api.pageRequest
 import org.a1tsign.vds.api.pageResponse
-import org.a1tsign.vds.auth.requireRole
+import org.a1tsign.vds.auth.requireAuthenticatedRole
 import org.a1tsign.vds.db.TariffSearchFilter
 import org.a1tsign.vds.domain.BillingPeriod
 import org.a1tsign.vds.domain.DiskType
@@ -33,7 +33,7 @@ import java.time.format.DateTimeParseException
 
 fun Route.tariffRoutes(service: TariffService, queryService: CatalogQueryService) {
     post("/api/v1/providers/{id}/tariffs") {
-        call.requireRole(Role.EDITOR)
+        call.requireAuthenticatedRole(Role.EDITOR)
         val providerId = call.parameters["id"]?.toLongOrNull() ?: throw NotFoundException("Provider not found")
         val req = call.receive<TariffWriteRequest>()
         val fields = validateTariff(req)
@@ -60,7 +60,7 @@ fun Route.tariffRoutes(service: TariffService, queryService: CatalogQueryService
     }
 
     put("/api/v1/tariffs/{id}") {
-        call.requireRole(Role.EDITOR)
+        call.requireAuthenticatedRole(Role.EDITOR)
         val id = tariffId(call.parameters["id"])
         val req = call.receive<TariffWriteRequest>()
         val fields = validateTariff(req)
@@ -86,14 +86,14 @@ fun Route.tariffRoutes(service: TariffService, queryService: CatalogQueryService
     }
 
     delete("/api/v1/tariffs/{id}") {
-        call.requireRole(Role.EDITOR)
+        call.requireAuthenticatedRole(Role.EDITOR)
         val id = tariffId(call.parameters["id"])
         service.delete(id)
         call.respond(HttpStatusCode.NoContent)
     }
 
     put("/api/v1/tariffs/{id}/locations") {
-        call.requireRole(Role.EDITOR)
+        call.requireAuthenticatedRole(Role.EDITOR)
         val id = tariffId(call.parameters["id"])
         val req = call.receive<List<Long>>()
         val v = Validation()
@@ -104,7 +104,6 @@ fun Route.tariffRoutes(service: TariffService, queryService: CatalogQueryService
     }
 
     get("/api/v1/tariffs") {
-        call.requireRole(Role.VIEWER)
         val page = call.pageRequest(setOf("id", "priceUsd", "ramMb", "vcpuCount", "diskGb", "name"))
         val query = call.request.queryParameters
         val v = Validation()
@@ -118,7 +117,6 @@ fun Route.tariffRoutes(service: TariffService, queryService: CatalogQueryService
     }
 
     get("/api/v1/tariffs/by-provider") {
-        call.requireRole(Role.VIEWER)
         val page = call.pageRequest(setOf("priceUsd", "name", "id"))
         val query = call.request.queryParameters
         val v = Validation()
@@ -131,13 +129,11 @@ fun Route.tariffRoutes(service: TariffService, queryService: CatalogQueryService
     }
 
     get("/api/v1/tariffs/{id}") {
-        call.requireRole(Role.VIEWER)
         val id = tariffId(call.parameters["id"])
         call.respond(queryService.getTariffDetail(id))
     }
 
     get("/api/v1/tariffs/{id}/price-history") {
-        call.requireRole(Role.VIEWER)
         val id = tariffId(call.parameters["id"])
         val query = call.request.queryParameters
         val v = Validation()

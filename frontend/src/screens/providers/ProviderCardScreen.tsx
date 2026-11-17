@@ -46,6 +46,7 @@ export function ProviderCardScreen() {
 
   return (
     <div className="provider-card">
+      <p className="eyebrow">КАРТОЧКА ПРОВАЙДЕРА</p>
       <h1>
         {provider.name} <SystemStatusBadge systemStatus={provider.systemStatus} />
       </h1>

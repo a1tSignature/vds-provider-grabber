@@ -8,8 +8,6 @@ export function AppLayout() {
   const { session, logout } = useSession();
   const { theme, toggle } = useTheme();
 
-  if (session === null) return null;
-
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -20,17 +18,23 @@ export function AppLayout() {
           <NavLink to="/providers">Провайдеры</NavLink>
           <NavLink to="/tariffs">Тарифы</NavLink>
         </nav>
-        <div className="app-header-fx-slot">{canEdit(session.roles) && <FxRefreshButton />}</div>
+        <div className="app-header-fx-slot">{session !== null && canEdit(session.roles) && <FxRefreshButton />}</div>
         <div className="app-header-user">
-          <span>
-            {session.username} ({session.roles.join(", ")})
-          </span>
           <button type="button" onClick={toggle}>
             {theme === "night" ? "Светлая тема" : "Тёмная тема"}
           </button>
-          <button type="button" onClick={logout}>
-            Выйти
-          </button>
+          {session === null ? (
+            <Link to="/login">Войти</Link>
+          ) : (
+            <>
+              <span>
+                {session.username} ({session.roles.join(", ")})
+              </span>
+              <button type="button" onClick={logout}>
+                Выйти
+              </button>
+            </>
+          )}
         </div>
       </header>
       <main className="app-content">

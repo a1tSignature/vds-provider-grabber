@@ -255,7 +255,7 @@ class TariffSearchApiTest : AbstractDbTest() {
         }
     }
 
-    @Test fun readEndpointsRequireAuthAndAllowViewer() = runBlocking {
+    @Test fun readEndpointsAllowAnonymousAndAuthenticatedCallers() = runBlocking {
         testAppDb(clock) {
             val fixture = SearchFixture(PostgresSupport.database)
             val adminToken = loginForToken("bootstrap-admin", "bootstrap-password-1")
@@ -273,7 +273,7 @@ class TariffSearchApiTest : AbstractDbTest() {
                 { t -> client.get("$root/dictionaries") { if (t != null) bearerAuth(t) } },
             )
             calls.forEach { call ->
-                assertEquals(HttpStatusCode.Unauthorized, call(null).status)
+                assertEquals(HttpStatusCode.OK, call(null).status)
                 assertEquals(HttpStatusCode.OK, call(viewerToken).status)
             }
         }

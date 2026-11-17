@@ -99,12 +99,32 @@ describe("apiClient local expiry check", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  it("rejects as unauthorized without ever calling fetch, when the stored session is expired", async () => {
+  it("allows public reads without a session and omits the authorization header", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(200, { ok: true }))));
+
+    await expect(apiClient.get("/api/v1/dictionaries")).resolves.toEqual({ ok: true });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/v1/dictionaries",
+      expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
+    );
+  });
+
+  it("allows public reads when a stored session is expired", async () => {
     writeStoredSession({ token: "t", expiresAt: "2000-01-01T00:00:00Z", username: "u", roles: ["VIEWER"] });
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(200, { ok: true }))));
+
+    await expect(apiClient.get("/api/v1/dictionaries")).resolves.toEqual({ ok: true });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/v1/dictionaries",
+      expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
+    );
+  });
+
+  it("still rejects mutations without a session", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
 
-    await expect(apiClient.get("/api/v1/dictionaries")).rejects.toMatchObject({ kind: "unauthorized" });
+    await expect(apiClient.send("POST", "/api/v1/providers")).rejects.toMatchObject({ kind: "unauthorized" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

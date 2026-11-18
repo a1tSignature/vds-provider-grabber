@@ -43,10 +43,7 @@ private const val MAX_QUEUE_PAGES = 100
 
 private val QUEUED_STATUSES = listOf(SystemStatus.CONFIGURED, SystemStatus.CANDIDATE)
 
-/**
- * Pricing page and observed facets per provider slug, from the declarative sources. Compiled
- * reference adapters are not in here, so they contribute nothing.
- */
+/** Load the pricing URL and observed facets from declarative sources by provider slug. Enabled sources can reserve already observed facets. */
 class SourceIndex(report: SourceLoadReport) {
     private val bySlug = report.loaded.associateBy { it.config.providerSlug }
 
@@ -67,11 +64,7 @@ class SourceIndex(report: SourceLoadReport) {
 
 data class EnrichWorker(val step: EnrichmentStep, val writer: CrawlWriter)
 
-/**
- * One launch of the enrichment process: batches of [ENRICH_BATCH_SIZE] from a queue re-read per
- * batch, each provider attempted at most once, results submitted per provider as soon as its crawl
- * ends. Returns an [EnrichExit] code; only [CancellationException] leaves, after the final line.
- */
+/** Re-read the queue each batch and attempt each provider at most once per launch. Submit results only through the catalog API. */
 class EnrichLauncher(
     private val config: EnrichmentConfig,
     private val options: EnrichOptions,
@@ -84,7 +77,7 @@ class EnrichLauncher(
 ) {
     private val startedNanos = System.nanoTime()
 
-    /** Recorded before the crawl starts, so a provider that kills the JVM is not retried this launch. */
+    /** Record attempts before crawling so a restarted JVM skips the provider that was in flight. */
     private val attempted = ConcurrentHashMap.newKeySet<Long>()
 
     /** Skipped by the fresh check: not an attempt, but not looked at again this launch either. */

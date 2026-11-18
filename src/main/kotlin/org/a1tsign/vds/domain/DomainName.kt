@@ -4,23 +4,8 @@ import java.net.IDN
 import java.net.URI
 
 /**
- * The one place that turns a URL into a canonical domain and a domain into a `provider.slug`.
- *
- * It lives in `domain/` on purpose: both `crawler` and (later) `discovery` import `domain`
- * legitimately, while putting it in either of them would create a package cycle. The declarative
- * source format checks its `providerSlug` against it, and the discovery leg will use the very same
- * functions for its dedup set and its candidate inserts -- one definition of "the same site", not
- * three.
- *
- * Both functions are **pure**: no DNS lookup, no public-suffix list, no I/O.
- *
- * ### Subdomains are distinct sites
- *
- * `vps.example.com` and `example.com` normalize to different domains and therefore to different
- * slugs. Reducing them to one registrable domain would need a public-suffix list -- a new dependency
- * plus a data file that goes stale -- and per-domain granularity is an accepted product decision: a
- * reseller on a subdomain really is a different catalog row. Discovery narrows this for service and
- * edition labels (`docs.`, `billing.`, `us.`) only; see `discovery/HitFilter.kt`.
+ * Normalize domains and build provider slugs without I/O. Preserve subdomains as distinct sites.
+ * Discovery separately filters common service and edition labels for deduplication.
  */
 object DomainName {
 
@@ -37,18 +22,8 @@ object DomainName {
     private val NUMERIC_LABEL = Regex("^\\d+$")
 
     /**
-     * The canonical, ASCII (punycode) host of an absolute `http`/`https` [url]: lower-cased, without
-     * scheme, credentials, port, path, query or fragment, without a leading `www.` and without a
-     * trailing dot.
-     *
-     * `null` -- i.e. "this is not a site we can key a provider by" -- when [url] is not an absolute
-     * `http`/`https` URL, when the host has no dot (`localhost`, an intranet name) or when the host
-     * is an IP literal (v4 or v6): a bare address identifies a machine, not a provider.
-     *
-     * The host is read off [URI.getAuthority], not [URI.getHost]: `java.net.URI` returns a **null**
-     * host for an internationalized authority (`http://пример.рф/` → `host = null`,
-     * `authority = "пример.рф"`, verified against the running JDK), so a `getHost()`-based
-     * implementation would silently reject every IDN instead of punycoding it.
+     * Return a lower-case ASCII domain without www or a trailing dot. Reject non-HTTP(S), unqualified hosts and IP literals.
+     * Read the URI authority because getHost returns null for internationalized hostnames.
      */
     fun normalize(url: String): String? {
         val uri = runCatching { URI(url.trim()) }.getOrNull() ?: return null

@@ -37,11 +37,7 @@ interface FormStatusProps {
   overrides?: FormErrorOverrides;
 }
 
-/**
- * The form-level slot: the error text (with a retry button for `5xx`/network, where everything
- * typed is still in the form), `details[]` the form has no input for, and the success notice with
- * any response `warnings`.
- */
+/** The form-level slot shows errors for fields with no input. Retryable failures retain the entered values. */
 export function FormStatus({ error, notice, warnings = [], onRetry, fields = [], overrides = {} }: FormStatusProps) {
   const message = formErrorMessage(error, overrides);
   const orphanDetails =
@@ -84,7 +80,6 @@ export function FormStatus({ error, notice, warnings = [], onRetry, fields = [],
   );
 }
 
-/** A modal confirmation for a destructive action; `text` names what else goes with it. */
 export function ConfirmDialog({
   text,
   confirmLabel,

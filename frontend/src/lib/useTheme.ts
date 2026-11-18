@@ -17,11 +17,7 @@ function systemTheme(): Theme {
   return window.matchMedia("(prefers-color-scheme: light)").matches ? "day" : "night";
 }
 
-/**
- * `explicit === null` means the toggle was never used: `html` carries no `data-theme` attribute,
- * so `tokens.css`'s `prefers-color-scheme` rule decides. Toggling pins an explicit choice (and
- * persists it), which from then on always wins, in both directions, over the system preference.
- */
+/** With no explicit theme, CSS follows the system preference. Toggling pins the theme and persists it when storage is available. */
 export function useTheme(): { theme: Theme; toggle: () => void } {
   const [explicit, setExplicit] = useState<Theme | null>(() => readStoredTheme());
 

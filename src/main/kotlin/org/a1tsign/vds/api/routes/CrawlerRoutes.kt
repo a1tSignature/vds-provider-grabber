@@ -60,16 +60,14 @@ fun Route.crawlerRoutes(
         val ratio = req.maxOutOfStockRatio?.let { v.validateRatio("maxOutOfStockRatio", it) }
         v.throwIfInvalid()
 
-        // Shares the slot with CrawlScheduler: 409 means a run is in progress; runs are never queued.
+        // The admin route and scheduler share a non-queuing slot. A discovery pass can hold it too.
         val runId = activeRunner.tryReserve(req.dryRun ?: crawlerConfig.dryRunDefault)
             ?: throw ConflictException("A crawl run is already in progress")
         val selection = AdapterSelection(
             adapterIds = req.adapterIds ?: crawlerConfig.adapters,
             maxOutOfStockRatio = ratio,
         )
-        // The application scope is cancelled on shutdown, so the run cannot outlive the app.
-        // runReserved already releases the slot on failure; the catch only sends unexpected errors
-        // to our logger instead of the default uncaught-exception handler.
+        // Launch in the application scope so shutdown can cancel the run.
         val job = activeScope.launch {
             try {
                 activeRunner.runReserved(runId, selection)

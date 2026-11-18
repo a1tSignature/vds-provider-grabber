@@ -9,7 +9,6 @@ private const val MAX_ASSET_CHARS = 200
 private const val MAX_ASSETS = 2_000
 private val ASSET_EXTENSIONS = listOf(".svg", ".png", ".webp")
 
-/** What the analysis needs from one JS file of an SPA. */
 internal class ScriptContent(
     /** Human-readable string literals, joined like page text. */
     val text: String,
@@ -19,11 +18,7 @@ internal class ScriptContent(
     val assets: List<String>,
 )
 
-/**
- * Reads string literals out of minified JS with linear hand-written scanners. A regex over a
- * megabyte of minified code with alternation inside a repeated group can overflow the stack under
- * `-Xss512k`, and nothing here executes or evaluates the code.
- */
+/** Scan minified JS in linear time. Repeated regex alternatives on a large bundle can overflow the JVM stack. */
 internal object ScriptReader {
 
     fun read(source: String): ScriptContent {

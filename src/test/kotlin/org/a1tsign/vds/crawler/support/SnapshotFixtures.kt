@@ -42,17 +42,7 @@ fun fixtureAdapter(providerSlug: String = FIXTURE_PROVIDER_SLUG): ProviderAdapte
 val FRANKFURT: LocationKey = LocationKey("DE", city = "Frankfurt", datacenterName = "FRA-1")
 val AMSTERDAM: LocationKey = LocationKey("NL", city = "Amsterdam", datacenterName = "AMS-1")
 
-/**
- * A **valid** snapshot -- every test mutates exactly one thing in it, so any resulting problem is
- * unambiguously caused by that mutation.
- *
- * Shape worth knowing when writing a test:
- * - two locations, two tariffs, two prices per tariff -- every rule can be broken on one element
- *   and left intact on its neighbour, which is what proves a rule does not reject everything;
- * - `locations[0]` (`DE/Frankfurt/FRA-1`, coordinates set) is referenced by **no** tariff, so a
- *   mutation of it cannot also break tariff-to-location link integrity;
- * - both tariffs link to `locations[1]` (`NL/Amsterdam/AMS-1`, no coordinates).
- */
+/** Start from a valid snapshot so a mutation has one attributable failure. */
 fun validSnapshot(): ProviderSnapshot = ProviderSnapshot(
     provider = ProviderInfo(
         slug = FIXTURE_PROVIDER_SLUG,
@@ -121,6 +111,5 @@ fun ProviderSnapshot.withLocation(index: Int, transform: (LocationSnapshot) -> L
 fun TariffSnapshot.withPrice(index: Int, transform: (PriceSnapshot) -> PriceSnapshot): TariffSnapshot =
     copy(prices = prices.mapIndexed { i, price -> if (i == index) transform(price) else price })
 
-/** Drops every tariff's `locationKeys` -- what an adapter that did not observe locations returns. */
 fun ProviderSnapshot.withoutLocationLinks(): ProviderSnapshot =
     copy(tariffs = tariffs?.map { it.copy(locationKeys = null) })

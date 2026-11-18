@@ -29,23 +29,9 @@ import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
-/** One request as the **server** saw it; the only sound way to count logins. */
 data class RecordedApiCall(val method: String, val path: String)
 
-/**
- * Boots the **real** vds-001 application on a **real** ephemeral port
- * (`embeddedServer(CIO, port = 0)` + the production `buildComponents`/`module`) against the shared
- * Testcontainers PostgreSQL, and creates the `EDITOR` service account the crawler logs in as.
- *
- * `testApplication`'s in-process client is deliberately **not** used here: the crawler↔API HTTP
- * boundary is exactly what task vds-002.4 exists to get right (token caching, the `401` re-login,
- * `200`-vs-`201`, the `409`s, a closed port), and this project has already shipped a green suite
- * whose tests mocked the boundary the bug lived on (see `07-knowledge/rework-log`). `testApplication`
- * stays fine for everything that is not this boundary.
- *
- * Owned by the test: `CrawlerAppHarness(clock).use { … }`, inside a class extending `AbstractDbTest`
- * so the schema is reset per test.
- */
+/** Serve production wiring on loopback so the crawler client exercises real HTTP and PostgreSQL. */
 class CrawlerAppHarness(
     val clock: MutableTestClock,
     val serviceUsername: String = "crawler-service",
@@ -56,12 +42,7 @@ class CrawlerAppHarness(
 
     private val recorded = CopyOnWriteArrayList<RecordedApiCall>()
 
-    /**
-     * Fault injection at the real boundary: while `true`, every request except the login endpoint
-     * is answered `401` **before** routing. That is how "a second consecutive 401 is not retried a
-     * third time" is provable without mocking the client -- the server really does refuse a freshly
-     * issued token.
-     */
+    /** Reject non-login calls before routing to exercise a freshly issued token also being refused. */
     @Volatile
     var rejectCatalogCallsAsUnauthorized: Boolean = false
 
@@ -70,11 +51,7 @@ class CrawlerAppHarness(
     @Volatile
     private var forcedFailureStatus: HttpStatusCode = HttpStatusCode.ServiceUnavailable
 
-    /**
-     * Makes the server answer the next [times] non-login requests with [status] **before** routing,
-     * so the `5xx` retry loop is driven by a real server response rather than by a mocked client.
-     * `times = Int.MAX_VALUE` is "every call from now on"; [clearForcedFailures] cancels the rest.
-     */
+    /** Fail the next non-login requests before routing so retries observe real HTTP statuses. */
     fun failNextCatalogCalls(times: Int, status: HttpStatusCode = HttpStatusCode.ServiceUnavailable) {
         forcedFailureStatus = status
         forcedFailuresLeft.set(times)
@@ -146,10 +123,7 @@ class CrawlerAppHarness(
 
     fun clearRecordedCalls() = recorded.clear()
 
-    /**
-     * Bumps the service account's `token_version`, which is what vds-001 does on a role/status
-     * change -- every token issued before this call is refused with a `401` from then on.
-     */
+    /** Increment token_version so previously issued tokens receive 401. */
     fun revokeServiceAccountTokens() = transaction(components.database) {
         UserRepository().updateUser(serviceUserId, UserStatus.ACTIVE, setOf(Role.EDITOR), clock.instant(), revoke = true)
     }
@@ -157,9 +131,7 @@ class CrawlerAppHarness(
     override fun close() {
         server.stop(gracePeriodMillis = 0, timeoutMillis = 1_000)
         components.fxHttpClient?.close()
-        // task vds-002.7's widened buildComponents() means every harness instance with the crawler
-        // enabled now also owns a live crawlerScope + two HttpClient(CIO) -- close them here too,
-        // the same way Application.kt's shutdownGracefully does for the real process.
+        // Close the scheduler, scopes and clients created by production wiring with the harness.
         components.crawlerScope?.cancel()
         components.crawlerCatalogClient?.close()
         components.crawlerFetchHttpClient?.close()

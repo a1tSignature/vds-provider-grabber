@@ -59,8 +59,7 @@ class CatalogApiClientTest : AbstractDbTest() {
             assertEquals(1, harness.loginCount())
             harness.clearRecordedCalls()
 
-            // The test JWT TTL is 24 h, so 30 s short of it the token is still valid but inside
-            // the 60 s renewal margin -- a client without that margin would reuse it here.
+            // A still-valid token inside the renewal margin distinguishes proactive refresh from a 401 retry.
             clock.advance(Duration.ofHours(24).minusSeconds(30))
             val found = client.findProviderBySlug("acme")
 
@@ -136,7 +135,6 @@ class CatalogApiClientTest : AbstractDbTest() {
             withCatalog { client, harness ->
                 val provider = client.createProvider(providerWrite("acme"))
                 client.putLegalInfo(provider.id, legalInfoWrite())
-                // A secret could also leak through a WARN, an exception message or a cause.
                 failures += causeChain(
                     assertFailsWith<CatalogApiException.Conflict> { client.createProvider(providerWrite("acme")) },
                 )
@@ -173,8 +171,7 @@ class CatalogApiClientTest : AbstractDbTest() {
     @Test
     fun `findProviderBySlug picks the exact slug out of paged q matches and returns null for an absent one`() {
         withCatalog(pageSize = 2) { client, harness ->
-            // `?q=acme` matches lower(name) OR lower(slug), and the default order is id ASC, so
-            // creating the exact slug last puts it on the second page.
+            // Put the exact slug after substring matches so it can only be found by paging.
             client.createProvider(providerWrite("not-acme"))
             client.createProvider(providerWrite("acme-cloud"))
             client.createProvider(providerWrite("zeta", name = "Acme Hosting"))
@@ -268,7 +265,6 @@ class CatalogApiClientTest : AbstractDbTest() {
                 PriceWrite("MONTHLY", BigDecimal("10.50"), "USD", "CRAWLER"),
             )
 
-            // The three update endpoints; nothing else exercises their paths.
             val renamed = client.updateProvider(provider.id, providerWrite("acme", name = "Acme Hosting Renamed"))
             val moved = client.updateLocation(
                 location.id,
@@ -365,7 +361,6 @@ class CatalogApiClientTest : AbstractDbTest() {
             }
             assertEquals("/api/v1/providers/${provider.id}/locations", duplicateLocation.path)
 
-            // The client is still usable afterwards: a Conflict is a signal, not a broken session.
             assertEquals("acme", client.findProviderBySlug("acme")?.slug)
         }
     }
@@ -458,7 +453,6 @@ class CatalogApiClientTest : AbstractDbTest() {
         ).use { client -> runBlocking { block(client, harness) } }
     }
 
-    /** Every message in the chain, so a secret cannot hide in a wrapped cause. */
     private fun causeChain(error: Throwable): String =
         generateSequence<Throwable>(error) { current -> current.cause?.takeIf { it !== current } }
             .joinToString("\n") { it.toString() }

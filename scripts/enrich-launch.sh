@@ -1,19 +1,10 @@
 #!/usr/bin/env bash
-# One launch of the site enrichment process (EnrichMainKt): the only supported way to start it on
-# the stand and in the memory gate. Extra arguments (--dry-run, --force) go to every JVM it starts.
-#
-# - A non-blocking flock on VDS_ENRICH_LOCK_FILE: while a previous launch holds it, exit 0 at once.
-# - VDS_ENRICH_BATCHES_PER_JVM: 0 (default) = one JVM drains the queue; 1 = one batch per JVM,
-#   relaunched while it exits 10.
-# - Up to 3 relaunches after a crash; the shared attempted-file makes the next JVM skip the
-#   provider that was in flight.
-# - No relaunch once VDS_ENRICH_MAX_RUNTIME_MINUTES has passed since the launch started.
-#
-# Exit codes: 0 = drained, or stopped by the runtime budget; 1 = fatal (config, catalog, service
-# account); 2 = crash relaunches exhausted; 143 = terminated.
+# Launch site enrichment under a nonblocking lock. Forward all arguments to every JVM.
+# Batch mode relaunches on exit 10. A crash can be retried up to three times within the launch budget.
+# A shared attempted-provider file prevents a restarted JVM from retrying the provider that was in flight.
+# Launcher exits: 0 drained, busy or budget exhausted, 1 fatal failure, 2 crash retries exhausted, 143 terminated.
 set -uo pipefail
 
-# The flag set the memory gate measures (ADR vds-002-01).
 JVM_FLAGS=(
   -Xmx192m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=48m -XX:MaxDirectMemorySize=32m
   -Xss512k -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError -Duser.timezone=UTC

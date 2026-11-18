@@ -18,13 +18,7 @@ import org.a1tsign.vds.domain.ProviderStatus
 import org.a1tsign.vds.domain.SystemStatus
 import org.a1tsign.vds.domain.Virtualization
 
-/**
- * `GET /api/v1/dictionaries`: every enum value set, built from `entries` so it cannot drift from the
- * enums.
- *
- * [legalDataSources] and [priceDataSources] stay separate keys: `MANUAL`/`CRAWLER` mean different
- * things for `provider_legal_info` and `tariff_price`.
- */
+/** Keep legal and price sources separate on the wire even where their enum values overlap. */
 @Serializable
 data class DictionariesDto(
     val paymentMethods: List<String>,

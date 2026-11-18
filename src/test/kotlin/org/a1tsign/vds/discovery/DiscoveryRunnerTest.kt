@@ -47,10 +47,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
-/**
- * The pass's own logic against an in-memory catalog and a stub search provider, with the **real**
- * `CreditLedger` on a temp file. The HTTP boundaries are covered by `DiscoveryEndToEndTest`.
- */
+/** Isolate pass logic with in-memory peers and keep real ledger persistence. */
 class DiscoveryRunnerTest {
 
     @TempDir
@@ -486,7 +483,6 @@ class DiscoveryRunnerTest {
         root.addAppender(appender)
         val scheduler = assertNotNull(DiscoveryScheduler.create(config(), runner, intervalMs = 30, initialDelayMs = 0, jitterMs = { 0 }))
         try {
-            // Two skips: the tick re-arms itself after a skip.
             awaitUntil {
                 appender.list.toList().count { it.level.toString() == "WARN" && it.formattedMessage.contains("tick skipped") && it.formattedMessage.contains("CRAWL") } >= 2
             }

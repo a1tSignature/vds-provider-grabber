@@ -1,8 +1,4 @@
-/**
- * Money, FX rates and coordinates travel as decimal strings end to end: rounding either through
- * a JS float would silently corrupt a price. The only transformation allowed here is trimming
- * trailing zeros after the decimal point, done with pure string operations.
- */
+/** Trim trailing zeros with string operations to preserve decimal precision. */
 export function formatMoney(raw: string | null | undefined): string {
   if (raw === null || raw === undefined) return "—";
   if (!raw.includes(".")) return raw;

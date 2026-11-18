@@ -39,7 +39,6 @@ data class FixtureResponse(
     val headers: Map<String, String> = emptyMap(),
     /** Server-side pause before the response is written -- for the timeout and overlap cases. */
     val delayMs: Long = 0,
-    /** Sent instead of [body] when set -- for a `Content-Encoding` or a non-text payload. */
     val rawBody: ByteArray? = null,
 ) {
     companion object {
@@ -47,7 +46,6 @@ data class FixtureResponse(
     }
 }
 
-/** What the server saw, which is how a politeness or header assertion is made. */
 class RecordedRequest(
     val path: String,
     val query: String?,
@@ -79,20 +77,7 @@ class RecordedRequest(
     override fun toString() = "$path at $arrivedAt"
 }
 
-/**
- * A local HTTP server the crawler-fetch tests point at instead of the internet. **No crawler test
- * makes a real outbound call**, so everything a limit needs to be provoked -- a delay, a 3 MiB
- * stream, a programmed `503, 503, 200` sequence, a redirect chain, a robots.txt, an `image/png` --
- * is canned here, and every arrival is recorded with its monotonic timestamp and headers.
- *
- * It binds the loopback interface on an ephemeral port -- never `0.0.0.0`, which would expose the
- * fixture to the local network for the duration of every test run. Both `http://127.0.0.1:port`
- * and `http://localhost:port` reach it, and those are **two different hosts** for
- * `HostRateLimiter` and two different origins for `RobotsCache`, which is what makes the
- * cross-host redirect and per-host delay cases testable without a second process.
- *
- * Owned by the test: `FixtureHttpServer().use { … }` or start/stop in `@BeforeEach`/`@AfterEach`.
- */
+/** Local fixture avoids outbound traffic and records when each response starts and stops. */
 class FixtureHttpServer : AutoCloseable {
 
     private val handlers = ConcurrentHashMap<String, List<FixtureResponse>>()
@@ -115,7 +100,6 @@ class FixtureHttpServer : AutoCloseable {
         port = runBlocking { server.engine.resolvedConnectors().first().port }
     }
 
-    /** `http://$host:$port$path`; [host] selects which *name* the client will use. */
     fun url(path: String, host: String = "127.0.0.1") = "http://$host:$port$path"
 
     /** Registers [responses] for [path]; the last one repeats for any further request. */
@@ -219,7 +203,6 @@ class FixtureHttpServer : AutoCloseable {
                 }
             }
         } catch (_: Exception) {
-            // Expected when the fetcher abandons an oversized body: the client is gone.
             record.writeFailed = true
         }
     }
@@ -227,17 +210,7 @@ class FixtureHttpServer : AutoCloseable {
     private data class StreamSpec(val totalBytes: Long, val chunkBytes: Int, val contentType: String)
 }
 
-/**
- * A raw-socket HTTP/1.1 responder for framing a Ktor server will not produce: a response that
- * declares `Content-Length: [declaredContentLength]` **and** `Transfer-Encoding: chunked`, then
- * sends [bodyBytes] of chunked body.
- *
- * This is the response-side twin of the vds-001.6 request-side bypass (see
- * `07-knowledge/rework-log`): `io.ktor.http.cio.parseHttpBody` -- shared by the CIO server and the
- * CIO client -- tests `Transfer-Encoding: chunked` *before* `Content-Length`, so a body-size guard
- * that trusts the declared length reads an unbounded stream instead. Nothing in Ktor's server API
- * can emit both headers, hence the socket.
- */
+/** Use raw HTTP for framing the normal server will not emit. Record writes so early abandonment can be observed. */
 class RawFramingServer(
     private val declaredContentLength: Long,
     private val bodyBytes: Long,
@@ -251,12 +224,10 @@ class RawFramingServer(
 
     private val requests = AtomicInteger()
 
-    /** How many body bytes were accepted by the client before it hung up. */
     @Volatile
     var bytesWritten: Long = 0L
         private set
 
-    /** `true` once writing the body failed, i.e. the client abandoned the response. */
     @Volatile
     var writeFailed: Boolean = false
         private set
@@ -283,7 +254,6 @@ class RawFramingServer(
 
     private fun serve(connection: java.net.Socket) {
         val input = connection.getInputStream()
-        // Read the request head only; the fixture answers whatever is asked for.
         val head = StringBuilder()
         while (!head.endsWith("\r\n\r\n")) {
             val byte = input.read()
@@ -322,16 +292,7 @@ class RawFramingServer(
     }
 }
 
-/**
- * A raw-socket responder that answers **every** request with [rawResponse] verbatim, for responses
- * a Ktor server cannot produce at all -- notably a garbage status line
- * (`NOT-HTTP-AT-ALL garbage`), which the CIO client reports as `io.ktor.http.cio.ParserException`,
- * an `IllegalStateException` rather than an `IOException`. That is the input that proves the
- * fetcher classifies *every* failure as a `FetchException` instead of only `IOException`s.
- *
- * Same shape as [RawFramingServer]: one accept loop on a daemon thread, [requestCount] recording
- * how many attempts arrived, and the connection closed after the answer so a retry opens a new one.
- */
+/** Replay raw bytes verbatim for responses that the normal HTTP server cannot produce. */
 class RawResponseServer(private val rawResponse: String) : AutoCloseable {
 
     private val socket = java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
@@ -375,7 +336,6 @@ class RawResponseServer(private val rawResponse: String) : AutoCloseable {
                 flush()
             }
         } catch (_: java.io.IOException) {
-            // The client may already be gone; nothing to record here.
         }
     }
 }

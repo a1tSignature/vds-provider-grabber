@@ -7,11 +7,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
-/**
- * The format's own half of the defence: a config file is **semi-trusted input**, so everything this
- * class refuses is something the interpreter would otherwise have to survive at crawl time -- or,
- * worse, would silently treat as "that section was not observed".
- */
 class SourceConfigTest {
 
     @Test
@@ -38,7 +33,6 @@ class SourceConfigTest {
     @Test
     fun `every malformed file is refused with a problem naming the offending key`() {
         val cases = listOf(
-            // A typo in a key must never degrade into "that section was not observed".
             Case("an unknown key", """"pagePath": "/vps",""", """"pagePath": "/vps", "pagePth": "/x",""", "pagePth"),
             Case("a foreign schema version", """"schemaVersion": 1""", """"schemaVersion": 2""", "schemaVersion must be 1"),
             Case("an API source", """"pagePath": "/vps",""", """"pagePath": "/vps", "sourceKind": "API",""", "sourceKind must be HTML"),
@@ -58,8 +52,7 @@ class SourceConfigTest {
             // jsoup's :matches()/[attr~=] would compile a java.util.regex pattern out of the file.
             Case("a regex selector", """"selector": "td.month"""", """"selector": "td:matches(^[0-9]+${'$'})"""", ":matches"),
             Case("an attribute-regex selector", """"selector": "td.month"""", """"selector": "td[class~=month]"""", "~="),
-            // A CSS escape in the pseudo name resolves to :matches at jsoup's parser, after the raw
-            // substring check would have let it through -- verified against jsoup 1.21.1.
+            // Cover escaped selector names because jsoup canonicalizes them before interpretation.
             Case("a regex selector smuggled through a CSS escape", """"selector": "td.month"""", """"selector": "td:\\6D atches(^x${'$'})"""", "CSS escape"),
             Case("two ways to read one value", """{"selector": "h1.name", "text": true}""", """{"selector": "h1.name", "text": true, "attr": "id"}""", "provider.name"),
             Case("an optional field the snapshot cannot do without", """{"selector": "td.name", "text": true}""", """{"selector": "td.name", "text": true, "required": false}""", "tariffs.name"),
@@ -140,11 +133,7 @@ class SourceConfigTest {
         assertTrue(problemsFor(65).any { it.contains("at most 64 characters") }, "${problemsFor(65)}")
     }
 
-    /**
-     * The money bound (`NUMERIC(12, 4)`) is exercised through a file above; a coordinate's own
-     * options are only reachable through a section the sample files do not carry, so they are
-     * checked against [SourceConfigFormat.validate] -- the entry point the loader of task 4 calls.
-     */
+    /** Validate coordinate options directly because the sample files omit coordinates. */
     @Test
     fun `a coordinate's own options are bounded in both directions`() {
         fun problems(latitude: DecimalSpec): List<String> =
@@ -217,7 +206,6 @@ class SourceConfigTest {
     private companion object {
         const val FILE = "acme.json"
 
-        /** The one config shape a coordinate's options are reachable through. */
         fun withLatitude(latitude: DecimalSpec): SourceConfig = SourceConfig(
             schemaVersion = SourceConfigFormat.SCHEMA_VERSION,
             id = "acme",

@@ -22,12 +22,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-/**
- * The limits of the fetcher, exercised against a local [FixtureHttpServer] -- **no test here makes
- * a real outbound call**. Timeouts, the body cap and the host delay are configured small so the
- * suite stays fast; every assertion is made against the *configured* value, never a hardcoded
- * production default, so shrinking a limit for speed cannot accidentally weaken the test.
- */
+/** Exercise the fetcher against a local fixture. Inject timing controls where real delays would make assertions unstable or slow. */
 class PageFetcherTest {
 
     private lateinit var server: FixtureHttpServer
@@ -42,7 +37,6 @@ class PageFetcherTest {
         server.close()
     }
 
-    // ---------- happy path ----------
 
     @Test
     fun `get returns the response and getHtml parses it against the final URL`() {
@@ -65,7 +59,6 @@ class PageFetcherTest {
         }
     }
 
-    // ---------- politeness ----------
 
     @Test
     fun `two requests to one host are spaced by the configured delay and never overlap`() {
@@ -74,7 +67,6 @@ class PageFetcherTest {
         server.on("/b", FixtureResponse(delayMs = 150))
 
         withFetcher(config) { fetcher ->
-            // Concurrent on purpose: the gate must serialise them even when both are in flight.
             coroutineScope {
                 val first = async { fetcher.get(server.url("/a")) }
                 val second = async { fetcher.get(server.url("/b")) }
@@ -106,7 +98,6 @@ class PageFetcherTest {
         assertEquals("en", request.header("Accept-Language"))
     }
 
-    // ---------- robots.txt ----------
 
     @Test
     fun `a disallowed path is never requested, an allowed one is, and robots is fetched once`() {
@@ -184,15 +175,13 @@ class PageFetcherTest {
             ),
         )
         server.html("/other")
-        // Registered on purpose: undecoded robots.txt parses as "allow all", and the hazard is
-        // that this page is then fetched with a 200, not that it 404s.
+        // Register the blocked page so ignoring compressed robots rules would yield a successful fetch.
         server.html("/plans/x")
 
         withFetcher { fetcher ->
             val blocked = assertFailsWith<FetchException.RobotsDisallowed> { fetcher.get(server.url("/plans/x")) }
             assertEquals(server.url("/plans/x"), blocked.url)
-            // The same document must still allow what it does not disallow, or "blocked" would
-            // only prove the body was unreadable.
+            // Also fetch an allowed page so the blocked result cannot be explained by a blanket refusal.
             assertEquals(200, fetcher.get(server.url("/other")).status)
         }
 
@@ -201,9 +190,7 @@ class PageFetcherTest {
 
     @Test
     fun `a redirect into a path disallowed by the second host's robots is blocked`() {
-        // The companion of the cross-host redirect case below: there it is asserted that the
-        // second host's robots.txt is *fetched*, here that it is *obeyed* -- the first hop is
-        // allowed, so only the redirect target's own check can stop this fetch.
+        // Check the redirect target's rules are enforced as well as fetched.
         server.robots(body = "User-agent: *\nDisallow: /blocked\n")
         server.redirect("/start", server.url("/blocked/x", host = "localhost"))
         server.html("/blocked/x")
@@ -220,7 +207,6 @@ class PageFetcherTest {
         assertEquals(2, server.requestsTo("/robots.txt").size, "each host's robots.txt is fetched once")
     }
 
-    // ---------- retries ----------
 
     @Test
     fun `a 503 503 200 sequence succeeds after exactly two retries with exponential backoff`() {
@@ -291,15 +277,11 @@ class PageFetcherTest {
         assertTrue(sleeps.isEmpty(), "a wait above the ceiling must fail the request, not block the run")
     }
 
-    // ---------- body cap ----------
 
     @Test
     fun `an oversized streamed body fails with BodyTooLarge and is abandoned mid-stream`() {
         val config = crawlerConfig(respectRobots = false, maxBodyBytes = 64 * 1024)
-        // 8 MiB for the same reason the lying-Content-Length case below uses 8 MiB: a few megabytes
-        // fit into the socket buffers, so the fixture can finish writing before the abort reaches
-        // it and the "abandoned mid-stream" half of the assertion proves nothing. Observed as a
-        // flaky failure at 3 MiB under the load of the full suite.
+        // Stream beyond socket buffer capacity so an abandoned response is observable at the server.
         val streamedBytes = 8L * 1024 * 1024
         server.stream("/huge", totalBytes = streamedBytes)
 
@@ -317,12 +299,7 @@ class PageFetcherTest {
 
     @Test
     fun `a lying Content-Length followed by a large chunked body is still BodyTooLarge`() {
-        // The vds-001.6 bypass from the response side: Content-Length says 10, the chunked body is
-        // 8 MiB, and CIO honours the chunked framing (verified here -- the cap must fire). A cap
-        // that trusted the header would return a 10-byte "page" at best and read the whole body at
-        // worst. 8 MiB, not 1 MiB, because a megabyte fits entirely into the socket send/receive
-        // buffers: the fixture then finishes writing before the abort reaches it and the
-        // "abandoned mid-stream" half of the assertion proves nothing (measured).
+        // Send overlapping framing headers to exercise CIO's chunked body handling.
         val config = crawlerConfig(respectRobots = false, maxBodyBytes = 64 * 1024)
         val bodyBytes = 8L * 1024 * 1024
 
@@ -367,7 +344,6 @@ class PageFetcherTest {
         }
     }
 
-    // ---------- content type ----------
 
     @Test
     fun `a content type outside the allowlist fails without reading the body`() {
@@ -379,7 +355,6 @@ class PageFetcherTest {
         }
     }
 
-    // ---------- redirects ----------
 
     @Test
     fun `three hops are followed and the final URL is the last one`() {
@@ -447,7 +422,6 @@ class PageFetcherTest {
         )
     }
 
-    // ---------- timeouts ----------
 
     @Test
     fun `a response slower than the configured request timeout fails as a transport failure`() {
@@ -467,9 +441,7 @@ class PageFetcherTest {
 
     @Test
     fun `a malformed response is a TransportFailure and is retried like any transport failure`() {
-        // io.ktor.http.cio.ParserException is an IllegalStateException, not an IOException: before
-        // the classification was widened it escaped get() raw, breaking the "every method throws a
-        // FetchException" contract of PageFetcherApi and skipping the retry policy entirely.
+        // Exercise CIO's parser failure outside the IOException hierarchy.
         val sleeps = mutableListOf<Long>()
 
         RawResponseServer("NOT-HTTP-AT-ALL garbage\r\n\r\n").use { raw ->
@@ -490,7 +462,6 @@ class PageFetcherTest {
         assertEquals(listOf(TEST_LIMITS.backoffBaseMs, TEST_LIMITS.backoffBaseMs * 2), sleeps)
     }
 
-    // ---------- harness ----------
 
     private fun withFetcher(
         config: CrawlerConfig = crawlerConfig(),

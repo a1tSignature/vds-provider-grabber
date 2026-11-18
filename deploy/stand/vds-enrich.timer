@@ -1,5 +1,4 @@
-# Starts vds-enrich.service daily. A launch still running from the day before makes the new one
-# exit 0 at once (the launcher's flock).
+# The launcher exits successfully if the preceding run still holds the lock.
 [Unit]
 Description=Daily vds-provider-grabber site enrichment
 

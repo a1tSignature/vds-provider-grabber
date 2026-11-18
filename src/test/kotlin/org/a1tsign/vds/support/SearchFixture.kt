@@ -9,38 +9,7 @@ import java.math.BigDecimal
 import java.time.Duration
 import java.time.Instant
 
-/**
- * Deterministic dataset shared by [org.a1tsign.vds.api.ProviderReadApiTest] (task vds-001.15) and
- * task 16's cross-provider tariff search test. Built directly through [ProviderRepository] and
- * [CatalogFixture] against one fixed base instant -- there is no clock to advance because every
- * price row here is inserted directly with an explicit `effective_to`, never through
- * [org.a1tsign.vds.service.PriceService]'s two-step close-then-insert that the "only one current
- * row per (tariff, period)" rule would otherwise require a clock advance between.
- *
- * Six providers, one per edge case `minMonthlyPriceUsd`/the filters have to get right:
- * - [nimbus]: several tariffs; the cheapest *current* MONTHLY price wins (9.00 USD), including one
- *   tariff with a **closed** MONTHLY row (20.00) superseded by a newer current one (9.00), and one
- *   tariff whose only price is ANNUAL (never mixed with MONTHLY).
- * - [polaris]: the cheapest tariff (3.00) is `is_active = false` and the other (15.00) is
- *   `in_stock = false`: both are excluded, so `minMonthlyPriceUsd` is absent/null.
- * - [vertex]: the cheapest current MONTHLY price (on an active tariff) has `amount_usd = NULL` (no
- *   FX rate) and is ignored; the next cheapest (18.00) wins. `status = INACTIVE`.
- * - [wayfarer]: one active tariff has only an ANNUAL price, another active tariff has no price row
- *   at all -- `minMonthlyPriceUsd` is absent/null. `status = UNKNOWN`.
- * - [zephyr]: single active tariff, the cheapest MONTHLY price in the whole dataset (5.00); no
- *   legal info at all (`registrationCountry` absent) and no locations.
- * - [dormant]: its only tariff is `is_active = false` -- the one `hasActiveTariffs = false` case in
- *   the dataset; `minMonthlyPriceUsd` is absent/null.
- *
- * Locations: DE (nimbus, polaris -- the "two providers share a country" case), US (nimbus,
- * dormant), FR (vertex), GB (wayfarer); zephyr has none.
- *
- * Payment methods (AND-filter subset proof): PAYPAL -> {nimbus, polaris, zephyr}; CRYPTO_BTC ->
- * {nimbus, vertex, zephyr}; both together -> exactly {nimbus, zephyr}, a strict subset of each.
- *
- * `q` marker: "Quasar" appears only in [nimbus]'s *name*; "quasar" appears only in [polaris]'s
- * *slug* -- `q=quasar` (any case) must match both, proving the filter checks name OR slug.
- */
+/** Shared provider-list, tariff-search and price-history dataset. Include missing relationships, stock and activity filters, unknown FX, ties and history gaps. */
 class SearchFixture(private val database: Database) {
     private val providers = ProviderRepository()
     private val catalog = CatalogFixture(database, providers)
@@ -68,7 +37,6 @@ class SearchFixture(private val database: Database) {
         catalog.createLocation(vertex.id, "FR", at = base)
         catalog.createLocation(wayfarer.id, "GB", at = base)
         catalog.createLocation(dormant.id, "US", at = base)
-        // zephyr: deliberately no locations of its own (task 16 adds BR/JP ones below).
 
         catalog.createPaymentMethods(
             nimbus.id,
@@ -89,7 +57,6 @@ class SearchFixture(private val database: Database) {
         )
         catalog.createPaymentMethods(dormant.id, listOf(PaymentMethod.CASH to null))
 
-        // nimbus: 3 tariffs -- min current MONTHLY = 9.00 (Nimbus Pro's current row).
         val nimbusBasic = catalog.createTariff(nimbus.id, "Nimbus Basic", base, vcpuCount = 1, ramMb = 1024, diskGb = 20, diskType = DiskType.SSD)
         catalog.createTariffPrice(nimbusBasic.id, BigDecimal("12.00"), "USD", BillingPeriod.MONTHLY, base, amountUsd = BigDecimal("12.0000"))
         val nimbusPro = catalog.createTariff(nimbus.id, "Nimbus Pro", base, vcpuCount = 4, ramMb = 8192, diskGb = 160, diskType = DiskType.NVME)
@@ -125,25 +92,16 @@ class SearchFixture(private val database: Database) {
         catalog.createTariffPrice(wayfarerAnnual.id, BigDecimal("120.00"), "USD", BillingPeriod.ANNUAL, base, amountUsd = BigDecimal("120.0000"))
         catalog.createTariff(wayfarer.id, "Wayfarer Empty", base, vcpuCount = 1, ramMb = 1024, diskGb = 20, diskType = DiskType.SSD)
 
-        // zephyr: single tariff, the cheapest MONTHLY price in the whole dataset.
         val zephyrPrime = catalog.createTariff(zephyr.id, "Zephyr Prime", base, vcpuCount = 2, ramMb = 2048, diskGb = 40, diskType = DiskType.SSD)
         catalog.createTariffPrice(zephyrPrime.id, BigDecimal("5.00"), "USD", BillingPeriod.MONTHLY, base, amountUsd = BigDecimal("5.0000"))
 
-        // dormant: its only tariff is inactive -- hasActiveTariffs = false, minMonthlyPriceUsd absent.
         val dormantPlan = catalog.createTariff(
             dormant.id, "Dormant Plan", base, vcpuCount = 1, ramMb = 1024, diskGb = 20, diskType = DiskType.SSD, isActive = false,
         )
         catalog.createTariffPrice(dormantPlan.id, BigDecimal("7.00"), "USD", BillingPeriod.MONTHLY, base, amountUsd = BigDecimal("7.0000"))
     }
 
-    // ---- Task vds-001.16 additions: cross-provider tariff search + price history ---------------
-    // Extra tariffs/locations under the EXISTING [zephyr] provider, never a new provider -- a new
-    // provider would shift task 15's exact-set assertions on the *provider* list
-    // (`hasActiveTariffs`, `minMonthlyPriceUsd` ranking, `locationCountry`). Every new price here
-    // stays above zephyr's existing 5.00 minimum so `minMonthlyPriceUsd` for zephyr is untouched,
-    // and BR/JP are country codes no task 15 assertion ever filters by. Looked up by name through
-    // the `/tariffs` response in the task 16 tests, so -- unlike the providers -- not exposed as
-    // fixture properties.
+    // Zephyr's additional tariffs exercise country-link deduplication, filters, sorting and history overlap.
     init {
         val zephyrBr = catalog.createLocation(zephyr.id, "BR", at = base)
         val zephyrJp1 = catalog.createLocation(zephyr.id, "JP", at = base)
@@ -209,7 +167,6 @@ class SearchFixture(private val database: Database) {
             amountUsd = BigDecimal("500.0000"),
         )
 
-        // Zeta Empty: a tariff with zero price rows at all -- the price-history "empty list" case.
         catalog.createTariff(zephyr.id, "Zeta Empty", base, diskType = DiskType.HDD)
     }
 

@@ -27,12 +27,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * Mandatory concurrency case (task's "How to verify" item 11): 10 threads, released together by a
- * `CountDownLatch`, write different amounts for the same `(tariff, MONTHLY)`. Every response must
- * be `201` or `409` -- never `500` -- and the resulting history must be a gap-free, overlap-free
- * chain with exactly one open row. Run once with no prior price, once with an existing current row.
- */
+/** Release all ten writers together against the same tariff and billing period to exercise serialization. */
 class PriceConcurrencyTest : AbstractDbTest() {
     private val root = "/api/v1"
     private val threadCount = 10

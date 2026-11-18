@@ -72,16 +72,7 @@ data class BootstrapAdminConfig(
     val password: Secret,
 )
 
-/**
- * The `VDS_CRAWLER_*` settings of the vds-002 crawler. Nothing in here is wired into the running
- * application yet -- task vds-002.7 owns that -- and with [enabled] `false` (the default) no
- * crawler component is constructed at all, so the service behaves exactly as vds-001 does.
- *
- * [username] and [password] can only be `null` while [enabled] is `false`: [loadConfig] turns a
- * missing credential into a startup failure as soon as the crawler is switched on. Every other
- * value is parsed and validated even when the crawler is disabled, so a typo is caught before
- * somebody enables it.
- */
+/** Enabled crawling requires both service-account credentials. Other settings are validated even when disabled. */
 data class CrawlerConfig(
     val enabled: Boolean,
     val apiBaseUrl: String,
@@ -97,17 +88,13 @@ data class CrawlerConfig(
     val hostDelayMs: Long,
     val userAgent: String,
     val contactUrl: String?,
-    /** `false` is logged at WARN on startup by the component that reads it (task vds-002.7). */
+    /** Disabling robots enforcement is logged at startup. */
     val respectRobots: Boolean,
     val maxBodyBytes: Long,
     /** In `[0, 1]`, always a [BigDecimal] -- `Double` must not appear in this value's path. */
     val maxOutOfStockRatio: BigDecimal,
     val dryRunDefault: Boolean,
-    /**
-     * Every `VDS_CRAWLER_ADAPTER_*` variable, for the composition root to hand each adapter its own
-     * slice. Defaults to empty so a test building this object by hand needs no environment;
-     * [loadConfig] always fills it, and `AppComponentsWiringTest` pins that production path.
-     */
+    /** The composition root selects each adapter's settings from this captured environment slice. */
     val adapterEnv: AdapterEnv = AdapterEnv(emptyMap()),
 )
 
@@ -128,11 +115,7 @@ data class EnrichmentConfig(
     val maxSitemaps: Int = 4,
 )
 
-/**
- * Which search API the discovery leg of vds-004 talks to. [NONE] switches the search leg off while
- * leaving the declarative-source machinery available -- the knob to use if the vendor relationship
- * ends before a replacement exists (ADR-02).
- */
+/** NONE disables the search API while leaving declarative source loading available. */
 enum class DiscoverySearchProvider(val envValue: String) {
     TAVILY("tavily"),
     NONE("none"),
@@ -144,22 +127,8 @@ enum class DiscoverySearchProvider(val envValue: String) {
 }
 
 /**
- * The whole `VDS_DISCOVERY_*` block of vds-004. Nothing in here starts a thread or opens a socket by
- * itself; [enabled] `false` (the default) means the discovery leg is not constructed at all.
- *
- * Two deliberate asymmetries against [CrawlerConfig], both from
- * `06-decisions/vds/vds-004-adr-01-config-sourced-adapter-registry-and-restart-to-apply` and the
- * task's requirement 51:
- *
- * 1. **While [enabled] is `false` no value in this block can prevent startup.** Every violation is
- *    collected, logged once at WARN by [loadConfig] and then *dropped*, the offending variable
- *    falling back to its default -- so a half-written discovery configuration can never take a
- *    vds-002 deployment down. With [enabled] `true` the very same violations join [loadConfig]'s one
- *    accumulated `ConfigurationException`.
- * 2. **[sourcesDir] is not gated by [enabled].** Sources are read iff the *crawler* is enabled and
- *    [sourcesDir] is set (plan decision 5), because an operator must be able to author and run a
- *    declarative source without switching the search leg on. [sourcesDir] is unset by default, so
- *    the default configuration still reads nothing at all.
+ * Disabled discovery logs invalid settings and uses defaults. Enabled discovery treats errors as startup failures.
+ * Declarative sources load when the crawler has a source directory, independently of search.
  */
 data class DiscoveryConfig(
     val enabled: Boolean,
@@ -178,7 +147,7 @@ data class DiscoveryConfig(
     val queryDelayMs: Long,
     val maxQueriesPerPass: Int,
     val maxCreditsPerMonth: Int,
-    /** Validated 1..20 -- the vendor's own maximum for one request (ADR-02). */
+    /** The search API accepts at most 20 results per request. */
     val maxResultsPerQuery: Int,
     val maxNewCandidatesPerPass: Int,
     val maxKnownProviders: Int,
@@ -197,7 +166,7 @@ data class AppConfig(
     val http: HttpConfig,
     val jwt: JwtConfig,
     val fx: FxConfig,
-    // null when the bootstrap-admin variables are absent; task 7 does the actual creation.
+    // Null when both bootstrap-admin variables are absent.
     val bootstrapAdmin: BootstrapAdminConfig?,
     val crawler: CrawlerConfig,
     val discovery: DiscoveryConfig,
@@ -217,7 +186,7 @@ private val logger = LoggerFactory.getLogger("org.a1tsign.vds.config.AppConfig")
 
 private const val DEFAULT_DISCOVERY_SEARCH_ENDPOINT = "https://api.tavily.com"
 
-/** Newline or `|` separated; a comma is deliberately **not** a separator (a query may contain one). */
+/** Split queries on pipe or newline because a query may contain commas. */
 private val DISCOVERY_QUERY_SEPARATOR = Regex("[|\n]")
 
 /** Comma, `|` or newline separated -- a domain and a keyword never contain any of the three. */
@@ -226,7 +195,6 @@ private val DISCOVERY_LIST_SEPARATOR = Regex("[,|\n]")
 private const val DEFAULT_DISCOVERY_QUERIES =
     "vps hosting | cheap vps nvme | аренда vps | vds хостинг | kvm vps hosting"
 
-/** Classpath resource holding the denylist used when the operator configures none. */
 private const val DEFAULT_DISCOVERY_DOMAIN_DENYLIST_RESOURCE = "/discovery/domain-denylist.txt"
 
 /** A denylist file larger than this is refused: it is read whole into memory at startup. */
@@ -247,7 +215,6 @@ private val DEFAULT_DISCOVERY_DOMAIN_DENYLIST: List<String> by lazy {
     parseDomainListFile(stream.use { it.readAllBytes().toString(Charsets.UTF_8) })
 }
 
-/** The entries of [file], or `null` after adding the reason it cannot be used to [errors]. */
 private fun readDomainDenylistFile(file: String, errors: MutableList<String>): List<String>? {
     val name = "VDS_DISCOVERY_DOMAIN_DENYLIST_FILE"
     val path = pathOrNull(file)
@@ -269,16 +236,13 @@ private fun readDomainDenylistFile(file: String, errors: MutableList<String>): L
     return parseDomainListFile(bytes.toString(Charsets.UTF_8))
 }
 
-/** A page that is really selling virtual servers says at least one of these, in one of two languages. */
 private val DEFAULT_DISCOVERY_REQUIRED_KEYWORDS = listOf(
     "vps", "vds", "virtual server", "virtual private server", "vps hosting",
     "виртуальный сервер", "виртуальный выделенный сервер",
 )
 
-/** The prefix of every per-adapter variable; see [crawlerAdapterConfig] for the per-id suffix. */
 const val ADAPTER_ENV_PREFIX: String = "VDS_CRAWLER_ADAPTER_"
 
-/** Product token of the crawler's `User-Agent`; the version and contact URL follow it. */
 const val CRAWLER_USER_AGENT_PRODUCT = "vds-provider-grabber"
 
 /**
@@ -311,7 +275,6 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
         return parsed
     }
 
-    /** [positiveInt] with an upper bound a vendor or a column imposes, named in the message. */
     fun boundedInt(name: String, default: Int, min: Int, max: Int, into: MutableList<String> = errors): Int {
         val raw = env[name] ?: return default
         val parsed = raw.toIntOrNull()
@@ -366,9 +329,7 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
 
     fun ratio(name: String, default: BigDecimal): BigDecimal {
         val raw = env[name] ?: return default
-        // Same plain-decimal rule the money path on the wire uses (api/Serializers.kt's
-        // parsePlainDecimal): no exponent, no leading '+', no grouping, no whitespace -- so this
-        // value is a BigDecimal end to end and never goes through Double.
+        // Use the wire decimal syntax so the ratio never passes through floating-point parsing.
         val parsed = parsePlainDecimal(raw)
         if (parsed == null || parsed.signum() < 0 || parsed > BigDecimal.ONE) {
             errors += "$name must be a decimal number in plain notation between 0 and 1"
@@ -377,7 +338,6 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
         return parsed
     }
 
-    // --- database ---
     val dbUrl = requiredNonBlank("VDS_DB_URL")
     val dbUser = requiredNonBlank("VDS_DB_USER")
     val dbPassword = requiredNonBlank("VDS_DB_PASSWORD")
@@ -386,7 +346,6 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
     val dbConnectionTimeoutMs = positiveLong("VDS_DB_CONNECTION_TIMEOUT_MS", 5000L)
     val dbLeakDetectionMs = nonNegativeLong("VDS_DB_LEAK_DETECTION_MS", 30000L)
 
-    // --- http ---
     val httpPortRaw = env["VDS_HTTP_PORT"]
     val httpPort = if (httpPortRaw == null) {
         8080
@@ -406,14 +365,12 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
         ?: emptyList()
     val trustForwardedFor = booleanFlag("VDS_HTTP_TRUST_FORWARDED_FOR", false)
 
-    // --- jwt ---
     val jwtSecretRaw = requiredNonBlank("VDS_JWT_SECRET")
     if (jwtSecretRaw.isNotEmpty() && jwtSecretRaw.length < 32) {
         errors += "VDS_JWT_SECRET must be at least 32 characters"
     }
     val jwtTtlHours = positiveLong("VDS_JWT_TTL_HOURS", 24L)
 
-    // --- fx ---
     val fxApiUrlRaw = env["VDS_FX_API_URL"] ?: DEFAULT_FX_API_URL
     if (!isAbsoluteHttpUrl(fxApiUrlRaw)) {
         errors += "VDS_FX_API_URL must be an absolute http or https URL"
@@ -421,7 +378,6 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
     val fxApiKeyRaw = optionalNonBlank("VDS_FX_API_KEY")
     val fxRefreshHours = positiveLong("VDS_FX_REFRESH_HOURS", 12L)
 
-    // --- bootstrap admin ---
     val bootstrapUsername = optionalNonBlank("VDS_BOOTSTRAP_ADMIN_USERNAME")
     val bootstrapPasswordRaw = optionalNonBlank("VDS_BOOTSTRAP_ADMIN_PASSWORD")
     if (bootstrapPasswordRaw != null) {
@@ -439,7 +395,6 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
         errors += "VDS_BOOTSTRAP_ADMIN_USERNAME is required when VDS_BOOTSTRAP_ADMIN_PASSWORD is set"
     }
 
-    // --- crawler (vds-002) ---
     val crawlerEnabled = booleanFlag("VDS_CRAWLER_ENABLED", false)
     val crawlerApiBaseUrl = env["VDS_CRAWLER_API_BASE_URL"] ?: DEFAULT_CRAWLER_API_BASE_URL
     if (!isAbsoluteHttpUrl(crawlerApiBaseUrl)) {
@@ -474,18 +429,10 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
     val crawlerMaxBodyBytes = positiveLong("VDS_CRAWLER_MAX_BODY_BYTES", 2_097_152L)
     val crawlerMaxOutOfStockRatio = ratio("VDS_CRAWLER_MAX_OUT_OF_STOCK_RATIO", BigDecimal("0.5"))
     val crawlerDryRunDefault = booleanFlag("VDS_CRAWLER_DRY_RUN_DEFAULT", false)
-    // Taken whole, unvalidated: what a key means is the adapter's business, and loadConfig does not
-    // know which ids exist. VDS_CRAWLER_ADAPTER_TIMEOUT_MINUTES shares the prefix and is copied in
-    // too, which is harmless -- crawlerAdapterConfig filters by the full per-id prefix, so only an
-    // adapter literally called `timeout` could ever see it.
+    // Adapter-specific values are validated by their adapter. The timeout key shares this prefix and is filtered out by adapter-specific lookup.
     val crawlerAdapterEnv = AdapterEnv(env.filterKeys { it.startsWith(ADAPTER_ENV_PREFIX) })
 
-    // --- discovery (vds-004) ---
-    // Its own error sink, merged into `errors` only while discovery is enabled: with it disabled
-    // every violation below is logged once at WARN and the variable falls back to its default, so
-    // no VDS_DISCOVERY_* value can prevent a vds-002 deployment from starting (requirement 51).
-    // That includes a malformed VDS_DISCOVERY_ENABLED itself, which reads as `false` -- the rule is
-    // deliberately literal, and the WARN is what tells the operator discovery did not come up.
+    // Discovery errors become warnings while disabled and startup failures while enabled.
     val discoveryErrors = mutableListOf<String>()
     val discoveryEnabled = booleanFlag("VDS_DISCOVERY_ENABLED", false, discoveryErrors)
     val discoverySourcesDir = optionalNonBlank("VDS_DISCOVERY_SOURCES_DIR")
@@ -502,7 +449,6 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
     }
     val discoverySearchApiKey = optionalNonBlank("VDS_DISCOVERY_SEARCH_API_KEY")
     if (discoverySearchProvider != DiscoverySearchProvider.NONE && discoverySearchApiKey == null) {
-        // Names the variable only -- never a value, and there is nothing to echo here anyway.
         discoveryErrors += "VDS_DISCOVERY_SEARCH_API_KEY is required when VDS_DISCOVERY_ENABLED is true " +
             "and VDS_DISCOVERY_SEARCH_PROVIDER is not none"
     }
@@ -525,9 +471,7 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
     val discoveryMaxResultsPerQuery = boundedInt("VDS_DISCOVERY_MAX_RESULTS_PER_QUERY", 10, 1, 20, discoveryErrors)
     val discoveryMaxNewCandidates = positiveInt("VDS_DISCOVERY_MAX_NEW_CANDIDATES_PER_PASS", 20, discoveryErrors)
     val discoveryMaxKnownProviders = positiveInt("VDS_DISCOVERY_MAX_KNOWN_PROVIDERS", 5000, discoveryErrors)
-    // Both lists are lower-cased here, once: every later comparison is case-insensitive by nature
-    // (a domain is, and a keyword is matched against lower-cased page text). An explicitly empty
-    // value or file means "no denylist at all" rather than "use the default".
+    // Normalize once for case-insensitive comparisons. An explicitly empty list disables the corresponding denylist.
     val discoveryDomainDenylistInline = env["VDS_DISCOVERY_DOMAIN_DENYLIST"]
         ?.split(DISCOVERY_LIST_SEPARATOR)
         ?.map { it.trim().lowercase() }
@@ -552,10 +496,7 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
     val discoveryMinPassIntervalHours = positiveLong("VDS_DISCOVERY_MIN_PASS_INTERVAL_HOURS", 24L, discoveryErrors)
     val discoveryPassTimeoutMinutes = positiveLong("VDS_DISCOVERY_PASS_TIMEOUT_MINUTES", 10L, discoveryErrors)
     val discoveryStateFile = optionalNonBlank("VDS_DISCOVERY_STATE_FILE")
-    // The two file-system checks run only while discovery is enabled: with it off nothing here may
-    // fail startup anyway, and "disabled => nothing happens" is meant literally, down to not
-    // stat()-ing a path. The loader of task 4 re-checks the sources directory itself, because it is
-    // read whenever the *crawler* is on (plan decision 5), discovery enabled or not.
+    // Skip these filesystem checks while discovery is disabled. The crawler's source loader checks its own directory independently.
     if (discoveryEnabled) {
         if (discoveryStateFile == null) {
             discoveryErrors += "VDS_DISCOVERY_STATE_FILE is required when VDS_DISCOVERY_ENABLED is true"
@@ -663,20 +604,11 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
     )
 }
 
-/** A path a `String` may or may not be; an unusable one becomes the caller's own clear message. */
 private fun pathOrNull(value: String): Path? = runCatching { Path.of(value) }.getOrNull()
 
 /**
- * The `VDS_CRAWLER_ADAPTER_<ID>_*` slice of [env] that belongs to the adapter [adapterId], in the
- * shape handed to an adapter through `CrawlContext.config`: `<ID>` is the adapter id upper-cased
- * with `-` replaced by `_`, and the map key is the remaining suffix, lower-cased —
- * `VDS_CRAWLER_ADAPTER_EXAMPLE_STATIC_FOO=bar` becomes `{"foo": "bar"}` for `example-static`.
- *
- * [env] is always a parameter, never the real process environment, so this mapping stays pure.
- *
- * Caveat an adapter author has to respect: the prefix is ambiguous between two ids whose
- * upper-cased forms nest (`a` and `a-b` — `VDS_CRAWLER_ADAPTER_A_B_FOO` belongs to both), which
- * the registry's id uniqueness does not rule out. Pick ids that do not nest.
+ * Map VDS_CRAWLER_ADAPTER_<ID>_* to lower-case suffix keys, with hyphens in the ID written as underscores.
+ * Nested IDs such as a and a-b can match the same variable, so pick nonoverlapping IDs.
  */
 fun crawlerAdapterConfig(adapterId: String, env: Map<String, String>): Map<String, String> {
     val prefix = ADAPTER_ENV_PREFIX + adapterId.uppercase().replace('-', '_') + "_"
@@ -705,10 +637,7 @@ internal fun appVersion(): String {
     return properties.getProperty("version", "unknown")
 }
 
-// The host check is what separates a usable URL from a merely parseable one ("http://" is an
-// absolute http URI with no host at all, and used to pass startup validation) -- the same rule as
-// `api/Validation.kt` and `crawler/SnapshotValidator.kt`. It applies to every caller here:
-// VDS_FX_API_URL, VDS_CRAWLER_API_BASE_URL and VDS_CRAWLER_CONTACT_URL.
+// Require a host as well as an HTTP(S) scheme. The URL must also meet the configured path and component rules.
 private fun isAbsoluteHttpUrl(value: String): Boolean {
     val uri = runCatching { URI(value) }.getOrNull() ?: return false
     return uri.isAbsolute && (uri.scheme == "http" || uri.scheme == "https") && !uri.host.isNullOrEmpty()

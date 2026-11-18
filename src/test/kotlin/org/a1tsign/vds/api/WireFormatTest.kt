@@ -54,9 +54,6 @@ import kotlin.test.assertTrue
 import kotlin.reflect.typeOf
 import io.ktor.server.plugins.PayloadTooLargeException as KtorPayloadTooLargeException
 
-// --- throwaway DTOs/routes: the contract is exercised through real HTTP, never by calling the
-// serializers or validators in isolation, so a break at the ContentNegotiation/StatusPages
-// boundary is caught here rather than in the first business endpoint. ---
 
 @Serializable
 private data class EchoRequest(
@@ -70,8 +67,6 @@ private data class EchoResponse(
     val slug: String,
     val amount: @Contextual BigDecimal,
     val at: @Contextual Instant,
-    // Always null here: proves `explicitNulls = false` drops it from the wire even though
-    // `encodeDefaults = true` is on.
     val note: String? = null,
 )
 
@@ -87,9 +82,7 @@ private data class SizeResponse(val size: Int)
 private const val SECRET_BODY_MARKER = "payload-secret-marker"
 private const val SECRET_TOKEN = "token-secret-marker"
 
-// Deliberately shares no substring with any route path below: the first version of the leak test
-// used "boom", which the path /api/test/fail/boom contains, so the assertion failed on the
-// envelope's own `path` field instead of on a real leak.
+// Keep the leak marker disjoint from route paths so a normal access log cannot match it.
 private const val SECRET_EXCEPTION_MARKER = "kaputt-secret-marker"
 
 private fun Route.wireFormatTestRoutes(rawInvocations: AtomicInteger = AtomicInteger()) {
@@ -102,24 +95,18 @@ private fun Route.wireFormatTestRoutes(rawInvocations: AtomicInteger = AtomicInt
         call.respond(EchoResponse(slug = slug!!, amount = amount!!, at = body.at))
     }
 
-    // A BigDecimal-typed *request* field: exercises BigDecimalSerializer.deserialize (string-only
-    // token, plain notation) rather than the String + validateAmount request pattern above.
     post("/api/test/rate") {
         val body = call.receive<RateRequest>()
         call.respond(RateResponse(rate = body.rate))
     }
 
     post("/api/test/raw") {
-        // Counted at entry: a 413 with this counter unchanged is the observable proof that the
-        // body was rejected before anything read it.
+        // Count handler entries to distinguish early header rejection from a failure while reading the body.
         rawInvocations.incrementAndGet()
         val text = call.receiveText()
         call.respond(SizeResponse(text.length))
     }
 
-    // Echoes what each validator *returned*, not just a status: a validator's contract is both
-    // "record the failure" and "hand back the value it validated", and later tasks build their
-    // DTOs out of those return values.
     post("/api/test/all-fields") {
         val body = call.receive<AllFieldsRequest>()
         val validation = Validation()
@@ -165,11 +152,7 @@ private fun Route.wireFormatTestRoutes(rawInvocations: AtomicInteger = AtomicInt
             "conflict" -> throw ConflictException("slug already taken")
             "payload" -> throw PayloadTooLargeException("Request body exceeds 262144 bytes")
             "ktor-payload" -> throw KtorPayloadTooLargeException(MAX_REQUEST_BODY_BYTES)
-            // The member of the abstract ContentTransformationException family that a wrong or
-            // missing Content-Type actually produces; the family's own branch answers 415 for it,
-            // while its PayloadTooLargeException sibling keeps the more specific 413 branch.
-            // Thrown from a route here so the type -> status mapping is pinned independently of
-            // which request shape happens to produce it.
+            // Use Ktor's concrete transformation exception for a missing or unsupported Content-Type.
             "content-transformation" -> throw CannotTransformContentToTypeException(typeOf<RateRequest>())
             "too-many" -> throw TooManyRequestsException(retryAfterSeconds = 30)
             "unavailable" -> throw ServiceUnavailableException()
@@ -203,11 +186,7 @@ private data class AllFieldsResponse(
     val amount: @Contextual BigDecimal,
 )
 
-/**
- * A request body the client sends with **no** `Content-Type` header at all (`OutgoingContent`'s
- * `contentType` defaults to null and nothing else sets the header), which is what a `curl` call
- * that forgot `-H 'Content-Type: application/json'` looks like on the wire.
- */
+/** Use OutgoingContent with no contentType so the test client actually omits the header. */
 private class UntypedBody(private val text: String) : OutgoingContent.ByteArrayContent() {
     override val contentType: ContentType? = null
 
@@ -217,7 +196,6 @@ private class UntypedBody(private val text: String) : OutgoingContent.ByteArrayC
 private fun assertJsonEquals(expected: String, actual: String) =
     assertEquals(ApiJson.parseToJsonElement(expected), ApiJson.parseToJsonElement(actual))
 
-/** The correlation ref carried by a `500` envelope, asserting the message's exact shape on the way. */
 private fun refOf(body: String): String {
     val message = ApiJson.parseToJsonElement(body).jsonObject.getValue("message").toString().trim('"')
     return Regex("""^Internal error \(ref: ([0-9a-f]{8})\)$""").find(message)?.groupValues?.get(1)
@@ -229,12 +207,7 @@ private const val RAW_CHUNK_BYTES = 8 * 1024
 /** One chunk past the limit, so the whole body is drained and the writes below cannot block. */
 private val OVERSIZED_CHUNK_COUNT = (MAX_REQUEST_BODY_BYTES / RAW_CHUNK_BYTES).toInt() + 1
 
-/**
- * Writes a raw HTTP/1.1 `POST /api/test/raw` carrying **both** an (understated) `Content-Length`
- * and `Transfer-Encoding: chunked`, streaming [chunks] chunks of [RAW_CHUNK_BYTES] bytes, and
- * returns the whole response text. `Connection: close` makes the server close the socket after
- * answering, so reading to EOF terminates.
- */
+/** Use a raw socket to send both framing headers because the HTTP client cannot generate this combination. */
 private fun postBothFramingHeaders(port: Int, chunks: Int): String =
     Socket("127.0.0.1", port).use { socket ->
         socket.soTimeout = 10_000
@@ -254,14 +227,12 @@ private fun postBothFramingHeaders(port: Int, chunks: Int): String =
             out.write("0\r\n\r\n".toByteArray())
             out.flush()
         } catch (e: IOException) {
-            // The server rejected the body and closed the connection while we were still writing.
-            // That is a legitimate rejection, not a test failure -- read whatever it answered.
+            // Allow the socket write to fail if the server rejects the request before all sent chunks arrive.
         }
         socket.getInputStream().readBytes().decodeToString()
     }
 
 class WireFormatTest {
-    // ---------- money on the wire ----------
 
     @Test
     fun `money round-trips as a plain decimal string scaled to four digits`() = testApi(
@@ -391,7 +362,6 @@ class WireFormatTest {
         )
     }
 
-    // ---------- time on the wire ----------
 
     @Test
     fun `an instant without an explicit offset is rejected`() = testApi(
@@ -424,7 +394,6 @@ class WireFormatTest {
         )
     }
 
-    // ---------- the shared Json instance ----------
 
     @Test
     fun `an unknown property in a request body is rejected`() = testApi(
@@ -443,7 +412,6 @@ class WireFormatTest {
         )
     }
 
-    // ---------- validators ----------
 
     @Test
     fun `every field failure of one body is reported at once`() = testApi(
@@ -556,7 +524,6 @@ class WireFormatTest {
         }
     }
 
-    // ---------- pagination ----------
 
     @Test
     fun `pagination defaults and the id tie-breaker`() = testApi(
@@ -712,12 +679,10 @@ class WireFormatTest {
         assertEquals(1, pageResponse(20, 0, 20, listOf("a")).totalPages)
         assertEquals(2, pageResponse(21, 0, 20, listOf("a")).totalPages)
         assertEquals(0, pageResponse(0, 0, 20, emptyList<String>()).totalPages)
-        // pageRequest never yields size 0, but pageResponse is a public helper: a caller that
-        // passes one must get 0 pages, not an ArithmeticException from the division.
+        // Exercise pageResponse directly with zero size because pageRequest never supplies it.
         assertEquals(0, pageResponse(42, 0, 0, emptyList<String>()).totalPages)
     }
 
-    // ---------- the error envelope ----------
 
     @Test
     fun `every application exception maps to its status with the same envelope`() = testApi(
@@ -812,14 +777,7 @@ class WireFormatTest {
 
     @Test
     fun `a missing or non-JSON Content-Type is a 415 envelope, never a 500`() {
-        // Every member of Ktor's ContentTransformationException family extends java.io.IOException
-        // -- *not* BadRequestException (verified with javap on ktor-server-core-jvm-3.6.0). Without
-        // its own StatusPages branch a forgotten `-H 'Content-Type: application/json'` fell into
-        // the catch-all, so a pure client mistake answered 500 with a correlation ref and an ERROR
-        // log line, inflating the server-error rate every later dashboard is built on. Measured,
-        // then fixed. All three forms below raise CannotTransformContentToTypeException (no
-        // converter claims the content type), which Ktor's own DefaultEnginePipeline answers 415
-        // for -- the catch-all had been shadowing that default.
+        // Ktor transformation exceptions extend IOException. Include them to cover StatusPages mapping beyond BadRequestException.
         val logs = capturingLogs {
             testApi(routes = { wireFormatTestRoutes() }) {
                 val expected = """{"timestamp":"2026-10-28T12:00:00Z","status":415,
@@ -884,15 +842,13 @@ class WireFormatTest {
     fun `the correlation ref differs per failure`() = testApi(
         routes = { wireFormatTestRoutes() },
     ) {
-        // The refs themselves, not the whole bodies: comparing bodies would still pass if the ref
-        // became a constant and some other field started varying instead.
+        // Compare the refs directly so changes to timestamps cannot hide a constant ref.
         val first = refOf(client.get("/api/test/fail/internal").bodyAsText())
         val second = refOf(client.get("/api/test/fail/internal").bodyAsText())
 
         assertNotEquals(first, second, "each 500 must get its own correlation ref")
     }
 
-    // ---------- request body size limit ----------
 
     @Test
     fun `a body at the limit is handled and one byte more is a 413`() = testApi(
@@ -914,10 +870,7 @@ class WireFormatTest {
 
     @Test
     fun `an oversized body never reaches the handler at all`() {
-        // "Reject before the body is read" is only observable as "the handler never ran": the
-        // Content-Length check sits in onCall, ahead of routing, so nothing has consumed a byte.
-        // An implementation that instead read the body and measured it afterwards -- the bug a
-        // 192 MB heap cannot afford -- would run the handler and fail this.
+        // Use the handler entry counter to observe rejection before reading any body bytes.
         val invocations = AtomicInteger()
         testApi(routes = { wireFormatTestRoutes(invocations) }) {
             val under = client.post("/api/test/raw") { setBody("a".repeat(16)) }
@@ -983,17 +936,7 @@ class WireFormatTest {
 
     @Test
     fun `a body declaring both Content-Length and chunked framing cannot bypass the limit`() {
-        // Why a raw socket instead of the test client: CIO decides the body framing from
-        // Transfer-Encoding *before* it looks at Content-Length
-        // (io.ktor.http.cio.parseHttpBody tests isTransferEncodingChunked first), and the server
-        // pipeline rejects only a *duplicate* Content-Length header, never a Transfer-Encoding +
-        // Content-Length conflict. So a request carrying both is decoded as an unbounded chunked
-        // stream while request.contentLength() returns the declared lie -- 5 here. An
-        // implementation that skips byte counting whenever Content-Length is present therefore
-        // lets an unbounded body through, which on a 192 MB heap is a remote OOM. The Ktor test
-        // client derives Content-Length from the body and cannot emit both headers, so this is
-        // the only way to tell the two implementations apart. It covers the understated
-        // Content-Length case at the same time: 5 declared, 270336 actually streamed.
+        // Use a raw socket against CIO because the test client cannot exercise overlapping length and transfer-encoding headers.
         val bytesSeenByHandler = AtomicInteger(0)
         val server = embeddedServer(CIO, port = 0) {
             installApiPlugins(HttpConfig(port = 0, corsAllowedOrigins = emptyList()), TEST_CLOCK)
@@ -1028,7 +971,6 @@ class WireFormatTest {
         )
     }
 
-    // ---------- CORS ----------
 
     @Test
     fun `with no configured origin no cross-origin access is allowed`() = testApi(
@@ -1070,9 +1012,7 @@ class WireFormatTest {
         corsAllowedOrigins = listOf("https://app.example.com"),
         routes = { wireFormatTestRoutes() },
     ) {
-        // Ktor's CORS defaults cover only GET/POST/HEAD and no custom header, so without the
-        // explicit allowMethod/allowHeader calls the write endpoints and every authenticated call
-        // would be unusable from the configured origin.
+        // Exercise methods and headers outside Ktor's default CORS allowlist.
         for (method in listOf(HttpMethod.Put, HttpMethod.Patch, HttpMethod.Delete)) {
             val response = client.options("/api/test/ok") {
                 header(HttpHeaders.Origin, "https://app.example.com")
@@ -1089,11 +1029,7 @@ class WireFormatTest {
         corsAllowedOrigins = listOf("https://app.example.com"),
         routes = { wireFormatTestRoutes() },
     ) {
-        // allowHeader(HttpHeaders.ContentType) is not an allowlist entry: CORSConfig.allowHeader
-        // special-cases that one name and flips allowNonSimpleContentTypes (false by default) --
-        // verified in the 3.6.0 bytecode. That flag is what permits a non-simple Content-Type such
-        // as application/json cross-origin, so without the call both halves below answer 403 and
-        // the whole JSON API is unreachable from the configured origin. Measured, not assumed.
+        // Ktor interprets allowHeader(ContentType) as opting into non-simple content types. Exercise it with a JSON preflight.
         val preflight = client.options("/api/test/rate") {
             header(HttpHeaders.Origin, "https://app.example.com")
             header(HttpHeaders.AccessControlRequestMethod, HttpMethod.Post.value)
@@ -1119,7 +1055,6 @@ class WireFormatTest {
         assertEquals(HttpStatusCode.OK, client.get("/api/test/ok").status)
     }
 
-    // ---------- call logging ----------
 
     @Test
     fun `call logging records the call at INFO without the Authorization header or the body`() {
@@ -1132,8 +1067,7 @@ class WireFormatTest {
             }
         }
 
-        // The exact line, not a substring match on its parts: the configured `format` is the thing
-        // that decides what an access-log line may contain, so the whole line is the assertion.
+        // Match the entire access line so extra fields, including credentials, fail the assertion.
         val info = logs.messagesAt(Level.INFO)
         assertTrue(
             info.contains("POST /api/test/raw -> 200"),
@@ -1145,14 +1079,11 @@ class WireFormatTest {
         }
     }
 
-    // ---------- shared wiring ----------
 
     @Test
     fun `registerRoutes wires the ops routes`() = testApplication {
         environment { config = MapApplicationConfig() }
-        // /health never touches the database, so a pool that can never connect is enough to
-        // prove the wiring without Docker. initializationFailTimeout = -1 skips Hikari's eager
-        // connectivity check at construction.
+        // Disable eager pool initialization because liveness needs no database connection.
         val dataSource = HikariDataSource(
             HikariConfig().apply {
                 jdbcUrl = "jdbc:postgresql://localhost:1/nonexistent"

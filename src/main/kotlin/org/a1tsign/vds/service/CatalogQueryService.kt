@@ -51,15 +51,6 @@ private class SearchPriceOptions(requested: TariffPrice?, annual: TariffPrice?) 
     val other = if (annualIsCheaper) requested else annual.takeIf { requested != null }
 }
 
-/**
- * Read-only cross-table queries for the provider catalog -- `GET /api/v1/providers` (filtered,
- * paginated, decorated with `minMonthlyPriceUsd`), `GET /api/v1/providers/{id}` (full detail),
- * `GET /api/v1/providers/{id}/tariffs`, the cross-provider `GET /api/v1/tariffs` search, tariff
- * detail and price history (task vds-001.16). Every method opens exactly one transaction and never
- * writes, reaching [LocationTable]/[TariffTable]/[TariffPriceTable] directly for the
- * detail/tariffs endpoints, which have no cross-table filtering/sorting of their own (unlike the
- * provider/tariff lists).
- */
 class CatalogQueryService(
     private val database: Database,
     private val providers: ProviderRepository,
@@ -67,17 +58,7 @@ class CatalogQueryService(
     private val prices: PriceRepository,
     private val enrichmentState: EnrichmentRepository = EnrichmentRepository(),
 ) {
-    /**
-     * Returns `(totalElements, page content)` -- the caller (the route) builds the final
-     * `PageResponse`, the same split [UserService.findPage] uses.
-     *
-     * Not N+1: exactly eight SQL statements regardless of page size or sort field -- one
-     * id/page resolution (filters+order+limit/offset via [ProviderRepository.filteredPage], or
-     * filters alone via [ProviderRepository.filteredIds] when sorting by `minMonthlyPriceUsd`,
-     * because that value has no column to `ORDER BY`), one `minMonthlyPriceUsd` aggregate (raw
-     * SQL, [ProviderRepository.minPricesUsdByProvider]) and one decoration query per
-     * auxiliary fact (payment methods, location countries, active tariff counts, legal info, enrichment last attempt) -- never one query per row.
-     */
+    /** Resolve related models in batches so query count does not grow with the page size. */
     suspend fun listProviders(
         filter: ProviderListFilter,
         page: Int,
@@ -90,9 +71,7 @@ class CatalogQueryService(
             val pageProviders: List<Provider>
             val minPriceForPage: Map<Long, MinPricesUsd>
             if (minPriceSort != null) {
-                // The sort key has no column: resolve every matching id, compute the aggregate for
-                // all of them (one raw-SQL statement), sort/paginate that already-materialised,
-                // filtered id list in memory -- still a fixed number of SQL statements, not N+1.
+                // Sort by the computed aggregate after resolving matching IDs. Paginating the IDs first would rank only part of the result.
                 val allIds = providers.filteredIds(filter)
                 total = allIds.size.toLong()
                 val priceByAll = providers.minPricesUsdByProvider(allIds)
@@ -107,7 +86,7 @@ class CatalogQueryService(
                         descending -> pb.compareTo(pa)
                         else -> pa.compareTo(pb)
                     }
-                    if (primary != 0) primary else a.compareTo(b) // id ASC tie-breaker.
+                    if (primary != 0) primary else a.compareTo(b)
                 }
                 val pageIds = orderedIds.drop(page * size).take(size)
                 val byId = providers.findByIds(pageIds).associateBy { it.id }
@@ -243,10 +222,6 @@ class CatalogQueryService(
         }
     }
 
-    /**
-     * `GET /api/v1/tariffs` -- cross-provider search. Decorates the paged ids in batches with
-     * tariffs, providers and current prices for the requested periods.
-     */
     suspend fun searchTariffs(
         filter: TariffSearchFilter,
         billingPeriod: BillingPeriod,
@@ -282,10 +257,6 @@ class CatalogQueryService(
         }
     }
 
-    /**
-     * `GET /api/v1/tariffs/by-provider`. Decorates the page of headlines with their providers,
-     * tariffs and current prices in batches.
-     */
     suspend fun cheapestTariffByProvider(
         filter: TariffSearchFilter,
         page: Int,

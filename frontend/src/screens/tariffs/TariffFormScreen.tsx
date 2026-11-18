@@ -16,13 +16,11 @@ import {
 
 const FORBIDDEN = <p className="state-view state-view-error">недостаточно прав</p>;
 
-/** `/providers/:id/tariffs/new`. */
 export function TariffCreateScreen() {
   const { id } = useParams<{ id: string }>();
   return <EditorOnly fallback={FORBIDDEN}>{id !== undefined && <TariffCreate providerId={id} />}</EditorOnly>;
 }
 
-/** `/tariffs/:id/edit`. */
 export function TariffEditScreen() {
   const { id } = useParams<{ id: string }>();
   return <EditorOnly fallback={FORBIDDEN}>{id !== undefined && <TariffEdit id={id} />}</EditorOnly>;

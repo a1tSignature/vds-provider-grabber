@@ -28,13 +28,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 private val logger = LoggerFactory.getLogger("org.a1tsign.vds.api.routes.DiscoveryRoutes")
 
-/**
- * ADMIN-only discovery endpoints: trigger a pass, read the in-memory pass history, list the
- * declarative sources loaded at startup.
- *
- * [runner] and [scope] are `null` when `VDS_DISCOVERY_ENABLED=false`; every endpoint here, including
- * `GET /sources`, then answers `503`.
- */
+/** These admin endpoints return 503 without a discovery runner, including the startup source report. */
 fun Route.discoveryRoutes(
     runner: DiscoveryRunner?,
     scope: CoroutineScope?,

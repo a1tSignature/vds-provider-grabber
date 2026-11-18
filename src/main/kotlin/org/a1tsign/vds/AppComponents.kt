@@ -63,11 +63,6 @@ import java.util.concurrent.atomic.AtomicReference
 
 private val logger = LoggerFactory.getLogger("org.a1tsign.vds.AppComponents")
 
-/**
- * The one holder every route group is wired from. Later tasks add their repository/service to it
- * and read it in [registerRoutes] -- so neither `Application.kt` nor `api/Routing.kt` grows a new
- * parameter per endpoint group.
- */
 class AppComponents(val dataSource: DataSource) {
     lateinit var config: AppConfig
         private set
@@ -106,55 +101,36 @@ class AppComponents(val dataSource: DataSource) {
     var fxHttpClient: HttpClient? = null
         private set
 
-    // ---------- vds-002 crawler, all null together while VDS_CRAWLER_ENABLED is false ----------
-    // (ADR-01: no client is created and no thread is started when the crawler is disabled).
+    // All crawler components are absent while the crawler is disabled.
     var crawlerRegistry: AdapterRegistry? = null
         private set
     var crawlerRunner: CrawlerRunner? = null
         private set
 
-    /** The scope `api/routes/CrawlerRoutes.kt` launches an admin-triggered run on; cancelled on shutdown. */
     var crawlerScope: CoroutineScope? = null
         private set
 
-    /** The crawler's loopback API client; closed on shutdown, same precedent as [fxHttpClient]. */
     var crawlerCatalogClient: CatalogApiClient? = null
         private set
 
-    /** The outbound `HttpClient` behind [crawlerRegistry]'s `PageFetcher`; closed on shutdown. */
     var crawlerFetchHttpClient: HttpClient? = null
         private set
 
     /**
-     * What this startup made of `VDS_DISCOVERY_SOURCES_DIR` (vds-004): the declarative sources that
-     * became registry entries and every file that was refused, with its error.
-     * [SourceLoadReport.NOT_LOADED] when nothing was read -- the crawler is disabled, or no
-     * directory is configured (the default).
-     *
-     * Immutable for the process's lifetime, like [crawlerRegistry] itself: restart-to-apply
-     * (ADR-01) means this report is also the answer to "did the restart pick my file up?", which
-     * task 6's `GET /api/v1/admin/discovery/sources` serves.
+     * Startup source-load report, including file errors. It is fixed until restart.
+     * [SourceLoadReport.NOT_LOADED] means the crawler is disabled or no source directory was configured.
      */
     var discoverySources: SourceLoadReport = SourceLoadReport.NOT_LOADED
         private set
 
-    /**
-     * The `Job` of the currently in-flight admin-triggered run (`POST /api/v1/admin/crawl/run`),
-     * set by `api/routes/CrawlerRoutes.kt` right after `launch`. `Application.kt`'s
-     * `shutdownGracefully` joins it (bounded, like [org.a1tsign.vds.crawler.CrawlScheduler.close])
-     * before cancelling [crawlerScope] -- unlike the scheduler's own ticks, nothing else awaited an
-     * admin-triggered run before task vds-002.7. Always present, even while the crawler is disabled
-     * (it simply never gets set then).
-     */
+    /** Shutdown waits a bounded time for this admin run before cancelling [crawlerScope]. */
     val crawlerAdminRunJob: AtomicReference<Job?> = AtomicReference(null)
 
-    // ---------- vds-004 discovery, all null together while VDS_DISCOVERY_ENABLED is false ----------
-    // (no search client is created and no thread is started while discovery is disabled).
+    // Discovery starts no search client or thread when disabled.
     /** `null` also while enabled when `VDS_DISCOVERY_SEARCH_PROVIDER=none`. */
     var discoverySearchProvider: SearchProvider? = null
         private set
 
-    /** The search provider's own outbound `HttpClient`; closed on shutdown like [fxHttpClient]. */
     var discoverySearchHttpClient: HttpClient? = null
         private set
 
@@ -164,11 +140,10 @@ class AppComponents(val dataSource: DataSource) {
     var discoveryRunner: DiscoveryRunner? = null
         private set
 
-    /** The scope `api/routes/DiscoveryRoutes.kt` launches an admin-triggered pass on; cancelled on shutdown. */
     var discoveryScope: CoroutineScope? = null
         private set
 
-    /** The in-flight admin-triggered pass, joined (bounded) by `shutdownGracefully` -- the [crawlerAdminRunJob] precedent. */
+    /** Shutdown joins this admin pass with a bounded wait. */
     val discoveryAdminPassJob: AtomicReference<Job?> = AtomicReference(null)
 
     val isConfigured: Boolean get() = this::authService.isInitialized
@@ -263,7 +238,6 @@ fun buildComponents(
     val fxRefreshService = FxRefreshService(fxProvider, database, currencyRateRepository, currencyConverter, clock)
     val fxClient = (fxProvider as? ErApiCurrencyRateProvider)?.client
 
-    // ---------- vds-002 crawler: nothing is constructed, no client, no thread, while disabled ----------
     var crawlerRegistry: AdapterRegistry? = null
     var crawlerRunner: CrawlerRunner? = null
     var crawlerScope: CoroutineScope? = null
@@ -276,9 +250,7 @@ fun buildComponents(
     var discoveryRunner: DiscoveryRunner? = null
     var discoveryScope: CoroutineScope? = null
     if (config.discovery.enabled && !config.crawler.enabled) {
-        // Discovery writes candidates through the crawler's service account and shares the
-        // crawler's run slot, so without the crawler there is nothing to build it from. Announced
-        // rather than a startup failure: discovery stays off and its endpoints answer 503.
+        // Discovery shares the crawler's service account and run slot. Without the crawler, discovery endpoints return 503.
         logger.warn(
             "VDS_DISCOVERY_ENABLED is true but VDS_CRAWLER_ENABLED is false: discovery needs the crawler's " +
                 "service account and run slot, so it is not started",
@@ -291,33 +263,26 @@ fun buildComponents(
             )
         }
         val compiledEntries = AdapterRegistry.compiledEntries()
-        // Declarative sources (vds-004) are read iff the *crawler* is enabled and a directory is
-        // configured -- VDS_DISCOVERY_ENABLED does not gate them (plan decision 5: an operator must
-        // be able to author and run a source config with the search leg off). The directory is unset
-        // by default, so the default configuration still reads nothing at all.
+        // Load declarative sources whenever the crawler and a source directory are configured, independently of search.
         val sourcesDir = config.discovery.sourcesDir
         if (sourcesDir != null) {
             discoverySources = SourceConfigLoader(clock).load(
                 directory = sourcesDir,
                 maxSources = config.discovery.maxSources,
-                // Cross-origin uniqueness: a file must not be able to shadow or collide with a
-                // compiled adapter such as example-static.
+                // Reserve compiled adapter IDs so a JSON source cannot shadow one.
                 reservedIds = compiledEntries.map { it.adapter.id }.toSet(),
                 reservedSlugs = compiledEntries.map { it.adapter.providerSlug }.toSet(),
             )
             if (config.discovery.sourcesStrict) {
                 if (config.discovery.enabled) {
                     if (discoverySources.hasFailures) {
-                        // Same fail-fast path as a malformed VDS_* variable: one ERROR line and a
-                        // non-zero exit from Application.kt's main(), naming every refused file.
                         throw ConfigurationException(
                             "VDS_DISCOVERY_SOURCES_STRICT is true and a declarative source was refused: " +
                                 discoverySources.failureSummary(),
                         )
                     }
                 } else {
-                    // The "discovery disabled can never fail startup" rule is literal, strict mode
-                    // included -- so it is announced rather than silently honoured or silently dropped.
+                    // Warn about ignored strict mode without failing startup while discovery is disabled.
                     logger.warn(
                         "VDS_DISCOVERY_SOURCES_STRICT is true but VDS_DISCOVERY_ENABLED is false, " +
                             "so strict mode was not applied: an invalid source file is skipped, not a startup failure",
@@ -326,9 +291,7 @@ fun buildComponents(
             }
         }
         val registry = AdapterRegistry.production(
-            // The file's own "enabled" becomes includedByDefault, which is what makes an empty
-            // VDS_CRAWLER_ADAPTERS select exactly the config sources that turned themselves on
-            // (ADR-01 decision 5) without AdapterRegistry.select needing a second rule.
+            // A source's enabled flag determines whether an empty adapter selection includes it.
             discoverySources.loaded.map { source ->
                 AdapterEntry(
                     adapter = DeclarativeAdapter(source.config),
@@ -338,9 +301,7 @@ fun buildComponents(
                 )
             },
         )
-        // Fail-fast (spec req. 39): an unknown id in VDS_CRAWLER_ADAPTERS must abort startup, not
-        // fail quietly on the scheduler's first tick minutes later -- see Application.kt's main().
-        // The list validated here is the same immutable one every handler later reads.
+        // Validate adapter IDs before startup so an invalid selection cannot first fail on a scheduler tick.
         registry.select(config.crawler.adapters)
         val fetchClient = crawlerHttpClient()
         val fetcher = KtorPageFetcher(config.crawler, clock, fetchClient)
@@ -357,9 +318,7 @@ fun buildComponents(
             reconciler = reconciler,
             clock = clock,
             writerFactory = writerFactory,
-            // Each adapter's own VDS_CRAWLER_ADAPTER_<ID>_* slice, split out of the whole slice
-            // loadConfig captured. Without this the shipped example-static adapter sees an empty
-            // CrawlContext.config and fails with ADAPTER_ERROR (01-inbox/vds-002.9-debt-1).
+            // Give each adapter its own normalized environment slice as CrawlContext.config.
             adapterConfig = { adapterId -> crawlerAdapterConfig(adapterId, config.crawler.adapterEnv.reveal()) },
             pagesFetched = { fetcher.pagesFetched },
             slot = runSlot,
@@ -369,7 +328,6 @@ fun buildComponents(
         crawlerCatalogClient = catalogClient
         crawlerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-        // ---------- vds-004 discovery: nothing is constructed, no client, no thread, while disabled ----------
         if (config.discovery.enabled) {
             val discovery = config.discovery
             if (discovery.searchProvider == DiscoverySearchProvider.TAVILY) {

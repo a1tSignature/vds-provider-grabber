@@ -92,12 +92,8 @@ tasks.processResources {
 
 tasks.shadowJar {
     mergeServiceFiles()
-    // Only the two paths shadow actually has a transformer for get an explicit INCLUDE, so every
-    // copy reaches that transformer instead of being silently dropped before it runs:
-    // *.kotlin_module (KotlinModuleMetadataTransformer) and META-INF/services/* (the
-    // ServiceFileTransformer registered by mergeServiceFiles() above, which merges the provider
-    // lists). Everything else keeps the task's default EXCLUDE, so a genuine class/resource
-    // conflict elsewhere still surfaces instead of silently picking one side.
+    // Include Kotlin module metadata and service descriptors so their Shadow transformers see every copy.
+    // Keep EXCLUDE for other duplicates so they do not bypass conflict detection.
     eachFile {
         if (name.endsWith(".kotlin_module") || path.startsWith("META-INF/services/")) {
             duplicatesStrategy = DuplicatesStrategy.INCLUDE
@@ -105,8 +101,6 @@ tasks.shadowJar {
     }
 }
 
-// `-PskipFrontend` builds the backend alone, with no Node/npm required -- see buildFrontend's
-// onlyIf below, mirrored on syncFrontendDist and testFrontend.
 val skipFrontend = providers.gradleProperty("skipFrontend")
 
 val requiredNodeMessage =
@@ -122,15 +116,12 @@ fun npmAvailable(): Boolean {
         .any { dir -> candidates.any { name -> File(dir, name).canExecute() } }
 }
 
-// Captured once, at configuration time, into a plain local: referencing the script's implicit
-// `Project` receiver (e.g. an unqualified `providers`/`exec` call) from inside `doLast` below is
-// execution-time `Project` access, unsupported under Gradle 9's configuration cache.
-// `ProviderFactory.exec` is the sanctioned replacement for `project.exec` there.
+// Capture the ProviderFactory during configuration. Gradle's configuration cache prohibits Project access inside doLast.
 val execProviders = providers
 val frontendDir = layout.projectDirectory.dir("frontend")
 val frontendDistDir = layout.projectDirectory.dir("frontend/dist")
 
-/** `npm ci` then `npm run build`, as one task so its up-to-date check covers both -- a plain [Exec] only runs a single command line. */
+/** Run install and build in one task so they share the up-to-date check. */
 val buildFrontend = tasks.register("buildFrontend") {
     onlyIf("skipFrontend is not set") { !skipFrontend.isPresent }
     inputs.files(
@@ -160,10 +151,7 @@ val buildFrontend = tasks.register("buildFrontend") {
 }
 
 val syncFrontendDist = tasks.register<Sync>("syncFrontendDist") {
-    // No `onlyIf` here: `Sync` (unlike `Copy`) deletes anything in `into` that the current `from`
-    // doesn't produce, which is exactly what clears out a *previous*, non-skipped run's bundle --
-    // skipping this task outright would leave that stale output on the classpath instead. The
-    // empty list on the skipped branch is what makes `from` produce nothing to sync.
+    // Sync must run with no inputs when the frontend is skipped to remove any stale bundle.
     dependsOn(buildFrontend)
     from(providers.provider { if (skipFrontend.isPresent) emptyList<Any>() else listOf(frontendDistDir) })
     into(layout.buildDirectory.dir("generated/frontend/static"))
@@ -171,10 +159,7 @@ val syncFrontendDist = tasks.register<Sync>("syncFrontendDist") {
 
 sourceSets {
     main {
-        // Registers the parent of syncFrontendDist's "static" output dir, not that dir itself,
-        // so the bundle lands on the classpath AS "static/..." -- matching the "static" basePackage
-        // api/routes/StaticRoutes.kt serves in production, instead of spilling index.html/assets
-        // straight into the resources root.
+        // Register the parent directory to keep the static/ prefix required by the SPA routes.
         resources.srcDir(layout.buildDirectory.dir("generated/frontend"))
     }
 }

@@ -6,8 +6,7 @@ FROM node:${NODE_VERSION}-bookworm-slim AS node
 
 FROM eclipse-temurin:21-jdk AS jdk21
 
-# The Gradle daemon is pinned to JDK 17 (gradle/gradle-daemon-jvm.properties) and compiles with a
-# JDK 21 toolchain; both are provided locally so the build never downloads a JDK.
+# Gradle runs on JDK 17 and compiles against JDK 21. Providing both locally avoids a toolchain download.
 FROM eclipse-temurin:17-jdk AS build
 COPY --from=jdk21 /opt/java/openjdk /opt/jdk21
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
@@ -36,7 +35,6 @@ RUN useradd --system --uid 10001 --home-dir /app vds \
  && chown vds /var/lock/vds-enrich
 WORKDIR /app
 COPY --from=build /src/build/libs/vds-provider-grabber-1.0-SNAPSHOT-all.jar app.jar
-# The enrichment process's launcher; the service ENTRYPOINT below does not use it.
 COPY --chmod=0755 scripts/enrich-launch.sh /app/enrich-launch.sh
 
 # Heap follows the container memory limit; an OOM kills the process so the restart policy can act

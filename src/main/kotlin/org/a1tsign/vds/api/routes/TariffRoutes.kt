@@ -185,7 +185,6 @@ private fun validateTariff(req: TariffWriteRequest): TariffFields {
     )
 }
 
-/** The filters `GET /api/v1/tariffs` and `GET /api/v1/tariffs/by-provider` share; errors go to [v]. */
 private fun parseTariffFilter(v: Validation, query: Parameters): TariffSearchFilter {
     val providerId = query["providerId"]?.let { raw ->
         raw.toLongOrNull() ?: run { v.reject("providerId", "must be an integer"); null }
@@ -208,7 +207,6 @@ private fun parseTariffFilter(v: Validation, query: Parameters): TariffSearchFil
 
 private fun tariffId(raw: String?) = raw?.toLongOrNull() ?: throw NotFoundException("Tariff not found")
 
-/** `true`/`false`/absent; anything else is recorded on [v] as a field error and `null` is returned. */
 private fun parseOptionalBoolean(v: Validation, field: String, raw: String?): Boolean? = when (raw) {
     null -> null
     "true" -> true

@@ -34,15 +34,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * Proves the Kotlin mirror (`domain/Enums.kt`, `db/Tables.kt`, `db/RowMappers.kt`) and
- * `V1__core_schema.sql` cannot silently drift apart. Every enum/column expectation is read from
- * the database itself (`pg_constraint`/`information_schema`) rather than hardcoded a second time
- * here -- a hardcoded list would only prove the test author can copy-paste, not that the two sides
- * agree. Adding a value to one side without the other must fail this test.
- */
+/** Compare Exposed and enum mappings with the actual PostgreSQL schema. */
 class SchemaEnumParityTest : AbstractDbTest() {
-    // ---- small JDBC helpers (mirrors the style of CoreSchemaTest) -------------------------
 
     private fun Connection.stringSet(sql: String, vararg params: Any?): Set<String> {
         val result = mutableSetOf<String>()
@@ -55,13 +48,7 @@ class SchemaEnumParityTest : AbstractDbTest() {
         return result
     }
 
-    /**
-     * The literal values of the single CHECK constraint covering [table].[column], read from
-     * `information_schema`. Postgres rewrites `col IN ('A', 'B')` into
-     * `(col)::text = ANY ((ARRAY['A'::character varying, 'B'::character varying])::text[])` --
-     * verified against a real container -- so the literals are pulled out with a quote-delimited
-     * regex rather than assumed to still say "IN (...)".
-     */
+    /** PostgreSQL rewrites IN checks as array comparisons. Extract quoted literals independently of the rewritten SQL shape. */
     private fun Connection.checkConstraintLiterals(table: String, column: String): Set<String> {
         val clauses = mutableListOf<String>()
         prepareStatement(
@@ -105,7 +92,6 @@ class SchemaEnumParityTest : AbstractDbTest() {
         )
     }
 
-    // ---- 1. enum <-> CHECK parity, driven by the database ---------------------------------
 
     @Test
     fun `every enum-like column CHECK constraint matches its Kotlin enum exactly`() {
@@ -129,7 +115,6 @@ class SchemaEnumParityTest : AbstractDbTest() {
         }
     }
 
-    // ---- 2. seeded role.code vs Role enum --------------------------------------------------
 
     @Test
     fun `role table codes equal Role enum entries`() {
@@ -139,7 +124,6 @@ class SchemaEnumParityTest : AbstractDbTest() {
         }
     }
 
-    // ---- 3. table-object <-> information_schema column parity -----------------------------
 
     @Test
     fun `every Exposed table object has exactly the columns of its SQL table`() {
@@ -170,7 +154,6 @@ class SchemaEnumParityTest : AbstractDbTest() {
         }
     }
 
-    // ---- 4. round trip through Exposed: insert via the table object, read via the mapper --
 
     @Test
     fun `provider round trips through Exposed insert and the row mapper`() {
@@ -333,7 +316,6 @@ class SchemaEnumParityTest : AbstractDbTest() {
         }
     }
 
-    // ---- 5. parseDbEnum fails loudly, naming table/column/value ---------------------------
 
     @Test
     fun `parseDbEnum throws naming the table column and offending value for an unknown value`() {
@@ -345,7 +327,6 @@ class SchemaEnumParityTest : AbstractDbTest() {
         assertTrue(exception.message!!.contains("BOGUS"), "message must name the offending value")
     }
 
-    // ---- 6. Role.includes privilege ordering -----------------------------------------------
 
     @Test
     fun `Role includes expresses ADMIN over EDITOR over VIEWER`() {
@@ -358,9 +339,7 @@ class SchemaEnumParityTest : AbstractDbTest() {
 
     @Test
     fun `Role declaration order is pinned to ADMIN EDITOR VIEWER`() {
-        // Role.includes() is implemented as a direct ordinal comparison (see its KDoc), so a
-        // future reordering of this enum would silently change what includes() means. Pinning
-        // the declaration order here makes that failure loud instead of silent.
+        // Pin declaration order because Role.includes compares ordinals.
         assertEquals(listOf(Role.ADMIN, Role.EDITOR, Role.VIEWER), Role.entries)
     }
 }

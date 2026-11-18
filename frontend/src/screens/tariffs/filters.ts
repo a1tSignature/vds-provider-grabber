@@ -14,7 +14,6 @@ export type TariffSortField = (typeof TARIFF_SORT_FIELDS)[number];
 
 const PAGE_SIZES = [20, 50, 100] as const;
 
-/** Upper-cases and validates a two-letter country code; `undefined` for anything else, including empty. */
 export function normalizeCountryCode(raw: string): string | undefined {
   const upper = raw.toUpperCase();
   return /^[A-Z]{2}$/.test(upper) ? upper : undefined;
@@ -59,10 +58,6 @@ function activeOnlyField(): FieldCodec<boolean> {
   };
 }
 
-/**
- * The filters `/tariffs/by-provider` (the table) and the per-provider expansion request share --
- * everything except page, sort and size, which the expansion request fixes on its own.
- */
 export function buildTariffFilterFieldsSchema(dictionaries: DictionariesDto) {
   return {
     country: countryCodeField(),

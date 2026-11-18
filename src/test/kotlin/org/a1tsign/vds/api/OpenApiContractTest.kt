@@ -27,20 +27,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * Keeps `src/main/resources/openapi.yaml` honest, per ADR-07: a hand-written contract is only
- * acceptable because this test fails on a missing *or* extra operation, not just "the file is
- * served".
- *
- * YAML parsing uses `it.krzeminski:snakeyaml-engine-kmp` (the transitive dependency ADR-07/the
- * task describe as "already on the test classpath") via reflection, not a direct import: it
- * resolves transitively only onto `testRuntimeClasspath` (through
- * `ktor-server-routing-openapi -> ktor-openapi-schema -> kaml -> snakeyaml-engine-kmp`), not onto
- * `testCompileClasspath` -- `./gradlew dependencies --configuration testCompileClasspath` shows no
- * `it.krzeminski`/`com.charleskorn.kaml` entry, only `testRuntimeClasspath` does. A direct `import`
- * therefore fails to compile even though the class loads fine at test run time. `Class.forName`
- * sidesteps exactly that gap without adding any dependency to `build.gradle.kts`.
- */
+/** Compare OpenAPI operations with the live routing tree. Use reflection for YAML parsing so the test can use the parser on Ktor's classpath without a direct dependency. */
 class OpenApiContractTest : AbstractDbTest() {
     private fun auth(token: String) = HttpHeaders.Authorization to "Bearer $token"
 
@@ -182,9 +169,7 @@ class OpenApiContractTest : AbstractDbTest() {
         }
     }
 
-    // ---- helpers --------------------------------------------------------------------------
 
-    /** Parses `openapi.yaml` off the classpath into a generic `Map`/`List`/`String` tree -- see the class doc for why reflection. */
     private fun parsedDocument(): Map<*, *> {
         val text = javaClass.classLoader.getResourceAsStream("openapi.yaml")!!.use { it.readBytes().decodeToString() }
         val loadClass = Class.forName("it.krzeminski.snakeyaml.engine.kmp.api.Load")
@@ -228,7 +213,6 @@ class OpenApiContractTest : AbstractDbTest() {
         }
     }
 
-    /** `(method, path)` pairs declared under `paths`, with `method` upper-cased. */
     private fun declaredOperations(document: Map<*, *>): Set<Pair<String, String>> {
         val httpMethods = setOf("get", "post", "put", "patch", "delete")
         val paths = document["paths"] as Map<*, *>
@@ -240,15 +224,7 @@ class OpenApiContractTest : AbstractDbTest() {
         }.toSet()
     }
 
-    /**
-     * Walks the real routing tree, normalising `{paramName}` path-parameter syntax.
-     *
-     * Excludes the SPA static-content subtree (`api/routes/StaticRoutes.kt`'s `staticResources`):
-     * it is never declared in `openapi.yaml`, and the walk cannot otherwise describe it --
-     * `staticResources` registers a tailcard route whose selector this test has no public type to
-     * match against, only the `"(static-content)"` string Ktor's own (package-private)
-     * `TailcardSelector.toString()` produces.
-     */
+    /** Normalize route parameter syntax and exclude the SPA static subtree, which has no OpenAPI operations. */
     private fun collectRoutes(node: RoutingNode, pathSegments: List<String> = emptyList()): Set<Pair<String, String>> {
         val selector = node.selector
         if (selector.toString() == "(static-content)") return emptySet()

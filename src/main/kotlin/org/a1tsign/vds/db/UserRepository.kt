@@ -42,7 +42,6 @@ class UserRepository {
     fun findByUsername(username: String): UserWithRoles? = userJoin()
         .selectAll().where { AppUserTable.username eq username }.toList().toUserWithRoles()
 
-    /** One indexed user-id join loads status, token_version and current roles for every request. */
     fun loadForAuth(userId: Long): AuthUserState? {
         val rows = userJoin().selectAll().where { AppUserTable.id eq userId }.toList()
         val first = rows.firstOrNull() ?: return null

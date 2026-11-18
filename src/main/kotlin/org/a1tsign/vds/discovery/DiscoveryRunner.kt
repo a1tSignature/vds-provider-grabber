@@ -32,20 +32,13 @@ import java.util.EnumMap
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-/** `provider.name`'s column width. */
 private const val NAME_MAX_LENGTH = 255
 
-/** The provenance line written as a candidate's `description`. */
 private const val DESCRIPTION_MAX_LENGTH = 1000
 
-/**
- * A search hit whose URL is longer than this is refused as `MALFORMED_URL`. No real landing page
- * needs more, and the raw URL is kept in a dry run's plan for the whole pass history, so an
- * unbounded one is retained heap on a 192 MB JVM.
- */
+/** Cap result URLs because dry-run history retains them. */
 internal const val RESULT_URL_MAX_LENGTH = 2048
 
-/** How much of the search snippet the provenance line keeps. */
 private const val SNIPPET_MAX_LENGTH = 200
 
 private val WHITESPACE_RUN = Regex("\\s+")
@@ -68,11 +61,7 @@ data class PassRequest(
 class DiscoveryPassInProgressException(val holder: RunHolder?) :
     Exception("The run slot is held by ${holder?.let { "${it.kind} ${it.id}" } ?: "another run"}")
 
-/**
- * The catalog as a pass sees it: one paged read of every provider and one create. Production goes
- * through [ApiCandidateCatalog], i.e. the crawler's `CatalogApiClient` over loopback HTTP -- this
- * package imports neither `…vds.db` nor `…vds.service`.
- */
+/** Discovery reads paged providers and can create candidates. The production client uses the crawler's loopback API. */
 interface CandidateCatalog {
     /** One page of every provider, all three `systemStatus` values included. */
     suspend fun providersPage(page: Int): CatalogPage<CatalogProviderSummary>
@@ -81,7 +70,6 @@ interface CandidateCatalog {
     suspend fun createCandidate(request: CandidateProviderWrite)
 }
 
-/** [CandidateCatalog] over the crawler's loopback API client, which the caller owns and closes. */
 class ApiCandidateCatalog(private val client: CatalogApiClient) : CandidateCatalog {
     override suspend fun providersPage(page: Int): CatalogPage<CatalogProviderSummary> = client.listProvidersPage(page)
 
@@ -91,52 +79,9 @@ class ApiCandidateCatalog(private val client: CatalogApiClient) : CandidateCatal
 }
 
 /**
- * One discovery pass = **load the known-domain set → for each configured query: search → filter →
- * create candidates → publish a summary.** The same shape as `CrawlerRunner`, one layer earlier.
- *
- * ### What a pass never does
- *
- * It never fetches a page of a candidate (a candidate is created on the search result alone), never
- * writes legal info, payment methods, locations or tariffs, never deletes or deactivates anything,
- * and never touches a row it did not create.
- *
- * ### One pass at a time, and never alongside a crawl run
- *
- * The [RunSlot] is shared with `CrawlerRunner` (one instance, created in `AppComponents`). That
- * slot is also what makes the [CreditLedger] correct: `CreditPass.requestCredit()` writes the
- * pass's own copy of the state file, so **only one live `CreditPass` may exist**. Therefore:
- *
- * - every credit request happens inside the pass's own coroutine, after an `ensureActive()`, so a
- *   pass whose budget expired or that is being cancelled asks for no further credit;
- * - the `CreditPass` is closed -- `finish()`, which merges with the file -- **before** the slot
- *   is released, and a closed pass refuses every later request ([PassBudget]);
- * - so the next pass's `startPass()` always reads a file no older pass will write over again.
- *
- * ### Budgets and failure isolation
- *
- * `withTimeoutOrNull(VDS_DISCOVERY_PASS_TIMEOUT_MINUTES)` around the whole pass: expiry ends it
- * `CANCELLED` with the counters gathered so far and a summary still published -- never an exception
- * instead of one. A shutdown's [CancellationException] is re-thrown **after** the summary is
- * published (the `CrawlerRunner.runReserved` precedent). `SEARCH_QUOTA`/`SEARCH_AUTH` end the pass;
- * every other search failure is counted and the next query runs. A candidate whose create fails is
- * counted and the next one is tried; only a rejected service account ends the pass.
- *
- * ### Logging
- *
- * One INFO line opening and one closing a pass, one WARN per failed or refused step with its
- * category. A [SearchException]'s **kind and message only** -- never the exception itself: a
- * `SEARCH_MALFORMED` one carries a `SerializationException` whose message quotes the vendor's
- * response body. Never the API key, never a response body, never a full snippet.
- *
- * ### No Ktor server type, by ADR-01
- *
- * Nothing here imports a Ktor server type, `AppComponents` or an `ApplicationCall`: moving
- * discovery out of process costs one new `main()` that calls [runOnce].
- *
- * ### Time
- *
- * `startedAt`/`finishedAt` and the provenance timestamp come from the injected [clock]; durations
- * from `System.nanoTime()`; the wall clock is never read directly.
+ * Search results can create candidates only. Discovery never fetches candidate pages or writes their catalog facets.
+ * Close the credit pass before releasing the shared slot so an older pass cannot overwrite newer ledger state.
+ * Publish a terminal summary on timeout or shutdown. Propagate shutdown cancellation after cleanup.
  */
 class DiscoveryRunner(
     private val config: DiscoveryConfig,
@@ -147,7 +92,6 @@ class DiscoveryRunner(
     private val clock: Clock,
     /** The process-wide slot shared with `CrawlerRunner`; a private one only in isolated tests. */
     private val slot: RunSlot = RunSlot(),
-    /** Defaults are the configured production values; parameters so a test needs no real minutes. */
     private val passTimeoutMs: Long = TimeUnit.MINUTES.toMillis(config.passTimeoutMinutes),
     private val queryDelayMs: Long = config.queryDelayMs,
 ) {
@@ -155,11 +99,7 @@ class DiscoveryRunner(
     private val historyLock = Any()
     private val history = ArrayDeque<DiscoveryPassSummary>()
 
-    /**
-     * The configured denylist in the same canonical form a search hit is compared in: without it
-     * `www.facebook.com`, `reddit.com.` or `пример.рф` would sit in the configuration and never
-     * match anything. An entry that is not a domain is dropped with a WARN rather than failing the start.
-     */
+    /** Normalize configured domains with the same rules as search-result hosts so variants still match. */
     private val deniedDomains: Set<String> = canonicalDomains(config.domainDenylist) { entry ->
         logger.warn("discovery denylist entry '{}' is not a domain and is ignored", entry)
     }.toSet()
@@ -180,7 +120,6 @@ class DiscoveryRunner(
         return passId
     }
 
-    /** Who holds the shared slot right now -- for a WARN or a `409` message. */
     fun slotHolder(): RunHolder? = slot.holder()
 
     /** Reserve and run; throws [DiscoveryPassInProgressException] instead of waiting. */
@@ -196,25 +135,21 @@ class DiscoveryRunner(
         try {
             return execute(pass)
         } catch (cancellation: CancellationException) {
-            // Shutdown. Close the ledger, publish, and only then re-throw -- never swallow it.
+            // Publish the terminal summary and flush credits before propagating shutdown cancellation.
             pass.progress.stop(PassFailureReason.SHUTDOWN, "cancelled: the process is shutting down")
             finish(pass, PassStatus.CANCELLED)
             throw cancellation
         } catch (failure: Exception) {
-            // A bug, not a pass outcome: the operator gets a summary, the stack trace is DEBUG.
             logger.debug("discovery pass {} failed unexpectedly", passId, failure)
             pass.progress.stop(PassFailureReason.INTERNAL_ERROR, "${failure.javaClass.simpleName}: ${failure.message}")
             return finish(pass, PassStatus.COMPLETED)
         } catch (error: Throwable) {
-            // An Error (StackOverflowError, a failed initializer, ...) is not ours to handle, but
-            // the pass must not stay RUNNING in the history for ever: publish, then re-throw.
+            // Publish a terminal summary before propagating a fatal error.
             pass.progress.stop(PassFailureReason.INTERNAL_ERROR, "${error.javaClass.simpleName}: ${error.message}")
             finish(pass, PassStatus.CANCELLED)
             throw error
         } finally {
-            // Order matters (the ledger invariant above): the CreditPass is closed before the slot
-            // is free for the next pass. Every branch above already closed it via finish(); this
-            // is the backstop should finish() itself throw.
+            // Close the credit pass before another pass can claim the slot and read the ledger.
             pass.budget.close()
             active = null
             slot.release(pass.holder)
@@ -226,7 +161,6 @@ class DiscoveryRunner(
 
     fun pass(passId: UUID): DiscoveryPassSummary? = recentPasses().firstOrNull { it.passId == passId }
 
-    // ---------- the pass ----------
 
     private suspend fun execute(pass: Active): DiscoveryPassSummary {
         logger.info(
@@ -242,8 +176,7 @@ class DiscoveryRunner(
             pass.progress.stop(PassFailureReason.NO_SEARCH_PROVIDER, "VDS_DISCOVERY_SEARCH_PROVIDER is none: nothing to search with")
             return finish(pass, PassStatus.COMPLETED)
         }
-        // withTimeoutOrNull returns null for its own expiry only; a shutdown's cancellation is
-        // re-thrown and handled by runReserved.
+        // Handle only the pass budget here. Shutdown cancellation still unwinds through runReserved.
         val completed = withTimeoutOrNull(passTimeoutMs) {
             runPass(pass, provider)
             true
@@ -325,8 +258,7 @@ class DiscoveryRunner(
                     }
                 }
             } catch (failure: Exception) {
-                // The SearchProvider contract allows only SearchException; anything else is a bug in
-                // a provider and is isolated like one broken adapter. Class name only.
+                // Isolate unexpected search implementation failures and log only the exception class.
                 warnStep(pass, "query ${index + 1}", "UNEXPECTED", failure.javaClass.simpleName)
                 progress.queriesFailed++
                 continue
@@ -337,11 +269,7 @@ class DiscoveryRunner(
         }
     }
 
-    /**
-     * The known set, or `null` when the pass has to stop (the reason is recorded). Bounded by
-     * `VDS_DISCOVERY_MAX_KNOWN_PROVIDERS`: exceeding it fails the pass, because a truncated set
-     * would let the pass create duplicates.
-     */
+    /** Fail if deduplication would need a truncated view of the catalog. */
     private suspend fun loadKnown(pass: Active): KnownSet? {
         val known = KnownSet()
         val max = config.maxKnownProviders
@@ -439,8 +367,7 @@ class DiscoveryRunner(
             systemStatus = SystemStatus.CANDIDATE.name,
             description = provenance(pass.startedAt, query, hit),
         )
-        // Known from now on, whatever happens below: a second hit on the same domain in this pass
-        // is a counted no-op, not a second POST.
+        // Claim the domain before sending the create so another hit in this pass cannot cause a second POST.
         known.add(domain, slug)
 
         if (pass.request.dryRun) {
@@ -474,7 +401,6 @@ class DiscoveryRunner(
     private fun isDenied(domain: String): Boolean =
         deniedDomains.any { denied -> domain == denied || domain.endsWith(".$denied") }
 
-    /** Keywords are lower-cased by `loadConfig`; the text is lower-cased here. */
     private fun matchesKeyword(hit: SearchHit): Boolean {
         val text = "${hit.title.orEmpty()} ${hit.snippet.orEmpty()}".lowercase()
         return config.requiredKeywords.any { text.contains(it) }
@@ -546,13 +472,8 @@ class DiscoveryRunner(
         logger.warn("discovery pass {} {} failed: category={} message={}", pass.passId, step, category, message ?: "-")
     }
 
-    // ---------- state of the pass in flight ----------
 
-    /**
-     * The one [CreditPass] of a pass. [close] flushes it (merging with the file) and makes every
-     * later [request] an `IllegalStateException`, so a pass that has let go of the slot can never write
-     * its stale copy of the ledger over a newer pass's.
-     */
+    /** Close merges persisted counters and prevents further credit requests once the slot can be released. */
     private class PassBudget {
         private var creditPass: CreditPass? = null
 
@@ -582,7 +503,6 @@ class DiscoveryRunner(
         }
     }
 
-    /** Normalized hosts and slugs of every provider in the catalog, plus what this pass created. */
     private class KnownSet {
         private val domains = HashSet<String>()
         private val slugs = HashSet<String>()

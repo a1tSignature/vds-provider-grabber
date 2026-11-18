@@ -34,12 +34,6 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.GZIPInputStream
 import kotlin.math.min
 
-/**
- * The limits of spec req. 13/14 that [CrawlerConfig] does not carry (it has only `hostDelayMs`,
- * `maxBodyBytes`, `userAgent` and `respectRobots`). Defaults **are** the required values; they are
- * a parameter solely so a test can shorten a timeout or a retry budget without sleeping for
- * seconds. Nothing here is per-adapter or per-call: one instance configures the whole crawler.
- */
 data class FetchLimits(
     val connectTimeoutMs: Long = 5_000,
     val requestTimeoutMs: Long = 15_000,
@@ -48,24 +42,16 @@ data class FetchLimits(
     val maxRetries: Int = 2,
     val backoffBaseMs: Long = 1_000,
     val backoffCapMs: Long = 8_000,
-    /** A `Retry-After` above this fails the request instead of blocking the run (spec req. 14). */
+    /** Requests fail if Retry-After exceeds this bound. */
     val maxRetryAfterMs: Long = 60_000,
-    /** A `Crawl-delay` above this is ignored with a DEBUG line (spec req. 16). */
+    /** Ignore Crawl-delay directives above this bound. */
     val maxCrawlDelayMs: Long = 60_000,
     val robotsTimeoutMs: Long = 5_000,
 )
 
 /**
- * Builds the one `HttpClient` the crawler uses outbound (ADR-04). The caller owns it, shares it
- * across every [KtorPageFetcher] and `close()`s it on shutdown exactly as `fx/` does -- a client
- * per request would re-open a connection pool per page and defeat the per-host limits.
- *
- * Two settings here are load-bearing and must not be "simplified":
- * - `followRedirects = false`, because every hop has to be re-checked against robots.txt, the
- *   scheme allowlist and the per-host delay (spec req. 13); Ktor's own redirect plugin would do
- *   none of that.
- * - `expectSuccess = false`, because the retry/`Retry-After` policy needs the status, not an
- *   exception thrown by the client before we see it.
+ * Share one client and close it at shutdown. Handle redirects in the fetcher so every hop checks scheme, robots and host delay.
+ * Read status codes directly for the retry policy.
  */
 fun crawlerHttpClient(limits: FetchLimits = FetchLimits()): HttpClient = HttpClient(CIO) {
     expectSuccess = false
@@ -84,42 +70,9 @@ fun crawlerHttpClient(limits: FetchLimits = FetchLimits()): HttpClient = HttpCli
 }
 
 /**
- * The only way out of the process for a crawler adapter (spec req. 11-16, ADR-04), and therefore
- * the only place every limit has to hold:
- *
- * | Limit | Value | Source |
- * |---|---|---|
- * | connect / request / socket timeout | 5 s / 15 s / 15 s | [FetchLimits] |
- * | redirects, followed one hop at a time | ≤ 5, `http`/`https` only | [FetchLimits] |
- * | response body | `VDS_CRAWLER_MAX_BODY_BYTES`, **counted while streaming** | [CrawlerConfig] |
- * | content type | `text/html`, `application/xhtml+xml`, `application/json`, `text/plain` | here |
- * | retries | ≤ 2, connect/read failures + `408`/`429`/`5xx`, full-jitter backoff | [FetchLimits] |
- * | politeness | ≥ `VDS_CRAWLER_HOST_DELAY_MS` between, 1 in flight per host | [HostRateLimiter] |
- * | robots.txt | once per origin per run, `Disallow` → [FetchException.RobotsDisallowed] | [RobotsCache] |
- * | anti-bot challenge | detected before the retry decision, never retried → [FetchException.Challenged] | [ChallengeMarkers] |
- *
- * [fetch] ([EnrichmentFetcher]) widens the content types per [FetchKind], always checks robots.txt
- * and caps a script at [FetchKind.SCRIPT_MAX_BYTES]; every other limit above is shared.
- *
- * ### The body cap never trusts a header
- *
- * `Content-Length` over the cap is only a fast path; the enforcement is [readCapped], which counts
- * bytes as they arrive and abandons the response the moment the running total passes the cap. This
- * is not defensive decoration: a size guard that trusted `Content-Length` was already bypassed
- * once in this project by a response that declared a small length and sent a chunked body (see
- * [[07-knowledge/rework-log]], vds-001.6 -- `io.ktor.http.cio.parseHttpBody` prefers
- * `Transfer-Encoding: chunked` over `Content-Length` and nothing rejects the conflict). With
- * `-Xmx192m -XX:+ExitOnOutOfMemoryError`, one page buffered in full takes the API down with it.
- *
- * ### What it deliberately does not do
- *
- * No cookie jar, no proxy, no header spoofing, no challenge solving or retry-until-pass: the crawler
- * identifies itself honestly with the configured `User-Agent` and stops at a challenge.
- * `Jsoup.connect` is never used -- jsoup only parses the string we already read under the cap, via
- * [Jsoup.parse] with the final URL as base URI.
- *
- * [clock] is used for one thing: resolving a `Retry-After` given as an HTTP date into a wait. All
- * *elapsed-time* measurement lives in [HostRateLimiter] on `System.nanoTime()`.
+ * Apply host delay and robots rules on each hop. Detect challenges before retrying.
+ * Count streamed bytes independently of Content-Length because CIO can choose chunked framing.
+ * Enrichment always honors robots.txt and uses content types and caps by [FetchKind].
  */
 class KtorPageFetcher(
     private val config: CrawlerConfig,
@@ -132,7 +85,6 @@ class KtorPageFetcher(
      * Injectable so a retry test is deterministic.
      */
     private val backoffJitter: (Long) -> Long = { bound -> ThreadLocalRandom.current().nextLong(bound + 1) },
-    /** The retry/`Retry-After` sleep. Injectable so a retry test does not add seconds to the suite. */
     private val sleep: suspend (Long) -> Unit = { millis -> delay(millis) },
 ) : PageFetcher, EnrichmentFetcher {
 
@@ -191,7 +143,6 @@ class KtorPageFetcher(
         return Jsoup.parse(page.body, page.finalUrl)
     }
 
-    /** One hop: robots first (so a disallowed URL is never requested), then the attempt loop. */
     private suspend fun fetchHop(requestedUrl: String, target: Target, mode: Mode): Hop {
         checkRobots(target, mode)
         var attempt = 1
@@ -213,7 +164,6 @@ class KtorPageFetcher(
         val rules = robots.rulesFor(target.origin)
         rules.crawlDelayMs?.let { rateLimiter.raiseDelay(target.host, it) }
         if (!rules.allows(target.pathWithQuery)) {
-            // DEBUG, not WARN: a disallowed page is a skip for the orchestrator, not a failure.
             logger.debug("robots.txt of {} disallows {}", target.origin, target.pathWithQuery)
             throw FetchException.RobotsDisallowed(target.url)
         }
@@ -232,13 +182,7 @@ class KtorPageFetcher(
             // terminal status): those short-circuit instead of being retried.
             throw classified
         } catch (failure: Exception) {
-            // Connect, DNS, TLS, read and request-timeout failures arrive as IOException (Ktor's
-            // HttpRequestTimeoutException and ConnectTimeoutException included), but a hostile or
-            // broken peer also produces non-IOException failures -- a garbage status line surfaces
-            // as io.ktor.http.cio.ParserException, an IllegalStateException. Those are classified
-            // here too, because "every method throws a FetchException" (PageFetcherApi) must hold
-            // for the component whose whole job is to absorb hostile input, and a protocol glitch
-            // is as worth retrying as a read failure.
+            // CIO can report malformed HTTP as ParserException outside the IOException hierarchy. Classify it with retryable read failures.
             logger.warn(
                 "GET {} attempt {} failed: {}",
                 target.url,
@@ -280,7 +224,6 @@ class KtorPageFetcher(
 
         val mediaType = response.contentType()
         if (mediaType == null || mediaType.withoutParameters().toString().lowercase() !in mode.allowedMediaTypes) {
-            // Thrown before the body is touched: an unexpected payload is never read, let alone parsed.
             throw FetchException.UnsupportedContentType(requestedUrl, mediaType?.toString())
         }
         val declared = response.contentLength()
@@ -305,11 +248,7 @@ class KtorPageFetcher(
         )
     }
 
-    /**
-     * Runs on every attempt before the status is classified, so a challenge is never retried. Only
-     * an error status whose body could be an interstitial gets its body read, and only its first
-     * [ChallengeMarkers.BODY_PROBE_BYTES].
-     */
+    /** Detect challenges before retry classification. Read only a bounded body prefix for eligible error statuses. */
     private suspend fun detectChallenge(requestedUrl: String, target: Target, status: Int, response: HttpResponse) {
         val mitigated = response.headers[ChallengeMarkers.CF_MITIGATED_HEADER]?.trim()
         val reason = when {
@@ -357,7 +296,6 @@ class KtorPageFetcher(
                 }
             }
         } catch (_: java.io.IOException) {
-            // Truncated or corrupt: keep what was decoded.
         }
         return String(decoded.toByteArray(), Charsets.UTF_8)
     }
@@ -373,12 +311,7 @@ class KtorPageFetcher(
         throw FetchException.HttpStatusError(requestedUrl, status)
     }
 
-    /**
-     * Reads [channel] into memory while counting, aborting at the first byte past [cap].
-     * Returning from `execute { }` with this exception cancels the response, so an
-     * endless or oversized body is never buffered in full -- at most one [READ_BUFFER_BYTES]
-     * buffer on top of the cap is ever held.
-     */
+    /** Abandon the response at the first byte over the cap so an endless response cannot accumulate in memory. */
     private suspend fun readCapped(channel: ByteReadChannel, url: String, cap: Long): ByteArray {
         val sink = ByteArrayOutputStream(min(cap, INITIAL_SINK_BYTES).toInt())
         val buffer = ByteArray(READ_BUFFER_BYTES)
@@ -393,15 +326,7 @@ class KtorPageFetcher(
         return sink.toByteArray()
     }
 
-    /**
-     * Decompresses a `gzip`-encoded body, because the request advertises `Accept-Encoding: gzip`
-     * (spec req. 15) and no Ktor content-encoding plugin is installed -- the crawler must add no
-     * dependency beyond jsoup, so the five lines below replace `ktor-client-encoding`.
-     *
-     * The cap is applied **again** to the decompressed stream: capping only the compressed bytes
-     * would let a 2 MiB archive expand into gigabytes of heap, which is the same OOM the streamed
-     * cap exists to prevent, wearing a different hat.
-     */
+    /** Cap inflated gzip bytes separately because a small compressed response can expand past the heap budget. */
     private fun decodeContentEncoding(raw: ByteArray, response: HttpResponse, url: String, cap: Long): ByteArray {
         val encoding = response.headers[HttpHeaders.ContentEncoding]?.trim()?.lowercase()
         if (encoding == null || encoding == "identity") return raw
@@ -441,11 +366,7 @@ class KtorPageFetcher(
         return backoffJitter(min(exponential, limits.backoffCapMs))
     }
 
-    /**
-     * `robots.txt` for [robotsUrl]: one try, no retries, its own short timeout, but still behind
-     * the per-host delay -- it is a request to somebody else's server like any other. Anything that
-     * is not a `200` is `null`, i.e. "allowed" (spec req. 16).
-     */
+    /** Fetch robots.txt once under its own timeout and the shared host delay, without retries. */
     private suspend fun loadRobots(robotsUrl: String): String? {
         val target = parseTarget(robotsUrl, robotsUrl)
         return try {
@@ -456,12 +377,7 @@ class KtorPageFetcher(
                             logger.debug("robots.txt of {} answered {}; treating as allowed", target.origin, response.status.value)
                             null
                         } else {
-                            // Not content-type checked: robots.txt is served as anything in the
-                            // wild. It *is* content-encoding decoded, because politeRequest
-                            // advertises `Accept-Encoding: gzip` on this request too -- reading the
-                            // gzip bytes as text yields zero directives, i.e. a silently cached
-                            // "allow all" on every host that honours the header (nginx's default
-                            // gzip_types includes text/plain).
+                            // Accept robots.txt regardless of Content-Type. Apply content decoding because the request advertises gzip.
                             val raw = readCapped(response.bodyAsChannel(), robotsUrl, config.maxBodyBytes)
                             String(decodeContentEncoding(raw, response, robotsUrl, config.maxBodyBytes), Charsets.UTF_8)
                         }
@@ -533,7 +449,6 @@ class KtorPageFetcher(
         )
     }
 
-    /** The per-request policy: which content types are accepted, the body cap, and whether robots.txt is forced. */
     private data class Mode(
         val allowedMediaTypes: Set<String>,
         val maxBodyBytes: Long,
@@ -556,13 +471,11 @@ class KtorPageFetcher(
         data class Ok(val page: FetchedPage) : Attempt
         data class Redirect(val location: String) : Attempt
 
-        /** Worth another try: a transport failure or a retryable status. */
         data class Retry(
             val cause: Throwable? = null,
             val status: Int? = null,
             val retryAfterMs: Long? = null,
         ) : Attempt {
-            /** What the caller sees once the retry budget is spent. */
             fun terminal(url: String): FetchException = when {
                 cause != null -> FetchException.TransportFailure(url, cause)
                 else -> FetchException.HttpStatusError(url, status ?: 0)

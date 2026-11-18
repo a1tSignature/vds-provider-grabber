@@ -1,15 +1,8 @@
 import { useEffect, useState } from "react";
 
 /**
- * One URL query parameter, keyed by its own name so a codec can read every occurrence (needed for
- * a repeatable parameter) rather than just the first. `serialize` appends 0+ entries to `params`;
- * appending nothing is how a default value is omitted from the URL.
- *
- * `parse`/`serialize` are declared with method syntax, not as arrow-typed properties: TypeScript
- * checks method parameters bivariantly, which is what lets `FieldCodec<string>` stand in for
- * `FieldCodec<unknown>` in the heterogeneous schema object below -- the strict (contravariant)
- * check a property-typed function would get here is a false positive, since nothing ever calls a
- * codec with another codec's value.
+ * Parse all occurrences of a query key. Serializers append no values for defaults.
+ * Method syntax keeps parameters bivariant so the schema can hold codecs of different types.
  */
 export interface FieldCodec<T> {
   defaultValue: T;
@@ -131,7 +124,6 @@ export function sortField<F extends string>(allowedFields: readonly F[]): FieldC
 
 type SchemaOf<S> = { [K in keyof S]: S[K] extends FieldCodec<infer T> ? T : never };
 
-/** Parses every field in `schema` out of `search` (with or without its leading `?`). */
 export function parseUrlState<S extends Record<string, FieldCodec<unknown>>>(schema: S, search: string): SchemaOf<S> {
   const params = new URLSearchParams(search);
   const result = {} as SchemaOf<S>;
@@ -141,7 +133,6 @@ export function parseUrlState<S extends Record<string, FieldCodec<unknown>>>(sch
   return result;
 }
 
-/** Serializes `state`, omitting any field whose codec says it is at its default. */
 export function serializeUrlState<S extends Record<string, FieldCodec<unknown>>>(schema: S, state: SchemaOf<S>): string {
   const params = new URLSearchParams();
   for (const key of Object.keys(schema) as Array<keyof S>) {
@@ -150,7 +141,6 @@ export function serializeUrlState<S extends Record<string, FieldCodec<unknown>>>
   return params.toString();
 }
 
-/** Delays reacting to a fast-changing value (a text input) until it stops changing for `delayMs`. */
 export function useDebouncedValue<T>(value: T, delayMs = 300): T {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {

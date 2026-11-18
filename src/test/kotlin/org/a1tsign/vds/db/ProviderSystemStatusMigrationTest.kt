@@ -13,19 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * **The headline criterion of vds-004.2**: `V2` must not empty the public catalog. The default
- * listing hides everything that is not `CONFIGURED`, so if the rows that already exist did not come
- * out `CONFIGURED`, every provider in a real database would silently disappear from
- * `GET /api/v1/providers` -- a one-way door for visibility, which is why this is a before/after
- * assertion on the real listing rather than "the column has a default".
- *
- * The shared harness applies **all** migrations when the container starts
- * (`support/PostgresSupport`), so this test owns its own schema on that same container: its own
- * Flyway with `target = 1` and `defaultSchema`, rows seeded through plain JDBC against the V1 shape
- * (no `system_status` column exists yet), then `migrate()` to latest and the real
- * `CatalogQueryService` over its own Exposed connection.
- */
+/** Start with V1 rows and verify V2 assigns a visible status to existing providers. */
 class ProviderSystemStatusMigrationTest {
 
     @Test
@@ -53,7 +41,6 @@ class ProviderSystemStatusMigrationTest {
         }
     }
 
-    // ---------- the isolated schema ----------
 
     private fun withSchemaAtV1(block: (HikariDataSource, Database) -> Unit) {
         dropSchema()

@@ -20,14 +20,7 @@ import org.jetbrains.exposed.v1.jdbc.update
 import java.math.BigDecimal
 import java.time.Instant
 
-/**
- * Repository methods require a transaction opened by [org.a1tsign.vds.service.PriceService], which
- * always locks the tariff row first (see [lockTariff]) -- that lock is what serialises every writer
- * of a given tariff's prices, including the very first price when no current row exists yet.
- *
- * Value fields of a price row are never rewritten; the only mutable columns are `effective_to`
- * ([close]/[reopen]) and `last_confirmed_at` ([confirm]).
- */
+/** Callers must lock the tariff row before reading or changing price history to serialize writes for that tariff. */
 class PriceRepository {
     /** `true` if the tariff exists -- the row is locked `FOR UPDATE` either way. */
     fun lockTariff(tariffId: Long): Boolean = TariffTable.selectAll()
@@ -94,7 +87,6 @@ class PriceRepository {
         }
     }
 
-    /** Sets `effective_to` of [id]. */
     fun close(id: Long, effectiveTo: Instant) {
         TariffPriceTable.update({ TariffPriceTable.id eq id }) {
             it[TariffPriceTable.effectiveTo] = effectiveTo.toUtcOffset()

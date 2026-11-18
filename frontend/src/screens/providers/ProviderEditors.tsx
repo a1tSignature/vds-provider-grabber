@@ -24,10 +24,7 @@ import {
   type PaymentMethodWriteRequest,
 } from "./requests";
 
-/*
- * Inline editors for the provider card. Each writes its own sub-resource, then calls `onSaved`,
- * which refetches the card: there is no `GET` for these sub-resources on their own.
- */
+/* After each write, refetch the card because these sub-resources have no individual GET endpoints. */
 
 const LEGAL_FIELDS = [
   "legalEntityName",

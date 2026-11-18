@@ -79,8 +79,7 @@ def make_handler(routes, hosts, origin):
 
 class LoopbackServer(ThreadingHTTPServer):
     def server_bind(self):
-        # HTTPServer.server_bind resolves the bind address with getfqdn(), a reverse DNS lookup
-        # that can stall for tens of seconds; the name is not needed here.
+        # Bypass HTTPServer's reverse DNS lookup, which can block while binding.
         if self.address_family == socket.AF_INET6:
             self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
         socketserver.TCPServer.server_bind(self)
@@ -102,8 +101,7 @@ def main():
     routes, hosts = load_site(run_dir, args.slug)
     origin = f"http://{hosts[0]}.localhost:{args.port}"
     handler = make_handler(routes, hosts, origin)
-    # Loopback by default: the pages are third-party content. `*.localhost` may resolve to ::1 or
-    # 127.0.0.1, so both get a listener.
+    # Serve third-party pages on loopback by default. *.localhost may resolve to 127.0.0.1 or ::1.
     ipv4_address, ipv6_address = ("0.0.0.0", "::") if args.listen_all else ("127.0.0.1", "::1")
     ipv4 = LoopbackServer((ipv4_address, args.port), handler)
     ipv6_class = type("LoopbackServer6", (LoopbackServer,), {"address_family": socket.AF_INET6})

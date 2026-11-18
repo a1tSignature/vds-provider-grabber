@@ -24,19 +24,13 @@ private const val MAX_LOCATIONS = 25
 private const val MAX_VALUES_PER_FACET = 500
 private const val MAX_KINDS_PER_VALUE = 128
 
-/**
- * Matches of one pattern analysed per page. Analysis cannot be cancelled, so this bounds how long a
- * page crafted with endless repetitions can hold the step past its budget.
- */
+/** Bound per-pattern matches because synchronous page analysis cannot be cancelled. */
 private const val MAX_MATCHES_PER_PATTERN = 2_000
 
 /** One signal: [weight] 0 records a mention that must not count (negated, inside an address). */
 internal class Signal(val weight: Int, val kind: String, val url: String, val snippet: String)
 
-/**
- * Everything one value collected, reduced as it arrives: the full signal list of a value is never
- * kept, only what the decision functions read.
- */
+/** Reduce signals as they arrive to bound per-value memory. */
 internal class Tally {
     var score = 0
         private set
@@ -62,7 +56,6 @@ internal class Tally {
     }
 }
 
-/** The four facets' signals for one site, accumulated page by page. */
 internal class SiteSignals(val domain: String) {
     val payments = LinkedHashMap<String, Tally>()
     val locations = LinkedHashMap<String, Tally>()
@@ -77,7 +70,6 @@ internal class SiteSignals(val domain: String) {
     }
 }
 
-/** Adds one page's signals to [signals]. */
 internal object PageAnalyzer {
 
     private val json = Json { isLenient = true }
@@ -321,7 +313,6 @@ internal object PageAnalyzer {
 }
 
 
-/** Turns a site's signals into findings: the entity, its registration country and the ranked value lists. */
 internal object Decisions {
 
     fun findings(signals: SiteSignals): EnrichmentFindings {
@@ -337,11 +328,7 @@ internal object Decisions {
 
     private val BRAND_ONLY = listOf("brand only (domain)")
 
-    /**
-     * Spellings that differ only in case or legal-form synonym are one entity: its kinds and pages
-     * are the union over the spellings, so `Hostinger International Ltd` from JSON-LD and
-     * `HOSTINGER INTERNATIONAL LIMITED` from the terms confirm each other.
-     */
+    /** Merge evidence from case variants and equivalent legal forms before ranking an entity. */
     private class Candidate(
         var value: String,
         var score: Double,
@@ -464,7 +451,6 @@ internal object Decisions {
     private fun hasLegalForm(name: String) =
         EnrichmentRules.HAS_LEGAL_FORM.matcher(name).find() || EnrichmentRules.RU_COMPANY.matcher(name).lookingAt()
 
-    /** Lower-case word characters only. */
     private fun flatKey(name: String) = name.lowercase().filter { Character.isLetterOrDigit(it) || it == '_' }
 
     /** [flatKey] without a trailing legal form, so `Hostinger International Ltd` ≡ `… LIMITED`. */
@@ -480,7 +466,6 @@ internal object Decisions {
 }
 
 
-/** A name written in capitals only, as legal boilerplate often is. */
 internal fun isShouted(name: String): Boolean = name.any(Char::isLetter) && name.none(Char::isLowerCase)
 
 private val SHOUTED_FILLER = setOf(
@@ -503,7 +488,6 @@ internal fun trimShoutedSentence(name: String): String? {
     return trimmed.takeIf { EnrichmentRules.HAS_LEGAL_FORM.matcher(it).find() && !EnrichmentRules.HAS_LEGAL_FORM.matcher(kept.first()).matches() }
 }
 
-/** `find()` on [m] that reports no further match after [MAX_MATCHES_PER_PATTERN] of them. */
 private fun capped(m: Matcher): () -> Boolean {
     var found = 0
     return { found < MAX_MATCHES_PER_PATTERN && m.find().also { if (it) found++ } }
@@ -562,7 +546,6 @@ internal fun firstSentence(text: String): String {
     return text
 }
 
-/** Lower-cased path/anchor hint kinds of a page URL path. */
 internal fun pageKinds(path: String): Set<String> {
     val lower = path.lowercase()
     return EnrichmentRules.LINK_HINTS.filterValues { (pattern, _) -> pattern.matcher(lower).find() }.keys

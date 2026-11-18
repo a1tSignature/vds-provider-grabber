@@ -1,34 +1,8 @@
--- Dev seed data for vds-provider-grabber.
---
--- NOT a Flyway migration: deliberately lives in src/main/resources/db/ (not db/migration/), so
--- Flyway's migration scan never sees it. Apply it by hand against a freshly migrated, EMPTY
--- catalogue (Flyway has already seeded only the 3 roles -- see V1__core_schema.sql). This script
--- is NOT re-runnable: it does not upsert and will violate the uq_provider_slug / uq_tariff_* /
--- uq_location_* unique indexes if run twice against the same database. If you need a clean slate,
--- recreate the database (e.g. `docker compose down -v && docker compose up -d`) and re-migrate.
---
--- It never touches app_user/role/user_role/flyway_schema_history: the bootstrap-admin env vars
--- create the first user, not this script.
---
--- Content: 6 providers across 8 countries (NL, DE, US, FI, SE, LT, PL, FR, RU), 24 tariffs (4 per
--- provider), all with a current MONTHLY price. Deliberate edge cases for exercising the read API
--- by hand:
---   * hostzilla "VPS Starter"  -> in_stock = FALSE (temporarily sold out)
---   * nordvds   "Nord Advanced" -> is_active = FALSE (discontinued, still in the catalogue)
---   * baltichost "Baltic Flex"  -> priced in RSD, a currency with no FX rate on record, so
---                                  amount_usd/usd_rate/usd_rate_at are left NULL on purpose
---   * hostzilla "VPS Starter"  -> also carries a closed price row ahead of its current one, so
---                                  GET /api/v1/tariffs/{id}/price-history returns more than one row
---
--- amount_usd below is computed by hand at seed time (amount * rate_to_usd) using the illustrative
--- rates EUR=1.07, GBP=1.25, RUB=0.0108 USD -- NOT fetched from open.er-api.com. This mirrors what
--- the application freezes at write time; it is not meant to match live rates.
+-- Apply once to an empty, migrated dev catalog. The bootstrap-admin configuration creates the first user.
+-- Fixtures include sold-out and inactive tariffs, an RSD price with no FX rate, and a closed price followed by a current price.
 
 BEGIN;
 
--- ============================================================================================
--- Providers
--- ============================================================================================
 
 INSERT INTO provider (slug, name, website_url, description, status) VALUES
     ('hostzilla', 'HostZilla B.V.', 'https://www.hostzilla.example',
@@ -44,9 +18,6 @@ INSERT INTO provider (slug, name, website_url, description, status) VALUES
     ('msklabs', 'MSK Labs LLC', 'https://www.msklabs.example',
      'Russian VPS hosting with Moscow and Saint Petersburg datacenters.', 'ACTIVE');
 
--- ============================================================================================
--- Legal info (0..1 per provider)
--- ============================================================================================
 
 INSERT INTO provider_legal_info
     (provider_id, legal_entity_name, registration_country, registration_number, legal_address,
@@ -70,9 +41,6 @@ VALUES
      'Prospekt Mira 50, 129344 Moscow, Russia', 'MANUAL', 'MEDIUM',
      'https://www.msklabs.example/legal', now() - interval '90 days');
 
--- ============================================================================================
--- Payment methods
--- ============================================================================================
 
 INSERT INTO provider_payment_method (provider_id, method, note) VALUES
     ((SELECT id FROM provider WHERE slug = 'hostzilla'), 'VISA_MASTERCARD', NULL),
@@ -106,9 +74,6 @@ INSERT INTO provider_payment_method (provider_id, method, note) VALUES
     ((SELECT id FROM provider WHERE slug = 'msklabs'), 'RU_BANK_TRANSFER', NULL),
     ((SELECT id FROM provider WHERE slug = 'msklabs'), 'CRYPTO_USDT', NULL);
 
--- ============================================================================================
--- Locations
--- ============================================================================================
 
 INSERT INTO location (provider_id, country_code, region, city, datacenter_name, latitude, longitude) VALUES
     ((SELECT id FROM provider WHERE slug = 'hostzilla'), 'NL', 'North Holland', 'Amsterdam', 'AMS-1', 52.370216, 4.895168),
@@ -129,15 +94,11 @@ INSERT INTO location (provider_id, country_code, region, city, datacenter_name, 
     ((SELECT id FROM provider WHERE slug = 'msklabs'), 'RU', 'Moscow', 'Moscow', 'MOW-1', 55.755825, 37.617298),
     ((SELECT id FROM provider WHERE slug = 'msklabs'), 'RU', 'Leningrad Oblast', 'Saint Petersburg', 'LED-1', 59.934280, 30.335099);
 
--- ============================================================================================
--- Tariffs (4 per provider, 24 total)
--- ============================================================================================
 
 INSERT INTO tariff
     (provider_id, external_id, name, url, vcpu_count, cpu_model, ram_mb, disk_gb, disk_type,
      bandwidth_mbps, traffic_limit_gb, ipv4_count, ipv6_supported, virtualization, is_active, in_stock)
 VALUES
-    -- hostzilla
     ((SELECT id FROM provider WHERE slug = 'hostzilla'), NULL, 'VPS Starter',
      'https://www.hostzilla.example/plans/starter', 1, NULL, 1024, 20, 'NVME', 100, 1000, 1, NULL,
      'KVM', TRUE, FALSE),
@@ -151,7 +112,6 @@ VALUES
      'https://www.hostzilla.example/plans/pro', 8, NULL, 8192, 160, 'NVME', 1000, NULL, 2, TRUE,
      'KVM', TRUE, TRUE),
 
-    -- cloudanchor
     ((SELECT id FROM provider WHERE slug = 'cloudanchor'), NULL, 'Cloud Nano',
      'https://www.cloudanchor.example/plans/nano', 1, 'Intel Xeon Gold 6338', 1024, 25, 'SSD', 100,
      1000, 1, TRUE, 'KVM', TRUE, TRUE),
@@ -165,7 +125,6 @@ VALUES
      'https://www.cloudanchor.example/plans/business-uk', 6, 'Intel Xeon Gold 6338', 12288, 200,
      'NVME', 1000, NULL, 2, TRUE, 'KVM', TRUE, TRUE),
 
-    -- nordvds
     ((SELECT id FROM provider WHERE slug = 'nordvds'), NULL, 'Nord Lite',
      'https://www.nordvds.example/plans/lite', 1, NULL, 1024, 20, 'SSD', 100, 1000, 1, TRUE, 'KVM',
      TRUE, TRUE),
@@ -179,7 +138,6 @@ VALUES
      'https://www.nordvds.example/plans/ultra', 8, NULL, 16384, 300, 'NVME', 1000, NULL, 2, TRUE,
      'KVM', TRUE, TRUE),
 
-    -- baltichost
     ((SELECT id FROM provider WHERE slug = 'baltichost'), NULL, 'Baltic Mini',
      'https://www.baltichost.example/plans/mini', 1, NULL, 512, 10, 'HDD', 50, 500, 1, FALSE,
      'OPENVZ', TRUE, TRUE),
@@ -193,7 +151,6 @@ VALUES
      'https://www.baltichost.example/plans/max', 8, NULL, 8192, 160, 'NVME', 600, NULL, 2, FALSE,
      'KVM', TRUE, TRUE),
 
-    -- redlineservers
     ((SELECT id FROM provider WHERE slug = 'redlineservers'), NULL, 'RedLine Basic',
      'https://www.redlineservers.example/plans/basic', 1, 'AMD EPYC 7443P', 1024, 20, 'NVME', 200,
      2000, 1, TRUE, 'KVM', TRUE, TRUE),
@@ -207,7 +164,6 @@ VALUES
      'https://www.redlineservers.example/plans/enterprise', 16, 'AMD EPYC 7443P', 32768, 640, 'NVME',
      2000, NULL, 4, TRUE, 'KVM', TRUE, TRUE),
 
-    -- msklabs
     ((SELECT id FROM provider WHERE slug = 'msklabs'), NULL, 'MSK Ekonom',
      'https://www.msklabs.example/plans/ekonom', 1, NULL, 1024, 20, 'SSD', 100, 1000, 1, FALSE,
      'KVM', TRUE, TRUE),
@@ -221,46 +177,33 @@ VALUES
      'https://www.msklabs.example/plans/maksimum', 8, NULL, 16384, 300, 'NVME', 1000, NULL, 2, FALSE,
      'KVM', TRUE, TRUE);
 
--- ============================================================================================
--- Tariff <-> location links
--- ============================================================================================
 
 INSERT INTO tariff_location (tariff_id, location_id, provider_id)
 SELECT t.id, l.id, t.provider_id
 FROM tariff t
 JOIN location l ON l.provider_id = t.provider_id
 WHERE
-    -- hostzilla: Starter/Basic -> AMS-1 only; Plus/Pro -> both AMS-1 and FRA-2
     (t.provider_id = (SELECT id FROM provider WHERE slug = 'hostzilla') AND t.name IN ('VPS Starter', 'VPS Basic') AND l.datacenter_name = 'AMS-1')
     OR (t.provider_id = (SELECT id FROM provider WHERE slug = 'hostzilla') AND t.name IN ('VPS Plus', 'VPS Pro'))
 
-    -- cloudanchor: Nano/Micro -> NYC-3 only; Standard/Business UK -> both NYC-3 and DFW-1
     OR (t.provider_id = (SELECT id FROM provider WHERE slug = 'cloudanchor') AND t.name IN ('Cloud Nano', 'Cloud Micro') AND l.datacenter_name = 'NYC-3')
     OR (t.provider_id = (SELECT id FROM provider WHERE slug = 'cloudanchor') AND t.name IN ('Cloud Standard', 'Cloud Business UK'))
 
-    -- nordvds: Lite/Standard -> HEL-1 only; Advanced/Ultra -> both HEL-1 and STO-1
     OR (t.provider_id = (SELECT id FROM provider WHERE slug = 'nordvds') AND t.name IN ('Nord Lite', 'Nord Standard') AND l.datacenter_name = 'HEL-1')
     OR (t.provider_id = (SELECT id FROM provider WHERE slug = 'nordvds') AND t.name IN ('Nord Advanced', 'Nord Ultra'))
 
-    -- baltichost: Mini/Basic -> VNO-1 only; Flex/Max -> both VNO-1 and WAW-2
     OR (t.provider_id = (SELECT id FROM provider WHERE slug = 'baltichost') AND t.name IN ('Baltic Mini', 'Baltic Basic') AND l.datacenter_name = 'VNO-1')
     OR (t.provider_id = (SELECT id FROM provider WHERE slug = 'baltichost') AND t.name IN ('Baltic Flex', 'Baltic Max'))
 
-    -- redlineservers: Basic/Pro -> FRA-1 only; Business/Enterprise -> both FRA-1 and PAR-1
     OR (t.provider_id = (SELECT id FROM provider WHERE slug = 'redlineservers') AND t.name IN ('RedLine Basic', 'RedLine Pro') AND l.datacenter_name = 'FRA-1')
     OR (t.provider_id = (SELECT id FROM provider WHERE slug = 'redlineservers') AND t.name IN ('RedLine Business', 'RedLine Enterprise'))
 
-    -- msklabs: Ekonom/Standart -> MOW-1 only; Biznes/Maksimum -> both MOW-1 and LED-1
     OR (t.provider_id = (SELECT id FROM provider WHERE slug = 'msklabs') AND t.name IN ('MSK Ekonom', 'MSK Standart') AND l.datacenter_name = 'MOW-1')
     OR (t.provider_id = (SELECT id FROM provider WHERE slug = 'msklabs') AND t.name IN ('MSK Biznes', 'MSK Maksimum'));
 
--- ============================================================================================
--- Prices (current MONTHLY price per tariff; illustrative rates EUR=1.07, GBP=1.25, RUB=0.0108
--- used only to compute amount_usd by hand -- not fetched from the FX provider)
--- ============================================================================================
+-- Stored USD amounts use illustrative seed rates (EUR 1.07, GBP 1.25, RUB 0.0108).
 
--- hostzilla "VPS Starter": a closed historical row followed by the current one, so the price
--- history endpoint has more than one row to show.
+-- A closed row followed by the current row gives VPS Starter a price history.
 INSERT INTO tariff_price
     (tariff_id, billing_period, amount, currency, amount_usd, usd_rate, usd_rate_at,
      effective_from, effective_to, data_source, recorded_by)
@@ -272,12 +215,10 @@ VALUES
      'MONTHLY', 4.99, 'EUR', 5.3393, 1.07, now() - interval '30 days',
      now() - interval '30 days', NULL, 'MANUAL', NULL);
 
--- Every other tariff gets exactly one current price row.
 INSERT INTO tariff_price
     (tariff_id, billing_period, amount, currency, amount_usd, usd_rate, usd_rate_at,
      effective_from, effective_to, data_source, recorded_by)
 VALUES
-    -- hostzilla
     ((SELECT id FROM tariff WHERE name = 'VPS Basic' AND provider_id = (SELECT id FROM provider WHERE slug = 'hostzilla')),
      'MONTHLY', 8.99, 'EUR', 9.6193, 1.07, now() - interval '45 days', now() - interval '45 days', NULL, 'MANUAL', NULL),
     ((SELECT id FROM tariff WHERE name = 'VPS Plus' AND provider_id = (SELECT id FROM provider WHERE slug = 'hostzilla')),
@@ -285,7 +226,6 @@ VALUES
     ((SELECT id FROM tariff WHERE name = 'VPS Pro' AND provider_id = (SELECT id FROM provider WHERE slug = 'hostzilla')),
      'MONTHLY', 32.99, 'EUR', 35.2993, 1.07, now() - interval '45 days', now() - interval '45 days', NULL, 'MANUAL', NULL),
 
-    -- cloudanchor
     ((SELECT id FROM tariff WHERE name = 'Cloud Nano' AND provider_id = (SELECT id FROM provider WHERE slug = 'cloudanchor')),
      'MONTHLY', 5.00, 'USD', 5.0000, 1.00, now() - interval '20 days', now() - interval '20 days', NULL, 'MANUAL', NULL),
     ((SELECT id FROM tariff WHERE name = 'Cloud Micro' AND provider_id = (SELECT id FROM provider WHERE slug = 'cloudanchor')),
@@ -295,7 +235,6 @@ VALUES
     ((SELECT id FROM tariff WHERE name = 'Cloud Business UK' AND provider_id = (SELECT id FROM provider WHERE slug = 'cloudanchor')),
      'MONTHLY', 42.50, 'GBP', 53.1250, 1.25, now() - interval '20 days', now() - interval '20 days', NULL, 'MANUAL', NULL),
 
-    -- nordvds
     ((SELECT id FROM tariff WHERE name = 'Nord Lite' AND provider_id = (SELECT id FROM provider WHERE slug = 'nordvds')),
      'MONTHLY', 4.50, 'EUR', 4.8150, 1.07, now() - interval '60 days', now() - interval '60 days', NULL, 'MANUAL', NULL),
     ((SELECT id FROM tariff WHERE name = 'Nord Standard' AND provider_id = (SELECT id FROM provider WHERE slug = 'nordvds')),
@@ -305,7 +244,7 @@ VALUES
     ((SELECT id FROM tariff WHERE name = 'Nord Ultra' AND provider_id = (SELECT id FROM provider WHERE slug = 'nordvds')),
      'MONTHLY', 39.00, 'EUR', 41.7300, 1.07, now() - interval '60 days', now() - interval '60 days', NULL, 'MANUAL', NULL),
 
-    -- baltichost ("Baltic Flex" intentionally has no FX rate on record)
+    -- Baltic Flex has no FX rate on record.
     ((SELECT id FROM tariff WHERE name = 'Baltic Mini' AND provider_id = (SELECT id FROM provider WHERE slug = 'baltichost')),
      'MONTHLY', 2.99, 'EUR', 3.1993, 1.07, now() - interval '15 days', now() - interval '15 days', NULL, 'CRAWLER', NULL),
     ((SELECT id FROM tariff WHERE name = 'Baltic Basic' AND provider_id = (SELECT id FROM provider WHERE slug = 'baltichost')),
@@ -315,7 +254,6 @@ VALUES
     ((SELECT id FROM tariff WHERE name = 'Baltic Max' AND provider_id = (SELECT id FROM provider WHERE slug = 'baltichost')),
      'MONTHLY', 18.99, 'EUR', 20.3193, 1.07, now() - interval '15 days', now() - interval '15 days', NULL, 'CRAWLER', NULL),
 
-    -- redlineservers
     ((SELECT id FROM tariff WHERE name = 'RedLine Basic' AND provider_id = (SELECT id FROM provider WHERE slug = 'redlineservers')),
      'MONTHLY', 5.49, 'EUR', 5.8743, 1.07, now() - interval '10 days', now() - interval '10 days', NULL, 'MANUAL', NULL),
     ((SELECT id FROM tariff WHERE name = 'RedLine Pro' AND provider_id = (SELECT id FROM provider WHERE slug = 'redlineservers')),
@@ -325,7 +263,6 @@ VALUES
     ((SELECT id FROM tariff WHERE name = 'RedLine Enterprise' AND provider_id = (SELECT id FROM provider WHERE slug = 'redlineservers')),
      'MONTHLY', 89.99, 'EUR', 96.2893, 1.07, now() - interval '10 days', now() - interval '10 days', NULL, 'MANUAL', NULL),
 
-    -- msklabs
     ((SELECT id FROM tariff WHERE name = 'MSK Ekonom' AND provider_id = (SELECT id FROM provider WHERE slug = 'msklabs')),
      'MONTHLY', 349.00, 'RUB', 3.7692, 0.0108, now() - interval '5 days', now() - interval '5 days', NULL, 'MANUAL', NULL),
     ((SELECT id FROM tariff WHERE name = 'MSK Standart' AND provider_id = (SELECT id FROM provider WHERE slug = 'msklabs')),

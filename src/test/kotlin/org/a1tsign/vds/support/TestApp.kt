@@ -25,14 +25,7 @@ val TEST_NOW: Instant = Instant.parse("2026-10-28T12:00:00Z")
 
 val TEST_CLOCK: Clock = Clock.fixed(TEST_NOW, ZoneOffset.UTC)
 
-/**
- * Boots a Ktor test application carrying the real `api/` plugin stack (error envelope, shared
- * `Json`, body-size limit, CORS) plus a caller-supplied route block, so every later task's HTTP
- * test exercises the production wire format instead of re-assembling a look-alike.
- *
- * [routes] is a plain `Route` block (it is wrapped in `routing { }` here); [block] is the test
- * body, with `client` available as in `testApplication`.
- */
+/** Install the production API plugins while letting each test supply only the routes it needs. */
 fun testApi(
     corsAllowedOrigins: List<String> = emptyList(),
     clock: Clock = TEST_CLOCK,
@@ -72,14 +65,11 @@ fun capturingLogs(block: () -> Unit): LogCapture {
 }
 
 class LogCapture(private val appender: ListAppender<ILoggingEvent>) {
-    /** Every rendered message, whatever the level. */
     fun messages(): List<String> = appender.list.map { it.formattedMessage }
 
-    /** Rendered messages at exactly [level] -- pins "logged at ERROR", not merely "logged". */
     fun messagesAt(level: Level): List<String> =
         appender.list.filter { it.level.toString() == level.name }.map { it.formattedMessage }
 
-    /** `toString()` of the throwable attached to each event at exactly [level], if any. */
     fun throwablesAt(level: Level): List<String> =
         appender.list
             .filter { it.level.toString() == level.name }

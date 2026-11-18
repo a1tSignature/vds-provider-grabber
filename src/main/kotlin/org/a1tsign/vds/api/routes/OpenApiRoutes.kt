@@ -11,13 +11,7 @@ private val YAML_CONTENT_TYPE: ContentType = ContentType.parse("application/yaml
 
 private object OpenApiResourceMarker
 
-/**
- * `GET /openapi.yaml`: the static, hand-written contract from `src/main/resources/openapi.yaml`,
- * readable by any authenticated role.
- *
- * Sent with [respondBytes]: `ContentNegotiation` is JSON-only, and `respond(obj)` would pass the
- * YAML to the JSON converter and fail with a `500`.
- */
+/** Send OpenAPI as bytes because the installed content converter handles JSON only. */
 fun Route.openApiRoutes() {
     get("/openapi.yaml") {
         call.requireRole(Role.VIEWER)

@@ -24,7 +24,6 @@ import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import java.time.Clock
 
-/** One validated `PUT /api/v1/providers/{id}/enrichment` body. */
 data class EnrichmentCommand(
     val outcome: EnrichmentOutcome,
     val message: String?,

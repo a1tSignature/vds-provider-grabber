@@ -8,31 +8,14 @@ const val URL_MAX_LENGTH: Int = 2048
 
 private val SLUG_PATTERN = Regex("^[a-z0-9-]+$")
 
-// Same patterns as the CHECK constraints ck_location_country_code and ck_tariff_price_currency:
-// a stricter or looser validator would disagree with the database.
+// Keep these patterns aligned with the country and currency CHECK constraints.
 private val COUNTRY_CODE_PATTERN = Regex("^[A-Z]{2}$")
 private val CURRENCY_PATTERN = Regex("^[A-Z]{3}$")
 
-/**
- * Collects field failures so one response reports all of them, not just the first. Validate every
- * field, call [throwIfInvalid], then use the returned values:
- *
- * ```
- * val validation = Validation()
- * val slug = validation.validateSlug("slug", body.slug)
- * val amount = validation.validateAmount("amount", body.amount)
- * validation.throwIfInvalid()        // throws ValidationException carrying every failure
- * repository.insert(slug!!, amount!!) // non-null once throwIfInvalid() has returned
- * ```
- *
- * Every validator records a failure and returns `null` instead of throwing, which is what makes
- * the accumulation work. Pass only non-null values: an optional field is validated as
- * `body.x?.let { validation.validateUrl("x", it) }`.
- */
+/** Accumulate field failures and call [throwIfInvalid] before using validated values. */
 class Validation {
     private val details = mutableListOf<ApiErrorDetail>()
 
-    /** Records a failure the built-in validators do not cover (cross-field rules, enum parsing). */
     fun reject(field: String, message: String) {
         details += ApiErrorDetail(field, message)
     }
@@ -130,10 +113,7 @@ class Validation {
         }
     }
 
-    /**
-     * Inclusive range check. Call it before narrowing a wire `Int` into a `Short` column, so an
-     * out-of-range value is a `400` naming the field instead of a wrapped value and a `500`.
-     */
+    /** Check the wire Int before narrowing to Short so overflow returns a field-level 400. */
     fun validateIntRange(field: String, value: Int, minimum: Int, maximum: Int): Int? =
         if (value < minimum || value > maximum) {
             reject(field, "must be between $minimum and $maximum")
@@ -160,8 +140,7 @@ class Validation {
     }
 }
 
-// The host check is what separates a usable URL from a merely parseable one ("http://" is an
-// absolute http URI with no host at all).
+// Absolute HTTP syntax can still omit a host. Require one before accepting the URL.
 private fun isAbsoluteHttpUrl(value: String): Boolean {
     val uri = runCatching { URI(value) }.getOrNull() ?: return false
     return uri.isAbsolute && (uri.scheme == "http" || uri.scheme == "https") && !uri.host.isNullOrEmpty()

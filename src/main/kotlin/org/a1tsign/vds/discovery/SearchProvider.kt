@@ -20,12 +20,6 @@ data class SearchUsage(
     val creditLimit: Int?,
 )
 
-/**
- * Why a search did not return hits. Deliberately **distinct categories**, never folded into the
- * crawler's generic `ADAPTER_ERROR`: each one implies a different reaction (stop spending, fix the
- * key, back off, retry later, look at the vendor's response shape), and an operator must be able to
- * tell "we are out of credits" from "the vendor is down" without reading a stack trace.
- */
 enum class SearchFailureKind {
     /** The plan's usage limit is reached. Stop: every further query is either refused or billed. */
     SEARCH_QUOTA,
@@ -53,15 +47,7 @@ class SearchException(
     cause: Throwable? = null,
 ) : Exception(message, cause)
 
-/**
- * The boundary between the discovery pass and whichever web-search API is current. Shaped on the
- * `fx/CurrencyRateProvider` precedent -- an interface, exactly **one** real implementation
- * ([TavilySearchProvider]), one test stub, bounded timeouts -- and for the same reason, made sharper
- * by this category's history: of the three incumbent search APIs, two were withdrawn inside 18
- * months (vault `07-knowledge/vds-provider-grabber-search-api-landscape`). This interface *is* the
- * migration plan, so **no vendor type, status code, parameter or field name may appear in its
- * signature**; everything vendor-specific stays behind it, configured through `VDS_DISCOVERY_*`.
- */
+/** Return URL and display text only. Search failures use [SearchException] and must never expose credentials or raw bodies. */
 interface SearchProvider {
 
     /**
@@ -71,12 +57,6 @@ interface SearchProvider {
      */
     suspend fun search(query: String, limit: Int): List<SearchHit>
 
-    /**
-     * The provider's own view of credit usage, or `null` when it cannot or will not say.
-     *
-     * **Advisory only**: a failure here never fails anything, which is why the result is nullable
-     * instead of an exception. The local credit ledger stays authoritative for refusals, and on a
-     * disagreement the stricter of the two wins.
-     */
+    /** Report vendor usage when available. Failure to obtain it never blocks a pass. */
     suspend fun usage(): SearchUsage? = null
 }

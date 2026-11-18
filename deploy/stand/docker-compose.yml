@@ -1,5 +1,4 @@
-# Stand deployment: Caddy (TLS) -> app -> PostgreSQL. Only Caddy publishes ports.
-# Run from this directory: `docker compose up -d --build --wait`; settings come from ./.env.
+# Only Caddy publishes ports. Run Compose from this directory to load the stand's .env.
 name: vds-stand
 
 x-logging: &logging
@@ -60,12 +59,11 @@ services:
     cap_drop:
       - ALL
     mem_limit: ${VDS_APP_MEM_LIMIT:-768m}
-    # Shutdown drains requests and background passes for up to ~20 s; Docker's default is 10 s.
+    # Allow the application to drain requests and background work for up to about 20 seconds.
     stop_grace_period: 30s
     logging: *logging
 
-  # Site enrichment: a one-shot process, started by vds-enrich.timer (or cron) with
-  # `docker compose --profile enrich run --rm --no-deps enrich`; never by `docker compose up`.
+  # One-shot enrichment runs via vds-enrich.timer or an explicit Compose run with the enrich profile.
   enrich:
     profiles: [enrich]
     image: ${VDS_IMAGE:?set VDS_IMAGE in .env}
@@ -74,8 +72,7 @@ services:
       disable: true
     restart: "no"
     environment:
-      # Optional here so `docker compose up` works without them; the process refuses to start
-      # without credentials.
+      # Compose can start the stack without these credentials. The enrichment process requires them.
       VDS_ENRICH_API_BASE_URL: http://app:8080
       VDS_ENRICH_USERNAME: ${VDS_ENRICH_USERNAME:-}
       VDS_ENRICH_PASSWORD: ${VDS_ENRICH_PASSWORD:-}
@@ -86,8 +83,7 @@ services:
       VDS_ENRICH_MAX_PAGES_PER_SECTION: ${VDS_ENRICH_MAX_PAGES_PER_SECTION:-4}
       VDS_ENRICH_MAX_SITEMAPS: ${VDS_ENRICH_MAX_SITEMAPS:-4}
       VDS_ENRICH_MAX_RUNTIME_MINUTES: ${VDS_ENRICH_MAX_RUNTIME_MINUTES:-360}
-      # Set together with a read-only mount of the sources directory (compose override), so the
-      # pricing page and the source-observed facets are used; unset, every site is crawled from /.
+      # Mount the sources directory read-only when setting this path. Without sources, enrichment starts at / for every site.
       VDS_DISCOVERY_SOURCES_DIR: ${VDS_ENRICH_SOURCES_DIR:-}
       VDS_CRAWLER_HOST_DELAY_MS: ${VDS_CRAWLER_HOST_DELAY_MS:-2000}
       VDS_CRAWLER_MAX_BODY_BYTES: ${VDS_CRAWLER_MAX_BODY_BYTES:-2097152}

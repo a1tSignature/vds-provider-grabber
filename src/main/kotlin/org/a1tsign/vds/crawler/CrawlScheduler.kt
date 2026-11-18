@@ -18,31 +18,14 @@ import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
-/** How long [CrawlScheduler.close] lets a cancelled run unwind before giving up on it. */
 const val CRAWL_SHUTDOWN_GRACE_MS: Long = 10_000
 
-/** Share of the interval that may be added as random jitter, so ticks do not line up (spec req. 21). */
+/** Add jitter so scheduler ticks do not line up. */
 private const val JITTER_SHARE = 10
 
 /**
- * The periodic trigger, shaped after the project's own precedent (`fx/FxRefreshScheduler`): one
- * **daemon** single-threaded `ScheduledExecutorService` and nothing else -- no third-party scheduling
- * library and no OS-level timer entry (spec req. 21; the grep guard over this package pins it).
- *
- * - **Readiness is never delayed**: nothing runs on the startup path. The first tick is
- *   `VDS_CRAWLER_INITIAL_DELAY_MINUTES` away (default 10), so a crash-restart loop cannot hammer
- *   provider sites, and every following tick adds up to 10 % random jitter.
- * - **A tick that finds a run in progress is skipped with one WARN**: it never queues a second run.
- *   The decision is `CrawlerRunner.tryReserve`, the same non-blocking slot the admin endpoint uses,
- *   so "at most one run at a time" has exactly one implementation.
- * - **The tick does not block the timer thread**: the run is launched in this scheduler's own
- *   [CoroutineScope], which is what makes [close] able to cancel it.
- * - **[close] is shutdown**: it stops accepting ticks, cancels an in-flight run and gives it
- *   [CRAWL_SHUTDOWN_GRACE_MS] to unwind. Task vds-002.7 calls it from `Application.kt`'s
- *   `shutdownGracefully`, before `server.stop()`.
- *
- * It cannot be started by accident: the only constructor is private and [create] returns `null`
- * while `VDS_CRAWLER_ENABLED` is `false` -- so a disabled crawler has no thread and no scope.
+ * First tick is delayed to protect provider sites during restart loops. Later ticks add jitter.
+ * Busy ticks are skipped. [close] cancels active work and waits for a bounded cleanup.
  */
 class CrawlScheduler private constructor(
     private val runner: CrawlerRunner,
@@ -68,7 +51,6 @@ class CrawlScheduler private constructor(
         arm(initialDelayMs)
     }
 
-    /** Ticks are re-armed one at a time, because the jitter differs per tick. */
     private fun arm(delayMs: Long) {
         if (!accepting) return
         try {
@@ -77,8 +59,7 @@ class CrawlScheduler private constructor(
                     try {
                         tick()
                     } catch (failure: Throwable) {
-                        // Exactly like the FX scheduler's precedent: nothing reads this task's
-                        // result, so an uncaught throw here would silently stop the timer forever.
+                        // Catch tick failures so the next tick still gets armed.
                         logger.warn("crawl scheduler tick failed; the scheduler will still re-arm", failure)
                     }
                     arm(intervalMs + jitterMs(intervalMs / JITTER_SHARE))
@@ -87,7 +68,6 @@ class CrawlScheduler private constructor(
                 TimeUnit.MILLISECONDS,
             )
         } catch (rejected: RejectedExecutionException) {
-            // close() won the race with this re-arm; nothing to do.
             logger.debug("crawl scheduler is shutting down, no further tick is scheduled")
         }
     }
@@ -112,8 +92,7 @@ class CrawlScheduler private constructor(
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (failure: Throwable) {
-                // The runner already logged the run's own outcome; this is the last line of
-                // defence, exactly like the FX scheduler's -- a failed tick never kills the timer.
+                // Catch unexpected run failures so they do not kill the timer.
                 logger.warn("crawl run {} ended with an unhandled failure", runId, failure)
             }
         }
@@ -126,8 +105,7 @@ class CrawlScheduler private constructor(
         val job = inFlight.getAndSet(null)
         if (job != null && job.isActive) {
             job.cancel()
-            // runBlocking on the shutdown thread on purpose: the caller (Application.kt's
-            // shutdownGracefully) is plain blocking code and must not return before the run let go.
+            // Block the shutdown thread until the run unwinds or the grace period expires.
             val finished = runBlocking { withTimeoutOrNull(CRAWL_SHUTDOWN_GRACE_MS) { job.join() } }
             if (finished == null) {
                 logger.warn("crawl run did not finish within {} ms of being cancelled", CRAWL_SHUTDOWN_GRACE_MS)
@@ -142,14 +120,7 @@ class CrawlScheduler private constructor(
     }
 
     companion object {
-        /**
-         * The scheduler for [config], or **`null` when the crawler is disabled** -- the "nothing is
-         * constructed, no thread is started" guarantee of ADR-01 is therefore not something a caller
-         * can forget.
-         *
-         * [intervalMs]/[initialDelayMs]/[jitterMs] default to the configured production values and
-         * are parameters only so a test does not have to wait minutes.
-         */
+        /** Returns null while crawling is disabled, without allocating a scheduler thread. */
         fun create(
             config: CrawlerConfig,
             runner: CrawlerRunner,

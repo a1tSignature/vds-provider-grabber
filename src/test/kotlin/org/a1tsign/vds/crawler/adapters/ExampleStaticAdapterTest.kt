@@ -29,14 +29,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-/**
- * The reference adapter's parsing, against the very fixture page the end-to-end test serves -- so
- * the selectors are asserted once, in isolation, and the end-to-end test is free to be about the
- * catalog instead of about markup.
- *
- * No HTTP: [StubPageFetcher] answers with the fixture body and parses it the way the real
- * `KtorPageFetcher` does (jsoup with the page URL as base), which is enough for every selector.
- */
+/** Use the same fixture markup as the end-to-end test to exercise the reference selectors. */
 class ExampleStaticAdapterTest {
 
     private val adapter = ExampleStaticAdapter()
@@ -115,7 +108,6 @@ class ExampleStaticAdapterTest {
         assertEquals(base.copy(tariffs = null), changed.copy(tariffs = null))
     }
 
-    // ---------- configuration failures ----------
 
     @Test
     fun `a missing base URL is this adapter's own failure, naming the variable`() {
@@ -152,7 +144,6 @@ class ExampleStaticAdapterTest {
         assertEquals(listOf(PAGE_URL), snapshot.sourceUrls)
     }
 
-    // ---------- malformed pages ----------
 
     @Test
     fun `a price the adapter cannot read fails the adapter instead of becoming zero`() {
@@ -181,8 +172,7 @@ class ExampleStaticAdapterTest {
     @Test
     fun `a missing section, a missing value and a non-numeric cell each name what broke`() {
         val cases = mapOf(
-            // The whole payments section gone: a broken selector, never "observed no method" --
-            // an empty set would replace (and so clear) the catalog's payment methods.
+            // Remove the whole section. Treating a broken selector as an empty observation could clear the catalog set.
             """<section class="payments">""" to ("""<section class="payments-renamed">""" to "section.payments"),
             """<h1 class="provider-name">Example Static Hosting</h1>""" to
                 ("""<h1 class="provider-name"></h1>""" to "h1.provider-name"),
@@ -205,7 +195,6 @@ class ExampleStaticAdapterTest {
             }
             assertTrue(failure.message!!.contains(replacement.second), "${failure.message} (expected ${replacement.second})")
             if (replacement.second == "data-disk-type") {
-                // The message has to be actionable on its own: it names the values the page may use.
                 assertTrue(failure.message!!.contains("NVME"), failure.message)
             }
         }
@@ -213,10 +202,7 @@ class ExampleStaticAdapterTest {
 
     @Test
     fun `an empty plans table is parsed as an honest empty complete list, left to the mass-change guard`() {
-        // Not an adapter failure on purpose (ADR-03): `tariffListComplete = true` plus an empty
-        // list is what the reconciler's mass-change guard is there to refuse, and it refuses it
-        // having written nothing -- whereas a throw here would hide a broken selector behind an
-        // ADAPTER_ERROR that looks the same as a network problem.
+        // An observed empty complete plan list reaches the reconciler's mass-change guard.
         val page = fixture("example-static.html").replace(Regex("""<tr class="plan"[\s\S]*?</tr>"""), "")
 
         val snapshot = fetch(page)
@@ -227,10 +213,7 @@ class ExampleStaticAdapterTest {
 
     @Test
     fun `a locations table with no row is this adapter's own failure, not an honest empty list`() {
-        // Unlike the plans table, there is no mass-change guard behind an empty locations list --
-        // the reconciler would replace every tariff's location links with nothing, silently. So a
-        // locations-table selector that stops matching rows must fail the adapter, never parse as
-        // "observed and empty".
+        // A missing location section must fail because an observed empty set can clear all tariff links.
         val page = fixture("example-static.html").replace(Regex("""<tr class="location"[\s\S]*?</tr>"""), "")
 
         val failure = assertFailsWith<AdapterFailureException> { fetch(page) }
@@ -238,7 +221,6 @@ class ExampleStaticAdapterTest {
         assertTrue(failure.message!!.contains("tr.location"), failure.message)
     }
 
-    // ---------- the shipped registry ----------
 
     @Test
     fun `the production registry ships exactly the two reference adapters and selects neither by default`() {
@@ -273,7 +255,6 @@ class ExampleStaticAdapterTest {
         assertEquals(ExampleFailingAdapter.FAILURE_MESSAGE, failure.message)
     }
 
-    // ---------- helpers ----------
 
     private fun fetch(
         page: String,

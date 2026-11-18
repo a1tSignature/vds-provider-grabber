@@ -21,29 +21,11 @@ import java.util.concurrent.atomic.AtomicReference
 /** How long [DiscoveryScheduler.close] (and shutdown's join of an admin-triggered pass) lets a cancelled pass unwind. */
 const val DISCOVERY_SHUTDOWN_GRACE_MS: Long = 10_000
 
-/** Share of the interval that may be added as random jitter, so ticks do not line up. */
 private const val JITTER_SHARE = 10
 
 /**
- * The periodic discovery trigger -- `crawler/CrawlScheduler` verbatim: one **daemon**
- * single-threaded `ScheduledExecutorService` named `discovery-scheduler`, no Quartz, no cron
- * library, no system cron entry.
- *
- * **Its own thread, not `CrawlScheduler`'s.** Sharing that executor would mean `CrawlScheduler`
- * accepting an injected executor it no longer owns, and its `close()` (`shutdownNow` +
- * `awaitTermination`) would then have to stop shutting it down while the discovery ticks still
- * need it -- an ownership change in a vds-002 class and an ordering constraint in
- * `shutdownGracefully`, for one idle daemon thread. This is the one thread discovery adds.
- *
- * - **Readiness is never delayed**: the first tick is `VDS_DISCOVERY_INITIAL_DELAY_MINUTES` away
- *   (default 15), then every `VDS_DISCOVERY_INTERVAL_HOURS` (48) plus up to 10 % jitter.
- * - **A tick that finds the shared run slot taken** -- by a crawl run or another pass -- is skipped
- *   with one WARN and waits for the next tick; it never queues.
- * - **The tick does not block the timer thread**: the pass runs in this scheduler's own scope.
- * - **[close] is shutdown**: no further ticks, the in-flight pass is cancelled and given
- *   [DISCOVERY_SHUTDOWN_GRACE_MS] to publish its summary and flush its credits.
- *
- * [create] returns `null` while discovery is disabled, so a disabled discovery has no thread.
+ * Delay the first tick so discovery does not block readiness. Skip busy ticks without queuing.
+ * [close] cancels an in-flight pass and gives it a bounded wait to publish its summary and flush credits.
  */
 class DiscoveryScheduler private constructor(
     private val runner: DiscoveryRunner,
@@ -87,7 +69,7 @@ class DiscoveryScheduler private constructor(
         }
     }
 
-    /** The slot is taken inside the launched coroutine, for the reason `CrawlScheduler.tick` documents. */
+    /** Reserve inside the launched coroutine so cancellation before it starts cannot leak the slot. */
     private fun tick() {
         if (!accepting) return
         val job = scope.launch {
@@ -134,10 +116,7 @@ class DiscoveryScheduler private constructor(
     companion object {
         const val THREAD_NAME: String = "discovery-scheduler"
 
-        /**
-         * The scheduler, or **`null` when discovery is disabled or was not constructed** (no
-         * runner) -- so "no thread while disabled" is not something a caller can forget.
-         */
+        /** Return null without creating a thread when discovery is disabled or no runner is available. */
         fun create(
             config: DiscoveryConfig,
             runner: DiscoveryRunner?,

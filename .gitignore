@@ -45,12 +45,12 @@ bin/
 .env.*
 !.env.example
 
-### Frontend (frontend/dist is built by Gradle's buildFrontend task, not committed) ###
+# Frontend dependencies and build output
 frontend/node_modules/
 frontend/dist/
 
 ### Stand deployment ###
 deploy/stand/backups/
 
-### Catalog seed: crawler sources and DB dump for the stand (local only) ###
+# Local crawler sources and catalog dump
 catalog-seed/

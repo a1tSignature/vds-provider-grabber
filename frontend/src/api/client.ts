@@ -107,7 +107,6 @@ function toClientError(status: number, envelope: ApiEnvelope | null, headers: He
   }
 }
 
-/** `aborted` carries no message because nothing should ever show it as an error; everything else has one. */
 export function clientErrorMessage(error: ApiClientError): string {
   return error.kind === "aborted" || error.kind === "network" ? "" : error.message;
 }

@@ -30,7 +30,6 @@ export function LoginScreen() {
       login(result);
       navigate(sanitizeNext(searchParams.get("next")), { replace: true });
     } catch {
-      // The hook already captured the error; nothing further to do here.
     }
   }
 

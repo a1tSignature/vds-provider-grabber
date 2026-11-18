@@ -4,24 +4,18 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
-/**
- * The one definition of "the same site": a wrong answer here either points a source config at
- * somebody else's catalog row (too lenient) or makes the discovery leg insert the same provider
- * twice (too strict), so the table is the specification.
- */
+/** Cover normalization used for both source ownership and discovery deduplication. */
 class DomainNameTest {
 
     @Test
     fun `normalize reduces a URL to the one canonical ASCII domain of its site`() {
         val cases = mapOf(
             "HTTPS://WWW.Example.COM/vps/?a=1" to "example.com",
-            // The trailing dot and the explicit port are the same site as the plain domain.
             "https://example.com." to "example.com",
             "https://example.com:8443" to "example.com",
             "http://user:secret@example.com/vps#plans" to "example.com",
             "https://www.example.com." to "example.com",
-            // A subdomain is a site of its own: reducing it to the registrable domain would need a
-            // public-suffix list, and per-domain granularity is an accepted product decision.
+            // Preserve subdomains so a provider's distinct site is not merged into its parent domain.
             "https://vps.example.com" to "vps.example.com",
             "https://пример.рф/" to "xn--e1afmkfd.xn--p1ai",
         )
@@ -53,7 +47,6 @@ class DomainNameTest {
         assertEquals("example-com", DomainName.slug("example.com"))
         assertEquals("vps-example-com", DomainName.slug("vps.example.com"))
 
-        // 64 characters is provider.slug's full width, so it is accepted; 65 is not.
         val sixtyFour = "a".repeat(60) + ".com"
         assertEquals("a".repeat(60) + "-com", DomainName.slug(sixtyFour))
         assertNull(DomainName.slug("x$sixtyFour"))

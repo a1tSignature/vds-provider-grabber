@@ -31,10 +31,8 @@ class ProviderReadApiTest : AbstractDbTest() {
             fun JsonObject.ids(): Set<Long> =
                 getValue("content").jsonArray.map { it.jsonObject.getValue("id").jsonPrimitive.long }.toSet()
 
-            // 1. locationCountry=DE -> exactly the providers with a German location.
             assertEquals(setOf(fixture.nimbus.id, fixture.polaris.id), list("locationCountry" to "DE").ids())
 
-            // 2. paymentMethod AND: PAYPAL & CRYPTO_BTC -> exactly {nimbus, zephyr}, a strict subset of each single-method result.
             val paypalOnly = list("paymentMethod" to "PAYPAL").ids()
             val btcOnly = list("paymentMethod" to "CRYPTO_BTC").ids()
             val both = list("paymentMethod" to "PAYPAL", "paymentMethod" to "CRYPTO_BTC").ids()
@@ -43,7 +41,6 @@ class ProviderReadApiTest : AbstractDbTest() {
             assertTrue(both.size < btcOnly.size)
             assertTrue(both.all { it in paypalOnly } && both.all { it in btcOnly })
 
-            // 3. q matches name and slug, case-insensitively; status/registrationCountry/hasActiveTariffs exact sets; combined filters intersect.
             assertEquals(setOf(fixture.nimbus.id, fixture.polaris.id), list("q" to "QuAsAr").ids())
             assertEquals(setOf(fixture.vertex.id), list("status" to "INACTIVE").ids())
             assertEquals(setOf(fixture.wayfarer.id), list("status" to "UNKNOWN").ids())
@@ -76,9 +73,9 @@ class ProviderReadApiTest : AbstractDbTest() {
             assertNull(minPrice(fixture.polaris.id)) // cheapest is is_active=false, the other in_stock=false -> both excluded
             assertEquals(BigDecimal("18.0000"), minPrice(fixture.vertex.id)) // cheapest has amount_usd=NULL -> ignored
             assertNull(minPrice(fixture.wayfarer.id)) // only ANNUAL prices present
-            assertEquals(BigDecimal("10.0000"), minAnnualPerMonth(fixture.wayfarer.id)) // 120.00 / 12
+            assertEquals(BigDecimal("10.0000"), minAnnualPerMonth(fixture.wayfarer.id))
             assertEquals(BigDecimal("8.3333"), minAnnualPerMonth(fixture.nimbus.id)) // 100.00 / 12, half-up
-            assertNull(minAnnualPerMonth(fixture.vertex.id)) // no ANNUAL price at all
+            assertNull(minAnnualPerMonth(fixture.vertex.id))
             assertNull(minPrice(fixture.dormant.id)) // no active tariffs at all
             assertEquals(BigDecimal("5.0000"), minPrice(fixture.zephyr.id))
 
@@ -104,7 +101,7 @@ class ProviderReadApiTest : AbstractDbTest() {
             assertEquals(nullPriced, asc.takeLast(2).toSet(), "nulls must sort last ascending")
             assertEquals(nullPriced, desc.takeLast(2).toSet(), "nulls must sort last descending too")
 
-            // By the lower of the two: zephyr 5, nimbus 8.3333 (annual), wayfarer 10 (annual only), vertex 18.
+            // Sort by the lower monthly equivalent, including annual-only providers.
             val expectedAscOrder = listOf(fixture.zephyr.id, fixture.nimbus.id, fixture.wayfarer.id, fixture.vertex.id)
             assertEquals(expectedAscOrder, asc.take(4))
             assertEquals(expectedAscOrder.reversed(), desc.take(4))
@@ -173,7 +170,6 @@ class ProviderReadApiTest : AbstractDbTest() {
                 return Json.parseToJsonElement(response.bodyAsText()).jsonObject
             }
 
-            // default (activeOnly absent) includes inactive tariffs; polaris has 1 active + 1 inactive.
             val polarisDefault = tariffsPage(fixture.polaris.id)
             assertEquals(2, polarisDefault.getValue("totalElements").jsonPrimitive.long)
             val polarisActiveOnly = tariffsPage(fixture.polaris.id, "?activeOnly=true")
@@ -183,13 +179,11 @@ class ProviderReadApiTest : AbstractDbTest() {
                 polarisActiveOnly.getValue("content").jsonArray.map { it.jsonObject.getValue("name").jsonPrimitive.content },
             )
 
-            // an unknown provider id -> 404, never an empty page.
             assertEquals(
                 HttpStatusCode.NotFound,
                 client.get("$root/providers/999999/tariffs") { header(auth(token).first, auth(token).second) }.status,
             )
 
-            // totalElements/totalPages correct across two pages (nimbus has 3 tariffs).
             val page0 = tariffsPage(fixture.nimbus.id, "?size=2&page=0")
             assertEquals(3, page0.getValue("totalElements").jsonPrimitive.long)
             assertEquals(2, page0.getValue("totalPages").jsonPrimitive.int)

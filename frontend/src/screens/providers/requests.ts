@@ -3,10 +3,7 @@ import { legalOriginForWrite } from "../../domain/provenanceLabels";
 import { dateTimeInputToIsoZ, isoToDateTimeInput } from "../../forms/dateTime";
 import { optionalText, withoutUndefined } from "../../forms/requestFields";
 
-/*
- * Mirrors of the Kotlin write DTOs. The backend rejects any unknown key with a detail-less `400`,
- * so every body is assembled field by field from form state -- never spread from a read DTO.
- */
+/* Build the write body explicitly. The backend rejects unknown fields with a detail-less 400. */
 
 /** `ProviderWriteRequest` without `systemStatus`, which this UI never sends (absent = unchanged). */
 export interface ProviderWriteRequest {
@@ -30,7 +27,6 @@ export interface LegalInfoWriteRequest {
   registrationCountryOrigin?: string;
 }
 
-/** Body of `POST …/legal-info/confirm` and `…/release`. */
 export interface LegalFieldsRequest {
   fields: string[];
 }
@@ -131,7 +127,6 @@ export function buildLegalInfoRequest(values: LegalInfoFormValues, loaded?: Lega
   });
 }
 
-/** `origin` is absent for a row added in the editor. */
 export interface PaymentMethodRow {
   method: string;
   note: string;
@@ -142,10 +137,7 @@ export function paymentMethodRows(methods: ProviderPaymentMethodDto[]): PaymentM
   return methods.map((method) => ({ method: method.method, note: method.note ?? "", origin: method.origin }));
 }
 
-/**
- * The whole set, one entry per method: the `PUT` replaces every method the provider had. No origin
- * is sent: the server keeps the origin of rows that already existed.
- */
+/** PUT replaces the full set. Omitting origins lets the server preserve them for existing methods. */
 export function buildPaymentMethodsRequest(rows: PaymentMethodRow[]): PaymentMethodWriteRequest[] {
   return rows.map((row) =>
     withoutUndefined<PaymentMethodWriteRequest>({ method: row.method, note: optionalText(row.note) }),

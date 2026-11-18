@@ -23,17 +23,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * The vendor boundary, against a local fixture server only: **nothing here may ever reach
- * `api.tavily.com`**. Every case asserts one of the two things this class exists for -- the request
- * is exactly the pinned shape (each element of which costs money or breaks a product decision when
- * it drifts), and every documented failure status becomes its own category.
- */
+/** Use a local search fixture to exercise vendor wire behavior without outbound traffic. */
 class TavilySearchProviderTest {
 
     private val key = Secret(API_KEY)
 
-    /** The provider plus the client it owns, closed afterwards as `Application.kt` would. */
     private fun <T> withProvider(
         endpoint: String,
         maxResponseBytes: Long = 512L * 1024,
@@ -147,7 +141,6 @@ class TavilySearchProviderTest {
                         assertTrue(failure.message!!.contains(status.toString()), failure.message)
                         assertEquals(1, server.requests().size, "a terminal status is never retried")
                         if (status == 429) {
-                            // The two rate-limit situations tell an operator different things.
                             val expectedDetail =
                                 if (headers.isEmpty()) "no usable Retry-After" else "is above the 60000 ms ceiling"
                             assertTrue(failure.message!!.contains(expectedDetail), failure.message)
@@ -156,7 +149,6 @@ class TavilySearchProviderTest {
                 }
             }
 
-            // A 200 this build cannot read into the expected shape: its own category, never silence.
             listOf("not json at all", malformedShape).forEach { body ->
                 TavilyFixtureServer().use { server ->
                     server.onSearch(TavilyReply(body = body))
@@ -167,7 +159,6 @@ class TavilySearchProviderTest {
                 }
             }
 
-            // Transport failure: nothing is listening on that port.
             withProvider("http://127.0.0.1:${closedLoopbackPort()}") { provider ->
                 val failure = assertFailsWith<SearchException> { runBlocking { provider.search("q", 5) } }
                 assertEquals(SearchFailureKind.SEARCH_UNAVAILABLE, failure.kind)
@@ -196,7 +187,6 @@ class TavilySearchProviderTest {
             }
         }
 
-        // The ceiling is inclusive: exactly 60 s is still honoured, 600 s (in the table) is not.
         TavilyFixtureServer().use { server ->
             server.onSearch(
                 TavilyReply(status = 429, headers = mapOf("Retry-After" to "60")),
@@ -242,14 +232,11 @@ class TavilySearchProviderTest {
             withProvider(server.url(), maxResponseBytes = 2_048) { provider ->
                 val failure = assertFailsWith<SearchException> { runBlocking { provider.search("q", 5) } }
 
-                // The refusal is what is asserted; that the body was abandoned mid-stream rather
-                // than buffered follows from readCapped's counting loop (argued in the report).
                 assertEquals(SearchFailureKind.SEARCH_MALFORMED, failure.kind)
                 assertTrue(failure.message!!.contains("2048"), failure.message)
             }
         }
 
-        // The cap is "above", not "at": a body of exactly maxResponseBytes is read normally.
         TavilyFixtureServer().use { server ->
             val body = tavilyOversizedBody(100)
             server.onSearch(TavilyReply(body = body))
@@ -272,7 +259,6 @@ class TavilySearchProviderTest {
                 assertEquals(SearchUsage(usedCredits = 42, creditLimit = 1000), runBlocking { provider.usage() })
                 assertNull(runBlocking { provider.usage() }, "a non-200 cross-check is advisory, so it is null")
             }
-            // The key travels in a header on this call too, and in no URL.
             server.requests().forEach { request ->
                 assertEquals("GET", request.method)
                 assertEquals("/usage", request.path)

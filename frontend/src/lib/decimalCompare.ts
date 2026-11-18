@@ -1,8 +1,4 @@
-/**
- * Compares two non-negative decimal strings (money, FX rates) without ever parsing them to a
- * number -- a float would silently round a value no price field is allowed to lose precision on.
- * Equal values at different scales ("4.5" vs "4.5000") compare equal.
- */
+/** Compares non-negative decimal strings without float rounding. Values with different scales can compare equal. */
 export function compareDecimalStrings(a: string, b: string): -1 | 0 | 1 {
   const left = splitDecimal(a);
   const right = splitDecimal(b);

@@ -110,8 +110,6 @@ class CrawlSchedulerTest {
 
     @Test
     fun `a non-zero jitter is actually applied to the re-armed delay, never fired earlier than the interval`() {
-        // M10 of 05-reviews/vds-002.5-6-combined-quality.md: every other test injects jitterMs = { 0 },
-        // so spec req. 21's "up to 10% per tick" rested on reading the default lambda, not on a test.
         val runner = runner()
         val interval = 200L
         val jitterCalls = CopyOnWriteArrayList<Long>()
@@ -120,8 +118,7 @@ class CrawlSchedulerTest {
             runner = runner,
             intervalMs = interval,
             initialDelayMs = 20,
-            // Always the maximum allowed jitter: the re-arm delay this forces is exactly
-            // interval * 1.1, so a dropped or ignored jitter value is visible as too-short a gap.
+            // Force maximal jitter so omitting it changes the observed scheduling interval.
             jitterMs = { bound -> jitterCalls.add(System.nanoTime()); bound },
         )!!
         try {
@@ -140,7 +137,6 @@ class CrawlSchedulerTest {
         }
     }
 
-    // ---------- helpers ----------
 
     /**
      * A runner whose single adapter sleeps for a minute, so a run started by a tick is still in

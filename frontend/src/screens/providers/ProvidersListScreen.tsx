@@ -33,8 +33,6 @@ export function ProvidersListScreen() {
   const filters = useMemo(() => parseUrlState(schema, location.search), [schema, location.search]);
   const canonicalSearch = useMemo(() => serializeUrlState(schema, filters), [schema, filters]);
 
-  // Keeps the address bar canonical: an invalid or stale query parameter is dropped here, not
-  // silently kept around for the next reload to reproduce.
   useEffect(() => {
     const current = location.search.startsWith("?") ? location.search.slice(1) : location.search;
     if (current !== canonicalSearch) {

@@ -16,14 +16,7 @@ import org.a1tsign.vds.domain.SystemStatus
 import org.slf4j.LoggerFactory
 import java.math.BigDecimal
 
-/**
- * What one `reconcile` call did to one provider: the counters of the run summary, the planned
- * operations a dry run recorded while it ran, and this adapter's contribution to the run status.
- *
- * [status] is [AdapterRunStatus.SUCCESS], [AdapterRunStatus.PARTIAL] (some write was refused with a
- * `4xx`, everything else was applied) or [AdapterRunStatus.FAILED]; the counters are valid in every
- * case, because writes already applied are never rolled back.
- */
+/** Counters and planned operations for one adapter's reconciliation. Partial writes can survive failure. */
 data class ReconcileOutcome(
     val status: AdapterRunStatus,
     val failureReason: FailureReason? = null,
@@ -37,7 +30,6 @@ data class ReconcileOutcome(
     val pricesAppended: Int = 0,
     val pricesUnchanged: Int = 0,
     val noFxRateCount: Int = 0,
-    /** Empty unless the writer was a [DryRunWriter]: the mutations this adapter would have made. */
     val plannedOperations: List<String> = emptyList(),
 )
 
@@ -45,41 +37,9 @@ data class ReconcileOutcome(
 const val MASS_CHANGE_GUARD_MIN_IN_STOCK: Int = 3
 
 /**
- * Brings the catalog to the state one [ProviderSnapshot] describes, through the admin API only.
- * The price history is append-only and cannot be corrected afterwards, so these rules hold:
- *
- * 1. `null` means "not observed": a `null` section is skipped. The replace-the-whole-set endpoints
- *    (`…/payment-methods`, `…/tariffs/{id}/locations`) are called only for a non-null set; an empty
- *    non-null set does clear the catalog's set.
- * 2. Never destroy: [CrawlWriter] has no delete, and every tariff update echoes the catalog's
- *    `isActive`, because the API defaults an omitted `isActive` to `true` and would resurrect a
- *    deactivated tariff.
- * 3. A tariff missing from the snapshot is set to `inStock = false`, and nothing else, only when
- *    `tariffListComplete` is `true`.
- * 4. Mass-change guard: if the share of in-stock tariffs that would flip exceeds
- *    `maxOutOfStockRatio` (with at least [MASS_CHANGE_GUARD_MIN_IN_STOCK] in stock), the adapter
- *    fails with [FailureReason.MASS_CHANGE_GUARD] before any write.
- *
- * The catalog is read once up front (`?q=<slug>`, `GET /providers/{id}`,
- * `GET /providers/{id}/tariffs?activeOnly=false`); later reads only absorb a `409`.
- * Write order: provider, legal info, payment methods, locations, tariffs, tariff-location links,
- * prices. The run is not atomic; re-running the same snapshot converges without duplicates.
- *
- * | Failure | Reaction |
- * |---|---|
- * | `409` on create (provider / location / tariff) | re-read, reuse the existing row, stay `SUCCESS` |
- * | other `4xx` on the provider create | `PARTIAL`, stop: nothing can follow without an id |
- * | other `4xx` on provider/legal/payment-methods | `PARTIAL`, continue |
- * | other `4xx` on one location | `PARTIAL`, continue; link sets that needed it are skipped whole, never truncated |
- * | other `4xx` on a tariff create | `PARTIAL`, skip that tariff with its links and prices, continue |
- * | other `4xx` on a tariff update | `PARTIAL`; the row exists, so its links and prices are still applied |
- * | other `4xx` on a link set or one price | `PARTIAL`, continue |
- * | `5xx` / transport failure (already retried by the client) | `FAILED`, stop |
- * | a second consecutive `401` | propagated; the runner fails the whole run |
- *
- * No `catch (Throwable)`: the runner turns arbitrary failures into a status, and
- * `CancellationException` must stay uncaught for the per-adapter timeout.
- * No `Clock` is needed: `effectiveFrom` is always the server's "now".
+ * Reconcile observed facets through the catalog API. Null leaves data alone and an observed empty set clears it.
+ * Preserve tariff activation and only mark missing tariffs out of stock for complete snapshots. Run the mass-change guard before any write.
+ * Writes are ordered and can partially succeed. Replaying the same snapshot converges, and a create conflict is handled by re-reading.
  */
 class Reconciler(private val client: CatalogApiClient) {
 
@@ -90,7 +50,6 @@ class Reconciler(private val client: CatalogApiClient) {
         maxOutOfStockRatio: BigDecimal,
     ): ReconcileOutcome = Pass(adapter, snapshot, writer, maxOutOfStockRatio).run()
 
-    /** One `reconcile` call's state. A fresh instance per call, so no counter can leak between adapters. */
     private inner class Pass(
         private val adapter: ProviderAdapter,
         private val snapshot: ProviderSnapshot,
@@ -111,17 +70,10 @@ class Reconciler(private val client: CatalogApiClient) {
         private var degraded = false
         private var firstProblem: String? = null
 
-        /**
-         * Whether this pass mutated anything; gates the promotion of a `CANDIDATE` row. An unchanged
-         * price (a `PUT` answered `200` without storing a row) does not count.
-         */
+        /** Only a material write promotes a candidate. Reconfirming an unchanged price does not count. */
         private var wroteSomething = false
 
-        /**
-         * Catalog tariff ids already bound to an observed tariff, shared by [planTariffs] and the
-         * `409` re-read in [createTariff]: a row created concurrently mid-run was not planned
-         * against, and without this set two snapshot tariffs could be written into it.
-         */
+        /** Share claimed tariff IDs across planning and conflict recovery so one row cannot match two observations. */
         private val claimedTariffIds = mutableSetOf<Long>()
 
         suspend fun run(): ReconcileOutcome {
@@ -137,11 +89,9 @@ class Reconciler(private val client: CatalogApiClient) {
                 reason = halt.reason
                 message = halt.text
             } catch (unauthorized: CatalogApiException.Unauthorized) {
-                // The whole run has to stop, not just this adapter.
                 throw unauthorized
             } catch (failure: CatalogApiException) {
-                // 5xx or transport failure after the client's retries, or a failed read. Continuing
-                // would write against an unknown state; writes already applied stay and are reported.
+                // Stop after an exhausted transport failure or failed read because the catalog state is uncertain. Applied writes survive.
                 logger.warn("Catalog call failed for provider '{}'; the adapter is FAILED: {}", slug, failure.message)
                 status = AdapterRunStatus.FAILED
                 reason = FailureReason.WRITE
@@ -172,7 +122,6 @@ class Reconciler(private val client: CatalogApiClient) {
             val providerWrite = providerWrite(snapshot.provider)
             val state = resolveProvider(providerWrite)
             val plan = planTariffs(state.tariffs)
-            // For an existing provider this runs before the first write at all.
             checkMassChange(state, plan)
 
             if (state.detail != null && providerWrite(state.detail.provider) != providerWrite) {
@@ -204,14 +153,12 @@ class Reconciler(private val client: CatalogApiClient) {
                     "Provider '$slug' was refused with 409 but cannot be found either",
                 )
             } catch (clientError: CatalogApiException.ClientError) {
-                // Nothing at all can follow without a provider id, so this is where the adapter ends.
                 logger.warn("Creating provider '{}' was refused; the adapter is PARTIAL: {}", slug, clientError.message)
                 throw Halt(AdapterRunStatus.PARTIAL, FailureReason.WRITE, clientError.message)
             }
             providersCreated++
             wroteSomething = true
-            // A just-created provider has nothing to read, and in a dry run the id is fabricated,
-            // so it must never be read back.
+            // Never read a newly created ID back here. In dry runs that ID is fabricated.
             return CatalogState(created, detail = null, tariffs = emptyList())
         }
 
@@ -220,10 +167,7 @@ class Reconciler(private val client: CatalogApiClient) {
             return CatalogState(summary.id, client.getProvider(summary.id), client.listAllTariffs(summary.id))
         }
 
-        /**
-         * The catalog applies "manual wins" itself, so a `MANUAL` field that differs from the
-         * observation is re-sent on every run and ignored there.
-         */
+        /** The catalog enforces MANUAL precedence, so a differing protected field may be sent again on later runs. */
         private suspend fun applyLegalInfo(state: CatalogState) {
             val observed = snapshot.legalInfo ?: return
             val autoOrigin = FieldOrigin.AUTO_CONFIRMED.name
@@ -251,7 +195,6 @@ class Reconciler(private val client: CatalogApiClient) {
                     registrationCountryOrigin = it.registrationCountryOrigin,
                 )
             }
-            // The catalog leaves an unobserved entity or country alone, so it is no reason to write.
             val comparable = current?.let {
                 desired.copy(
                     legalEntityName = desired.legalEntityName ?: it.legalEntityName,
@@ -338,7 +281,6 @@ class Reconciler(private val client: CatalogApiClient) {
         }
 
         private suspend fun createTariff(state: CatalogState, observed: TariffSnapshot): Long? {
-            // A new row has nothing to echo, and the crawler never creates a deactivated tariff.
             val desired = tariffWrite(observed, isActive = true, externalId = observed.externalId)
             return try {
                 writer.createTariff(state.providerId, desired).also { tariffsCreated++; wroteSomething = true }
@@ -351,7 +293,6 @@ class Reconciler(private val client: CatalogApiClient) {
                         null
                     }
                     !claimedTariffIds.add(reread.id) -> {
-                        // The planTariffs collision for a row created concurrently after planning.
                         degrade(
                             "Tariff '${observed.name}' of '$slug' matches a catalog row another tariff of the " +
                                 "same snapshot already claimed; it was skipped",
@@ -366,10 +307,7 @@ class Reconciler(private val client: CatalogApiClient) {
             }
         }
 
-        /**
-         * Brings the matched row to the snapshot's values. `isActive` is echoed from the catalog,
-         * `externalId` is only added, never cleared, and a differing name is applied as a rename.
-         */
+        /** Preserve activation and any stored external ID when the observation omits it. A changed name is applied as a rename. */
         private suspend fun updateTariff(observed: TariffSnapshot, match: CatalogTariff): Long {
             val desired = tariffWrite(
                 observed,
@@ -384,10 +322,7 @@ class Reconciler(private val client: CatalogApiClient) {
             return match.id
         }
 
-        /**
-         * Writes the catalog's own values with only `inStock` set to `false`. Runs only for a
-         * `tariffListComplete = true` snapshot.
-         */
+        /** Change only stock for missing rows, and only when the snapshot claims a complete list. */
         private suspend fun applyMissingTariffs(plan: TariffPlan) {
             if (!snapshot.tariffListComplete) return
             plan.missing.filter { it.inStock }.forEach { row ->
@@ -398,10 +333,7 @@ class Reconciler(private val client: CatalogApiClient) {
             }
         }
 
-        /**
-         * Replaces the whole link set, so it runs only for observed `locationKeys`. A set with a
-         * refused location is skipped whole: sending the remainder would unlink the rest.
-         */
+        /** Replace links only for observed locations. Skip the whole set if any location is unavailable to avoid unlinking still-valid locations. */
         private suspend fun applyLinks(resolved: List<ResolvedTariff>, locationIds: Map<LocationMatchKey, Long>) {
             if (snapshot.locations == null) return
             resolved.forEach { (observed, tariffId) ->
@@ -449,11 +381,7 @@ class Reconciler(private val client: CatalogApiClient) {
             }
         }
 
-        /**
-         * Matches each observed tariff to a catalog row once, for both the guard and the write
-         * phase, so the guard counts exactly what the write phase would flip. A row already claimed
-         * by an earlier observed tariff is not claimed twice.
-         */
+        /** Use the same one-to-one matches for the guard and writes so the guard counts every planned stock flip. */
         private fun planTariffs(catalog: List<CatalogTariff>): TariffPlan {
             val matches = mutableListOf<Pair<TariffSnapshot, CatalogTariff?>>()
             val collisions = mutableListOf<TariffSnapshot>()
@@ -481,11 +409,7 @@ class Reconciler(private val client: CatalogApiClient) {
             observed.externalId?.let { external -> catalog.firstOrNull { it.externalId == external } }
                 ?: catalog.firstOrNull { it.name.lowercase() == observed.name.lowercase() }
 
-        /**
-         * In-stock rows the write phase would flip: those missing from the snapshot and those it
-         * reports as `inStock = false`. Counting only the first would let a broken "in stock"
-         * selector wipe the provider with the guard silent.
-         */
+        /** Count both missing rows and explicit out-of-stock observations so the guard covers both ways to flip stock. */
         private fun flippingRows(plan: TariffPlan): List<CatalogTariff> =
             plan.missing.filter { it.inStock } +
                 plan.matches.mapNotNull { (observed, match) -> match?.takeIf { it.inStock && !observed.inStock } }
@@ -513,12 +437,7 @@ class Reconciler(private val client: CatalogApiClient) {
             )
         }
 
-        /**
-         * Promotes a row read as `CANDIDATE` to `CONFIGURED` once this pass has written something.
-         * `REJECTED` and `CONFIGURED` rows are never touched, and a provider created by this pass is
-         * already `CONFIGURED` (the crawler's `POST` never sends `systemStatus`). Must stay the last
-         * step of [apply], so a run promotes at most once.
-         */
+        /** Promote only a row read as CANDIDATE after a material write. Keep promotion last so each reconciliation attempts it at most once. */
         private suspend fun promoteIfCandidate(state: CatalogState) {
             if (state.detail?.provider?.systemStatus != SystemStatus.CANDIDATE.name) return
             if (!wroteSomething) return
@@ -579,10 +498,7 @@ class Reconciler(private val client: CatalogApiClient) {
             longitude = location.longitude,
         )
 
-        /**
-         * Coordinates use `compareTo`: the catalog returns `NUMERIC(9,6)`, so `52.52` comes back as
-         * `52.520000` and `BigDecimal.equals` would report a difference on every run.
-         */
+        /** Compare coordinates numerically because NUMERIC(9, 6) can change scale on readback. */
         private fun locationDiffers(current: CatalogLocation, desired: LocationWrite): Boolean =
             current.countryCode != desired.countryCode ||
                 current.region != desired.region ||
@@ -614,7 +530,6 @@ class Reconciler(private val client: CatalogApiClient) {
             ipv6Supported = observed.ipv6Supported,
         )
 
-        /** The catalog row as the write that would leave it exactly as it is. */
         private fun echo(row: CatalogTariff) = TariffWrite(
             name = row.name,
             vcpuCount = row.vcpuCount,
@@ -642,7 +557,6 @@ class Reconciler(private val client: CatalogApiClient) {
     )
 
     private class TariffPlan(
-        /** Every observed tariff with the catalog row it is, or `null` when it has to be created. */
         val matches: List<Pair<TariffSnapshot, CatalogTariff?>>,
         /** Catalog rows the snapshot does not mention -- candidates for `inStock = false`. */
         val missing: List<CatalogTariff>,
@@ -652,7 +566,6 @@ class Reconciler(private val client: CatalogApiClient) {
 
     private data class ResolvedTariff(val observed: TariffSnapshot, val tariffId: Long)
 
-    /** Ends the adapter early with a status; never escapes [Reconciler]. */
     private class Halt(
         val status: AdapterRunStatus,
         val reason: FailureReason,

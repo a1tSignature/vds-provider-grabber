@@ -30,39 +30,8 @@ import java.net.URI
 class AdapterFailureException(message: String) : Exception(message)
 
 /**
- * The HTML reference adapter (spec req. 42): it demonstrates the whole loop -- one polite fetch,
- * jsoup selectors, a full [ProviderSnapshot], reconciliation into the catalog -- against a **fixture
- * page**, and is the adapter the end-to-end test and `scripts/measure-footprint.sh --crawler` drive.
- * It is **not** an adapter for a real hosting company; each of those is its own spec, ToS check
- * included.
- *
- * ### Why it is registered but not selected by default
- *
- * [org.a1tsign.vds.crawler.AdapterRegistry.production] registers it with `includedByDefault = false`,
- * so an empty `VDS_CRAWLER_ADAPTERS` never runs it on a production box; an operator opts in by
- * naming `example-static` explicitly (the plan's resolution of spec req. 10 vs req. 42).
- *
- * ### No hardcoded host
- *
- * The page it reads is `<VDS_CRAWLER_ADAPTER_EXAMPLE_STATIC_BASE_URL>[PAGE_PATH]`, supplied through
- * [CrawlContext.config] -- a test points it at the local fixture server, the footprint script at a
- * sidecar, and nothing in this file names a host. A missing or malformed value is an
- * [AdapterFailureException], i.e. this adapter's own failure, not a crash of the run.
- *
- * ### What it is allowed to use
- *
- * Only [CrawlContext]: the shared polite [org.a1tsign.vds.crawler.fetch.PageFetcher] (so the
- * timeouts, the per-host delay, robots.txt and the streamed 2 MiB body cap cannot be opted out of),
- * the injected clock and its own config. No `HttpClient`, no `Jsoup.connect`, no `CatalogApiClient`,
- * no write path of any kind (ADR-02/ADR-04).
- *
- * ### Money and honesty
- *
- * Amounts are parsed into [BigDecimal] straight from the page text -- `Double` appears nowhere --
- * and a value that does not parse fails the adapter instead of silently becoming `0`.
- * `tariffListComplete = true` is a deliberate claim that the plans table is the provider's complete
- * catalog (ADR-03): when a selector breaks and the table reads empty, that claim is what makes the
- * reconciler's mass-change guard refuse the run instead of flipping every tariff out of stock.
+ * Opt-in fixture adapter used by end-to-end and footprint checks. Configure VDS_CRAWLER_ADAPTER_EXAMPLE_STATIC_BASE_URL to select the fixture host.
+ * Parse prices as exact decimals and fail on unreadable values. The complete-list claim makes the mass-change guard applicable.
  */
 class ExampleStaticAdapter : ProviderAdapter {
 
@@ -97,7 +66,6 @@ class ExampleStaticAdapter : ProviderAdapter {
         )
     }
 
-    // ---------- configuration ----------
 
     /**
      * The one page this adapter reads. [config] is the adapter's own
@@ -118,24 +86,18 @@ class ExampleStaticAdapter : ProviderAdapter {
         return base + PAGE_PATH
     }
 
-    // ---------- sections ----------
 
     private fun parseLegalInfo(page: Element, pageUrl: String) = LegalInfoSnapshot(
         legalEntityName = requiredText(page, "dd.legal-entity"),
         registrationCountry = requiredText(page, "dd.legal-country"),
         registrationNumber = requiredText(page, "dd.legal-registration"),
         legalAddress = requiredText(page, "dd.legal-address"),
-        // A company blurb on a sales page is weak evidence by nature, and the crawler never claims
-        // otherwise: vds-001 keeps a human's HIGH/MEDIUM record untouched behind this.
+        // Sales copy is weak evidence. LOW confidence lets the catalog preserve stronger legal information.
         confidence = Confidence.LOW,
         sourceUrl = pageUrl,
     )
 
-    /**
-     * An **observed** set, so it really does replace the catalog's set (ADR-03). The section itself
-     * is required -- its absence is a broken selector, not an observation -- while a section that
-     * lists nothing is the honest "this provider advertises no payment method".
-     */
+    /** Require the section to distinguish a broken selector from an observed empty set that clears the catalog values. */
     private fun parsePaymentMethods(page: Element): Set<PaymentMethod> =
         required(page, "section.payments").select("li.payment-method").map { item ->
             requiredEnum(
@@ -191,7 +153,6 @@ class ExampleStaticAdapter : ProviderAdapter {
             )
         }
 
-    // ---------- values ----------
 
     /**
      * The advertised amount, as [BigDecimal] and never `Double`, plus the currency its symbol
@@ -200,8 +161,7 @@ class ExampleStaticAdapter : ProviderAdapter {
      * would be appended to an append-only, not-back-correctable price history.
      */
     private fun parsePrice(row: Element, selector: String, billingPeriod: BillingPeriod): PriceSnapshot {
-        // jsoup's text() normalises a non-breaking space (U+00A0) to a plain space and trims it, so
-        // a price written with one (ordinary on a real page) needs no extra handling here.
+        // jsoup text() already normalizes non-breaking spaces in prices.
         val raw = requiredText(row, selector)
         val match = PRICE_PATTERN.matchEntire(raw)
             ?: throw AdapterFailureException(
@@ -209,7 +169,6 @@ class ExampleStaticAdapter : ProviderAdapter {
             )
         return PriceSnapshot(
             billingPeriod = billingPeriod,
-            // getValue, not get: the pattern admits exactly the symbols of the map.
             currency = CURRENCY_BY_SYMBOL.getValue(match.groupValues[1]),
             amount = BigDecimal(match.groupValues[2].replace(",", "")),
         )
@@ -248,13 +207,11 @@ class ExampleStaticAdapter : ProviderAdapter {
         const val ID: String = "example-static"
         const val PROVIDER_SLUG: String = "example-static"
 
-        /** The page is this path under the configured base URL. */
         const val PAGE_PATH: String = "/vps"
 
         /** `VDS_CRAWLER_ADAPTER_EXAMPLE_STATIC_BASE_URL` as `crawlerAdapterConfig` keys it. */
         const val BASE_URL_CONFIG_KEY: String = "base_url"
 
-        /** Spelled out for the failure message an operator reads in the run summary. */
         const val BASE_URL_VARIABLE: String = "VDS_CRAWLER_ADAPTER_EXAMPLE_STATIC_BASE_URL"
 
         private const val PLAN_ID_ATTRIBUTE = "data-plan-id"
@@ -262,17 +219,13 @@ class ExampleStaticAdapter : ProviderAdapter {
         private const val VIRTUALIZATION_ATTRIBUTE = "data-virtualization"
         private const val PAYMENT_METHOD_ATTRIBUTE = "data-method"
 
-        /** How much of an offending page value a failure message repeats. */
         private const val VALUE_IN_MESSAGE_LIMIT = 40
 
         private val HTTP_SCHEMES = setOf("http", "https")
 
         private val CURRENCY_BY_SYMBOL = mapOf("\$" to "USD", "€" to "EUR")
 
-        /**
-         * A symbol this adapter knows, optional spacing, then either plain digits or digits grouped
-         * in thousands, with at most the four decimals vds-001's `NUMERIC(12, 4)` stores.
-         */
+        /** Keep fractional digits within the NUMERIC(12, 4) storage limit. */
         private val PRICE_PATTERN =
             Regex("([\\$€])\\s*((?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\\.[0-9]{1,4})?)")
     }

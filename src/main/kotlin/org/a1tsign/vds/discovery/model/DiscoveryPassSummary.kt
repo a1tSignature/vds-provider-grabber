@@ -3,10 +3,9 @@ package org.a1tsign.vds.discovery.model
 import java.time.Instant
 import java.util.UUID
 
-/** How many pass summaries the in-memory history keeps. Nothing is persisted, as with crawl runs. */
+/** Pass summaries are held in memory only. */
 const val PASS_HISTORY_SIZE: Int = 20
 
-/** A dry run's plan is capped, like the crawler's `plannedOperations`. */
 const val MAX_PLANNED_CANDIDATES: Int = 200
 
 /**
@@ -40,7 +39,6 @@ enum class RejectionReason {
 
 /** Why a pass stopped before running through its queries. `null` on a pass that did not stop early. */
 enum class PassFailureReason {
-    /** `VDS_DISCOVERY_SEARCH_PROVIDER=none`: there is nothing to search with. */
     NO_SEARCH_PROVIDER,
 
     /** The credit ledger refused the pass or a query (cap, minimum interval, unreadable/unwritable state). */
@@ -55,23 +53,18 @@ enum class PassFailureReason {
     /** The catalog holds more providers than `VDS_DISCOVERY_MAX_KNOWN_PROVIDERS`; a truncated dedup set is refused. */
     KNOWN_SET_TOO_LARGE,
 
-    /** The catalog could not be read (or written to) at all. */
     CATALOG_UNAVAILABLE,
 
-    /** The crawler service account was rejected by the catalog. */
     CATALOG_AUTH,
 
-    /** `VDS_DISCOVERY_PASS_TIMEOUT_MINUTES` expired. */
     TIMEOUT,
 
-    /** The process is shutting down. */
     SHUTDOWN,
 
     /** Anything else -- a bug; the stack trace is at DEBUG. */
     INTERNAL_ERROR,
 }
 
-/** One candidate a dry run *would* have created. */
 data class PlannedCandidate(
     val slug: String,
     val name: String,

@@ -1,15 +1,9 @@
-/**
- * `<input type="datetime-local" step="1">` holds `YYYY-MM-DDTHH:mm[:ss]` with no zone. The UI shows
- * every timestamp in UTC, so the input is read as UTC too.
- */
+/** Interpret the zone-less datetime-local input as UTC to match the timestamp display. */
 export function isoToDateTimeInput(iso: string | undefined): string {
   return iso === undefined ? "" : iso.slice(0, 19);
 }
 
-/**
- * The input value as an instant with an explicit `Z`, which the API requires. Loaded values are
- * whole seconds, so with `step="1"` an untouched field round-trips unchanged.
- */
+/** Send an explicit UTC offset as required by the API. Second precision preserves an untouched value on round trip. */
 export function dateTimeInputToIsoZ(value: string): string | undefined {
   const trimmed = value.trim();
   if (trimmed === "") return undefined;

@@ -28,7 +28,6 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
         val req = call.receive<ProviderWriteRequest>()
         val v = Validation()
         val data = validateProvider(req, v)
-        // Optional, defaults to CONFIGURED, so create requests without it stay valid and visible.
         val systemStatus = req.systemStatus?.let { v.enumValue("systemStatus", it, SystemStatus.entries.toTypedArray()) }
         v.throwIfInvalid()
         val result = service.create(
@@ -44,8 +43,7 @@ fun Route.providerRoutes(service: ProviderService, queryService: CatalogQuerySer
         val req = call.receive<ProviderWriteRequest>()
         val v = Validation()
         val data = validateProvider(req, v)
-        // Absent = leave unchanged, never "default to CONFIGURED": otherwise an ordinary field
-        // update by the crawler would promote a candidate as a side effect.
+        // Omission leaves the status unchanged so ordinary crawler writes cannot promote candidates.
         val systemStatus = req.systemStatus?.let { v.enumValue("systemStatus", it, SystemStatus.entries.toTypedArray()) }
         v.throwIfInvalid()
         val id = providerId(call.parameters["id"])

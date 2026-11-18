@@ -1,29 +1,12 @@
 package org.a1tsign.vds.crawler.write
 
-/**
- * Every catalog mutation the reconciler may perform, and nothing else. Implemented by
- * [ApiCrawlWriter] and [DryRunWriter], so the reconciler has no `if (dryRun)` branch. Reads are not
- * behind this interface: both modes read the real catalog through [CatalogApiClient].
- *
- * There is no delete or deactivate method, so destroying catalog data cannot be expressed here.
- * The only disappearance signal is [TariffWrite.inStock] `false`; [TariffWrite.isActive] has no
- * default so that an update must echo the catalog's current value.
- *
- * Failures are [CatalogApiException]s: the reconciler absorbs [CatalogApiException.Conflict] by
- * re-reading and must not swallow [CatalogApiException.Unauthorized].
- */
+/** Catalog mutations used by the reconciler. Implementations apply writes or record an equivalent dry-run plan. */
 interface CrawlWriter {
 
-    /**
-     * Every following call belongs to the provider [slug], until the next [beginProvider]. Lets a
-     * recording writer name the provider, since the mutation methods carry only ids.
-     */
+    /** Set the provider label for subsequent recorded operations until the next [beginProvider]. */
     suspend fun beginProvider(slug: String) {}
 
-    /**
-     * Lines for the mutations this writer recorded instead of performing, in call order and capped
-     * by the implementation. Empty for a writer that really writes.
-     */
+    /** Recorded mutations in call order, capped by the implementation. */
     fun plannedOperations(): List<String> = emptyList()
 
     /** `POST /api/v1/providers` -> the new provider id. A duplicate slug is a `Conflict`. */
@@ -41,10 +24,8 @@ interface CrawlWriter {
     /** `POST …/locations` -> the new location id. The unique index makes a duplicate a `Conflict`. */
     suspend fun createLocation(providerId: Long, request: LocationWrite): Long
 
-    /** `PUT /api/v1/locations/{id}`. */
     suspend fun updateLocation(locationId: Long, request: LocationWrite)
 
-    /** `POST …/tariffs` -> the new tariff id. */
     suspend fun createTariff(providerId: Long, request: TariffWrite): Long
 
     /** `PUT /api/v1/tariffs/{id}`. [TariffWrite.isActive] must echo the catalog's current value. */
@@ -56,10 +37,7 @@ interface CrawlWriter {
     /** `PUT /api/v1/tariffs/{id}/price` -> appended-vs-unchanged plus the `NO_FX_RATE` flag. */
     suspend fun putPrice(tariffId: Long, request: PriceWrite): PriceOutcome
 
-    /**
-     * `PUT /api/v1/providers/{id}/system-status {"systemStatus":"CONFIGURED"}`: promotes a
-     * discovered `CANDIDATE` row. Takes no target value, so it cannot express a demotion.
-     */
+    /** Promote a CANDIDATE to CONFIGURED without exposing arbitrary status changes. */
     suspend fun promoteProviderToConfigured(providerId: Long)
 
     /**

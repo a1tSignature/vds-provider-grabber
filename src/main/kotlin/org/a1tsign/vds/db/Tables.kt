@@ -4,16 +4,7 @@ import org.jetbrains.exposed.v1.core.ReferenceOption
 import org.jetbrains.exposed.v1.core.Table
 import org.jetbrains.exposed.v1.javatime.timestampWithTimeZone
 
-/**
- * Exposed DSL mirror of `V1__core_schema.sql` -- one `object` per table, column-for-column. Never
- * declares an index or a unique constraint (those live in the migration only) and never asks
- * Exposed to create or alter a table: Exposed here is a typed query builder on top of a schema
- * Flyway owns, not a schema generator.
- *
- * Enum-like columns stay plain `varchar`; the `VARCHAR` <-> `domain.*` enum conversion happens in
- * `RowMappers.kt` through `parseDbEnum`, not through `enumerationByName`/`customEnumeration` (see
- * the KDoc on `parseDbEnum` for why).
- */
+/** Flyway owns the schema and constraints. These Exposed declarations map the columns used by queries. */
 object ProviderTable : Table("provider") {
     val id = long("id").autoIncrement()
     val slug = varchar("slug", 64)
@@ -22,7 +13,6 @@ object ProviderTable : Table("provider") {
     val description = text("description").nullable()
     val status = varchar("status", 32)
 
-    /** Added by `V2__provider_system_status.sql`; `DEFAULT 'CONFIGURED'` lives in the migration. */
     val systemStatus = varchar("system_status", 32)
     val createdAt = timestampWithTimeZone("created_at")
     val updatedAt = timestampWithTimeZone("updated_at")
@@ -30,7 +20,6 @@ object ProviderTable : Table("provider") {
     override val primaryKey = PrimaryKey(id)
 }
 
-/** `provider_id` is both the primary key and the FK to [ProviderTable.id] -- 0..1 per provider. */
 object ProviderLegalInfoTable : Table("provider_legal_info") {
     val providerId = long("provider_id").references(ProviderTable.id, onDelete = ReferenceOption.CASCADE)
     val legalEntityName = varchar("legal_entity_name", 255).nullable()
@@ -48,7 +37,6 @@ object ProviderLegalInfoTable : Table("provider_legal_info") {
     override val primaryKey = PrimaryKey(providerId)
 }
 
-/** Composite PK `(provider_id, method)` -- a provider accepts a set of payment methods. */
 object ProviderPaymentMethodTable : Table("provider_payment_method") {
     val providerId = long("provider_id").references(ProviderTable.id, onDelete = ReferenceOption.CASCADE)
     val method = varchar("method", 32)
@@ -120,15 +108,7 @@ object TariffTable : Table("tariff") {
     override val primaryKey = PrimaryKey(id)
 }
 
-/**
- * Many-to-many between [TariffTable] and [LocationTable]. The migration's two FKs are each
- * composite -- `(tariff_id, provider_id)` and `(location_id, provider_id)` -- which cannot be
- * expressed via Exposed's single-column `references(...)` helper (Exposed 1.6.0's
- * `Table.foreignKey(vararg Pair<Column<*>, Column<*>>, onDelete, name)` can express a composite
- * FK directly, but is not used here); `provider_id` is kept here as a plain column rather than
- * attached to a half-true single-column reference. The real constraint lives in the migration
- * and is exercised against the database directly, not reconstructed in Kotlin.
- */
+/** Both foreign keys include provider_id so the database rejects links across providers even if callers omit the ownership check. */
 object TariffLocationTable : Table("tariff_location") {
     val tariffId = long("tariff_id")
     val locationId = long("location_id")
@@ -159,7 +139,6 @@ object RoleTable : Table("role") {
     override val primaryKey = PrimaryKey(id)
 }
 
-/** Composite PK `(user_id, role_id)`, both columns also FKs. */
 object UserRoleTable : Table("user_role") {
     val userId = long("user_id").references(AppUserTable.id, onDelete = ReferenceOption.CASCADE)
     val roleId = long("role_id").references(RoleTable.id, onDelete = ReferenceOption.CASCADE)
@@ -193,8 +172,7 @@ object CurrencyRateTable : Table("currency_rate") {
     val sourceRateAt = timestampWithTimeZone("source_rate_at")
     val fetchedAt = timestampWithTimeZone("fetched_at")
 
-    // Named `sourceName`, not `source` -- `Table`/`ColumnSet` already expose a member called
-    // `source` (used internally for join/alias description), so the obvious name collides.
+    // Exposed already uses source for table and join metadata.
     val sourceName = varchar("source", 64)
 
     override val primaryKey = PrimaryKey(id)

@@ -48,7 +48,6 @@ data class TariffSearchFilter(
     val includeAnnual: Boolean = false,
 )
 
-/** One provider of the grouped search: its cheapest matching tariff and how many of its tariffs match. */
 data class ProviderHeadline(val providerId: Long, val tariffId: Long, val matchingTariffCount: Int)
 
 /** Repository methods require a transaction opened by [org.a1tsign.vds.service.TariffService]. */
@@ -144,11 +143,7 @@ class TariffRepository {
         TariffLocationTable.selectAll().where { TariffLocationTable.tariffId eq tariffId }
             .map { it[TariffLocationTable.locationId] }.toSet()
 
-    /**
-     * Delete-then-insert of the whole link set, both inside the caller's transaction -- never
-     * committed independently, so a failure (including the composite FK's own `23503`) rolls both
-     * halves back and leaves the previous link set exactly as it was.
-     */
+    /** Replace links in the caller's transaction so a failed insert also rolls back the delete. */
     fun replaceLocations(tariffId: Long, providerId: Long, locationIds: List<Long>) {
         TariffLocationTable.deleteWhere { TariffLocationTable.tariffId eq tariffId }
         locationIds.forEach { locationId ->
@@ -160,7 +155,6 @@ class TariffRepository {
         }
     }
 
-    // ---- Read queries added for the tariff search/detail endpoints (task vds-001.16) ----
 
     fun findByIds(ids: Collection<Long>): List<Tariff> =
         if (ids.isEmpty()) emptyList() else TariffTable.selectAll().where { TariffTable.id inList ids }.map { it.toTariff() }
@@ -257,8 +251,7 @@ class TariffRepository {
             "name" -> "p.name $direction, r.provider_id ASC"
             else -> "r.provider_id $direction"
         }
-        // Raw SQL: ranking the tariffs inside each provider needs window functions, which the
-        // Exposed DSL cannot express readably.
+        // Grouped ranking uses SQL window functions.
         val pageSql = """
             SELECT r.provider_id, r.tariff_id, r.matching
             FROM (
@@ -304,9 +297,7 @@ class TariffRepository {
         val clauses = mutableListOf<String>()
         val args = mutableListOf<Pair<IColumnType<*>, Any?>>()
 
-        // The cross-provider search is a *listing*: a tariff whose provider is not catalog-visible
-        // must not surface here. EXISTS rather than
-        // a join so the row cannot be duplicated, and the value is bound, never concatenated.
+        // Use EXISTS for provider visibility so joining the catalog filter cannot duplicate tariff rows.
         val visibleStatuses = PUBLIC_CATALOG_SYSTEM_STATUSES.map { it.name }
         clauses += "EXISTS (SELECT 1 FROM provider p WHERE p.id = t.provider_id AND p.system_status IN (${visibleStatuses.joinToString(",") { "?" }}))"
         visibleStatuses.forEach { args += VarCharColumnType() to it }

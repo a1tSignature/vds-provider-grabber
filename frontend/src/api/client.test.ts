@@ -6,7 +6,6 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
 }
 
-/** Every status-mapping test uses `skipAuth: true`: it exercises the mapping, not token attachment. */
 async function sendAndCapture(response: Response | Promise<never>): Promise<ApiClientError> {
   vi.stubGlobal(
     "fetch",

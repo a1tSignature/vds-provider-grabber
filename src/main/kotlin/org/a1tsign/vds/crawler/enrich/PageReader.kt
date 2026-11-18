@@ -19,13 +19,9 @@ private const val MAX_ANCHOR_TEXT_CHARS = 200
 private const val MAX_LINKS = 2_000
 private const val MAX_SCRIPT_URLS = 50
 
-/** A link of the page: the resolved URL and its anchor text. */
 internal data class PageLink(val url: String, val text: String)
 
-/**
- * What the analysis needs from one HTML page. Built from the jsoup DOM, which is dropped as soon as
- * this is built; this in turn is dropped after the page is analysed.
- */
+/** Drop the DOM after extracting these inputs and release each page after analysis. */
 internal class PageContent(
     val text: String,
     val footer: String,

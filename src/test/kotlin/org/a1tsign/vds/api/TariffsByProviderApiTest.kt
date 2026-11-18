@@ -101,7 +101,6 @@ class TariffsByProviderApiTest : AbstractDbTest() {
                 ),
             ).forEach { (query, expected) -> assertEquals(expected, byProvider(token, query).headlines(), query) }
 
-            // diskType=SSD leaves vertex only its tariff without amountUsd.
             val ssdAscending = byProvider(token, "diskType=SSD")
             assertEquals(
                 listOf(

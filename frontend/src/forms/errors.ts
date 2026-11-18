@@ -10,7 +10,6 @@ export function fieldErrorsOf(error: ApiClientError | undefined): Record<string,
   return result;
 }
 
-/** `5xx` and network failures: the submit can be repeated as is, so the form offers a retry. */
 export function isRetryable(error: ApiClientError | undefined): boolean {
   return error?.kind === "server" || error?.kind === "network";
 }
@@ -19,10 +18,7 @@ export interface FormErrorOverrides {
   notFound?: string;
 }
 
-/**
- * The form-level text for an error, or `undefined` when nothing is shown at form level: `401` is
- * handled globally (session wipe + redirect) and `aborted` is never an error.
- */
+/** Leaves 401 handling to the session and suppresses errors for aborted requests. */
 export function formErrorMessage(
   error: ApiClientError | undefined,
   overrides: FormErrorOverrides = {},

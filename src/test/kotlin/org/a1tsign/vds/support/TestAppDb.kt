@@ -35,9 +35,7 @@ fun testAppConfig(
     jwtTtlHours: Long = 24,
     bootstrapUsername: String = "bootstrap-admin",
     bootstrapPassword: String = "bootstrap-password-1",
-    // Additive (vds-002.7): lets a crawler-admin-API test switch VDS_CRAWLER_* on without every
-    // other call site having to know about it -- defaults to empty, so existing behaviour is
-    // unchanged.
+    // Override environment keys for one test app without leaking them into other harness instances.
     extraEnv: Map<String, String> = emptyMap(),
 ): AppConfig = loadConfig(
     buildMap {
@@ -54,7 +52,6 @@ fun testAppConfig(
     },
 )
 
-/** Full app harness: shared Testcontainers database, app factory, startup bootstrap and real routes. */
 fun testAppDb(
     clock: Clock,
     appConfig: AppConfig = testAppConfig(),

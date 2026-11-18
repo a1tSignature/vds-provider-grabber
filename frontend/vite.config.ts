@@ -7,8 +7,7 @@ const BACKEND_ORIGIN = process.env.VITE_BACKEND_ORIGIN ?? "http://localhost:8080
 export default defineConfig({
   plugins: [react()],
   build: {
-    // The bundle ships inside the backend jar; a source map would leak original source to anyone
-    // with the jar and buys nothing in production, where nobody attaches a debugger to it.
+    // Keep source maps out of the bundled JAR to avoid shipping the original source.
     sourcemap: false,
   },
   server: {

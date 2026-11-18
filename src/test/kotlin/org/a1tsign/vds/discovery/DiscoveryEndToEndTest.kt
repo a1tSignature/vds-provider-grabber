@@ -36,10 +36,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * A pass through the production wiring: the real `TavilySearchProvider` against a loopback
- * Tavily-shaped fixture, the real `CatalogApiClient` against the real application on a real port.
- */
+/** Run production discovery against the loopback search fixture and real catalog API. */
 class DiscoveryEndToEndTest : AbstractDbTest() {
 
     @Test
@@ -55,8 +52,8 @@ class DiscoveryEndToEndTest : AbstractDbTest() {
                         // a valid hit with a very low score: the score is not a threshold
                         Triple("https://newhost.example/vps/plans?ref=x", "NewHost VPS", "Cheap NVMe VPS from 3 EUR"),
                         Triple("https://www.example.test/vps", "Example VPS", "vps"), // websiteUrl host of a non-domain slug
-                        Triple("https://cand.example/x", "Cand VPS", "vps"), // CANDIDATE
-                        Triple("https://rej.example/", "Rej VPS", "vps"), // REJECTED
+                        Triple("https://cand.example/x", "Cand VPS", "vps"),
+                        Triple("https://rej.example/", "Rej VPS", "vps"),
                         Triple("https://old.reddit.com/r/vps", "vps thread", "vps"),
                         Triple("https://blog.example/", "Cooking", "recipes"),
                         Triple("not a url", "vps", "vps"),
@@ -127,7 +124,6 @@ class DiscoveryEndToEndTest : AbstractDbTest() {
                     assertTrue(candidates.containsAll(listOf("newhost-example", "second-example")), "$candidates")
                 }
 
-                // The key travels only in the Authorization header, and never reaches a log line.
                 assertTrue(tavily.requests().all { it.query == null && !it.body.contains(DiscoveryAppHarness.API_KEY) })
                 assertTrue(logs.messages().none { it.contains(DiscoveryAppHarness.API_KEY) })
                 assertTrue(logs.messages().any { it.contains("discovery pass") && it.contains("finished") })

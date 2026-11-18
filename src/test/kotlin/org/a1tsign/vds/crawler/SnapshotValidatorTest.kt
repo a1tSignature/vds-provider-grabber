@@ -20,13 +20,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * Every rule is exercised as a single mutation of the valid fixture asserted with
- * [assertOnlyProblem], which pins three things at once: a problem is reported, its `path` names the
- * offending element, and the valid neighbours in the same collection report nothing -- so a rule
- * cannot pass by rejecting everything. Deleting any rule from the validator turns one of these
- * cases red.
- */
+/** Mutate one field of a valid fixture per case so the reported path identifies only the rule under test. */
 class SnapshotValidatorTest {
 
     @Test
@@ -38,11 +32,7 @@ class SnapshotValidatorTest {
     fun `a not observed section is not a problem`() {
         assertNoProblems(validSnapshot().copy(legalInfo = null))
         assertNoProblems(validSnapshot().copy(paymentMethods = null))
-        // tariffListComplete has to come along: "the full catalog" + "no catalog observed" is the
-        // contradiction asserted below, not a "not observed" section.
         assertNoProblems(validSnapshot().copy(tariffs = null, tariffListComplete = false))
-        // locationKeys go with the locations: an adapter that did not observe locations cannot
-        // claim tariff-to-location links either (rule 11 covers the inconsistent combination).
         assertNoProblems(validSnapshot().withoutLocationLinks().copy(locations = null))
     }
 
@@ -72,11 +62,7 @@ class SnapshotValidatorTest {
         assertEquals(listOf("provider.slug"), found.map { it.path }, "problems: $found")
     }
 
-    /**
-     * A value exactly at a vds-001 limit must be **accepted** -- an off-by-one here would reject
-     * rows the catalog happily stores. Asserted as one snapshot that sits on every boundary at
-     * once: if any single comparison is wrong, the reported path names it.
-     */
+    /** Accept storage-boundary values to catch validation that is stricter than the catalog. */
     @Test
     fun `values exactly at the vds-001 limits are accepted`() {
         val slug = "a".repeat(64)
@@ -111,7 +97,6 @@ class SnapshotValidatorTest {
     @Test
     fun `each single broken field is reported at its own path`() {
         val cases = listOf(
-            // rule 2: strings and URLs
             "provider.name" to mutate { copy(provider = provider.copy(name = "  ")) },
             "provider.name" to mutate { copy(provider = provider.copy(name = "x".repeat(256))) },
             "provider.websiteUrl" to mutate { copy(provider = provider.copy(websiteUrl = "ftp://acme.example")) },
@@ -123,16 +108,13 @@ class SnapshotValidatorTest {
             "tariffs[1].url" to mutate { withTariff(1) { it.copy(url = "javascript:alert(1)") } },
             "legalInfo.sourceUrl" to mutate { copy(legalInfo = legalInfo!!.copy(sourceUrl = "/imprint")) },
             "sourceUrls[0]" to mutate { copy(sourceUrls = listOf("acme.example/vps", "https://acme.example/ok")) },
-            // rule 3: an adapter must say where its data came from
             "sourceUrls" to mutate { copy(sourceUrls = emptyList()) },
-            // rule 4: country codes
             "locations[0].key.countryCode" to mutate {
                 withLocation(0) { it.copy(key = it.key.copy(countryCode = "de")) }
             },
             "legalInfo.registrationCountry" to mutate {
                 copy(legalInfo = legalInfo!!.copy(registrationCountry = "DEU"))
             },
-            // rule 5: sizes, including the SMALLINT ceilings
             "tariffs[0].vcpuCount" to mutate { withTariff(0) { it.copy(vcpuCount = 0) } },
             "tariffs[0].vcpuCount" to mutate { withTariff(0) { it.copy(vcpuCount = 40_000) } },
             "tariffs[1].ramMb" to mutate { withTariff(1) { it.copy(ramMb = 0) } },
@@ -141,12 +123,10 @@ class SnapshotValidatorTest {
             "tariffs[0].ipv4Count" to mutate { withTariff(0) { it.copy(ipv4Count = 40_000) } },
             "tariffs[1].bandwidthMbps" to mutate { withTariff(1) { it.copy(bandwidthMbps = 0) } },
             "tariffs[1].trafficLimitGb" to mutate { withTariff(1) { it.copy(trafficLimitGb = 0) } },
-            // rule 6: tariff identity strings
             "tariffs[0].name" to mutate { withTariff(0) { it.copy(name = " ") } },
             "tariffs[0].name" to mutate { withTariff(0) { it.copy(name = "x".repeat(256)) } },
             "tariffs[1].externalId" to mutate { withTariff(1) { it.copy(externalId = "") } },
             "tariffs[1].externalId" to mutate { withTariff(1) { it.copy(externalId = "x".repeat(129)) } },
-            // rule 7: money
             "tariffs[0].prices[0].currency" to mutate {
                 withTariff(0) { t -> t.withPrice(0) { it.copy(currency = "eur") } }
             },
@@ -159,7 +139,6 @@ class SnapshotValidatorTest {
             "tariffs[1].prices[1].amount" to mutate {
                 withTariff(1) { t -> t.withPrice(1) { it.copy(amount = BigDecimal("123456789.0000")) } }
             },
-            // rule 8: coordinates
             "locations[0].latitude" to mutate { withLocation(0) { it.copy(latitude = BigDecimal("90.000001")) } },
             "locations[0].longitude" to mutate {
                 withLocation(0) { it.copy(longitude = BigDecimal("-180.000001")) }
@@ -230,7 +209,6 @@ class SnapshotValidatorTest {
     @Test
     fun `a complete tariff list while tariffs are not observed is a problem`() {
         assertOnlyProblem("tariffListComplete", validSnapshot().copy(tariffs = null))
-        // The claim is about the list, not its contents: an observed empty list may be complete.
         assertNoProblems(validSnapshot().copy(tariffs = emptyList()))
     }
 
@@ -279,7 +257,6 @@ private fun mutate(block: ProviderSnapshot.() -> ProviderSnapshot): ProviderSnap
 private fun problemsOf(snapshot: ProviderSnapshot, clock: Clock = fixtureClock()): List<SnapshotProblem> =
     SnapshotValidator(clock).validate(fixtureAdapter(), snapshot)
 
-/** Exactly one problem, at [expectedPath] -- every other element of the fixture stays acceptable. */
 private fun assertOnlyProblem(expectedPath: String, snapshot: ProviderSnapshot) {
     val found = problemsOf(snapshot)
     assertEquals(listOf(expectedPath), found.map { it.path }, "problems: $found")

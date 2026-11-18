@@ -2,11 +2,7 @@ import type { TariffDto } from "../../api/types";
 import { dateTimeInputToIsoZ } from "../../forms/dateTime";
 import { optionalText, optionalWireInt, wireInt, withoutUndefined } from "../../forms/requestFields";
 
-/*
- * Mirrors of the Kotlin write DTOs. The backend rejects any unknown key with a detail-less `400`,
- * so every body is assembled field by field from form state -- never spread from a read DTO.
- * Integer fields are `number | string`: see `wireInt`.
- */
+/* Build the write body explicitly. The backend rejects unknown fields with a detail-less 400. See `wireInt` for integer inputs. */
 
 export interface TariffWriteRequest {
   externalId?: string;
@@ -85,10 +81,7 @@ export function tariffFormValues(tariff?: TariffDto): TariffFormValues {
   };
 }
 
-/**
- * `isActive`/`inStock` are always sent: the backend defaults an omitted one to `true`, so leaving
- * them out of an edit would silently reactivate or restock the tariff.
- */
+/** Send both flags explicitly because the API defaults omissions to true, which can reactivate or restock a tariff. */
 export function buildTariffRequest(values: TariffFormValues): TariffWriteRequest {
   return withoutUndefined<TariffWriteRequest>({
     externalId: optionalText(values.externalId),
@@ -123,7 +116,6 @@ export interface PriceFormValues {
 
 export const PRICE_REQUIRED = ["billingPeriod", "amount", "currency"] as const;
 
-/** `amount` goes out exactly as typed (trimmed): the backend owns the digit limits. */
 export function buildPriceRequest(values: PriceFormValues): PriceWriteRequest {
   return withoutUndefined<PriceWriteRequest>({
     billingPeriod: values.billingPeriod,
@@ -147,10 +139,7 @@ export function buildPriceCloseRequest(values: PriceCloseFormValues): PriceClose
   });
 }
 
-/**
- * `201`: a new row was appended and the previous one closed. `200`: amount and currency matched
- * the current row, so only its `lastConfirmedAt` moved.
- */
+/** A 201 appends a price and closes the previous row. A 200 only advances lastConfirmedAt on a matching price. */
 export function priceWriteNotice(status: number): string {
   return status === 201 ? "новая цена записана" : "цена не изменилась, отметка «проверено» обновлена";
 }

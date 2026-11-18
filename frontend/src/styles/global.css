@@ -375,7 +375,6 @@ td {
   white-space: nowrap;
 }
 
-/* The whole cell is the link target, not just its text. */
 td.cell-link {
   padding: 0;
 }
@@ -755,7 +754,6 @@ a.btn-primary {
   font-size: var(--fs-2);
 }
 
-/* Shared finishing styles for detail, search, and form pages. */
 .page-intro { margin: var(--sp-2) 0 var(--sp-4); }
 .page-intro h1,
 .provider-card > h1,

@@ -13,14 +13,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Proves `V1__core_schema.sql` against the real migrated container -- never by parsing the .sql
- * file. Every assertion queries `information_schema`/`pg_constraint` or exercises a constraint
- * with real inserts, and is scoped to the ids this test itself created (the container, and the
- * schema in it, is shared across every test class in the suite).
- */
+/** Check schema behavior against the migrated PostgreSQL database. */
 class CoreSchemaTest : AbstractDbTest() {
-    // ---- small JDBC helpers -------------------------------------------------------------
 
     private fun Connection.insertId(sql: String, vararg params: Any?): Long =
         prepareStatement(sql).use { statement ->
@@ -58,13 +52,7 @@ class CoreSchemaTest : AbstractDbTest() {
         return result
     }
 
-    /**
-     * Asserts the insert fails, and that it fails for the *specific* named constraint expected --
-     * not merely with *some* `SQLException`, which would also pass for a typo in the test's own
-     * SQL or the wrong constraint firing. `PSQLException.serverErrorMessage.constraint` names the
-     * constraint (or unique index, which Postgres reports the same way) that actually fired on the
-     * server.
-     */
+    /** Require the named database constraint so an unrelated SQL error cannot satisfy the assertion. */
     private fun Connection.assertInsertFails(expectedConstraint: String, sql: String, vararg params: Any?) {
         val exception = assertFailsWith<SQLException> { exec(sql, *params) }
         val psqlException = exception as? PSQLException ?: exception.cause as? PSQLException
@@ -118,7 +106,6 @@ class CoreSchemaTest : AbstractDbTest() {
 
     private val now: OffsetDateTime = OffsetDateTime.now(ZoneOffset.UTC)
 
-    // ---- 1. tables and columns -----------------------------------------------------------
 
     private fun Connection.columnsOf(table: String): Map<String, Boolean> {
         val result = mutableMapOf<String, Boolean>()
@@ -145,8 +132,7 @@ class CoreSchemaTest : AbstractDbTest() {
                 "website_url" to false,
                 "description" to true,
                 "status" to false,
-                // Added by V2__provider_system_status.sql (vds-004.2); this map stays exact, and an
-                // extra or missing column still fails the assertion.
+                // Include system_status in the expected final column set.
                 "system_status" to false,
                 "created_at" to false,
                 "updated_at" to false,
@@ -263,7 +249,6 @@ class CoreSchemaTest : AbstractDbTest() {
         }
     }
 
-    // ---- 2. numeric precision/scale, no float/double -------------------------------------
 
     @Test
     fun `money and rate columns are numeric with the exact precision and scale`() {
@@ -314,7 +299,6 @@ class CoreSchemaTest : AbstractDbTest() {
         }
     }
 
-    // ---- 3. timestamp columns --------------------------------------------------------------
 
     @Test
     fun `every timestamp column is timestamp with time zone`() {
@@ -352,8 +336,7 @@ class CoreSchemaTest : AbstractDbTest() {
             )
             assertEquals(expected, actual)
 
-            // flyway_schema_history is Flyway's own metadata table (its installed_on column is a
-            // naive timestamp) -- not part of this migration's schema, excluded like above.
+            // Exclude Flyway metadata because its installed_on column is outside the catalog schema.
             val withoutTimeZoneCount = connection.scalarLong(
                 "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name <> 'flyway_schema_history' AND data_type = 'timestamp without time zone'",
             )
@@ -361,7 +344,6 @@ class CoreSchemaTest : AbstractDbTest() {
         }
     }
 
-    // ---- 4. enum-like CHECK constraints ----------------------------------------------------
 
     @Test
     fun `provider status accepts every intended value and rejects an invalid one`() {
@@ -557,7 +539,6 @@ class CoreSchemaTest : AbstractDbTest() {
         }
     }
 
-    // ---- 5. partial unique index on the current price ------------------------------------
 
     @Test
     fun `at most one current price per tariff and billing period, but closed rows are unrestricted`() {
@@ -574,7 +555,6 @@ class CoreSchemaTest : AbstractDbTest() {
                 now,
             )
 
-            // A second *current* row for the same (tariff, billing_period) must be rejected.
             connection.assertInsertFails(
                 "uq_tariff_price_current",
                 """
@@ -585,7 +565,6 @@ class CoreSchemaTest : AbstractDbTest() {
                 now.plusDays(1),
             )
 
-            // Two *closed* rows for the same pair are both allowed.
             connection.exec(
                 """
                 INSERT INTO tariff_price (tariff_id, billing_period, amount, currency, effective_from, effective_to, data_source)
@@ -613,7 +592,6 @@ class CoreSchemaTest : AbstractDbTest() {
         }
     }
 
-    // ---- 6. cross-provider composite FK ----------------------------------------------------
 
     @Test
     fun `tariff_location composite FK rejects a tariff and location belonging to different providers`() {
@@ -644,7 +622,6 @@ class CoreSchemaTest : AbstractDbTest() {
                 providerB,
             )
 
-            // A matching provider on both sides succeeds.
             val locationA = newLocation(connection, providerA, "FR")
             connection.exec(
                 "INSERT INTO tariff_location (tariff_id, location_id, provider_id) VALUES (?, ?, ?)",
@@ -661,7 +638,6 @@ class CoreSchemaTest : AbstractDbTest() {
         }
     }
 
-    // ---- 7. half-filled coordinate pair ----------------------------------------------------
 
     @Test
     fun `location rejects a half-filled latitude-longitude pair`() {
@@ -679,7 +655,6 @@ class CoreSchemaTest : AbstractDbTest() {
                 providerId,
             )
 
-            // Both NULL, and both set within range, are fine.
             connection.exec(
                 "INSERT INTO location (provider_id, country_code) VALUES (?, 'US')",
                 providerId,
@@ -697,7 +672,6 @@ class CoreSchemaTest : AbstractDbTest() {
         }
     }
 
-    // ---- 8. ON DELETE CASCADE end to end ---------------------------------------------------
 
     @Test
     fun `deleting a provider cascades to legal info, payment methods, locations, tariffs, tariff_location and prices`() {
@@ -748,7 +722,6 @@ class CoreSchemaTest : AbstractDbTest() {
         }
     }
 
-    // ---- 9. deleting a user nulls out recorded_by, keeps the price row --------------------
 
     @Test
     fun `deleting the recording user sets tariff_price recorded_by to NULL and keeps the row`() {
@@ -781,7 +754,6 @@ class CoreSchemaTest : AbstractDbTest() {
         }
     }
 
-    // ---- 10. seeded roles -------------------------------------------------------------------
 
     @Test
     fun `role table contains exactly ADMIN EDITOR and VIEWER`() {
@@ -791,11 +763,6 @@ class CoreSchemaTest : AbstractDbTest() {
         }
     }
 
-    // ---- 11. constraints that no test above actually pinned -------------------------------
-    // Each of these can be deleted from V1__core_schema.sql individually with the rest of this
-    // suite still green -- confirmed by temporarily removing each one and re-running the suite
-    // before writing the test below for it. assertInsertFails checks the *specific* constraint
-    // name that fired (see its KDoc), not just that some SQLException was thrown.
 
     @Test
     fun `provider slug must be unique`() {
@@ -1046,7 +1013,6 @@ class CoreSchemaTest : AbstractDbTest() {
         }
     }
 
-    // ---- 12. currency_rate -- zero rows were ever inserted here before this fix -----------
 
     private fun newCurrencyRate(
         connection: Connection,

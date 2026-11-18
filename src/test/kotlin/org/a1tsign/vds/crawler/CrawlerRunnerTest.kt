@@ -43,14 +43,9 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * The orchestrator against the **real** application ([CrawlerAppHarness]): failure isolation is a
- * claim about what happens to the *other* adapters' data, so the catalog is real. Every budget is a
- * constructor parameter, so no test waits minutes.
- */
+/** Use the real API so isolation is verified against catalog state after other adapters finish. */
 class CrawlerRunnerTest : AbstractDbTest() {
 
-    // ---------- 1. failure isolation, the headline ----------
 
     @Test
     fun `one broken adapter fails alone while the run completes and its neighbours reach the catalog`() {
@@ -74,7 +69,6 @@ class CrawlerRunnerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 2. the validation gate ----------
 
     @Test
     fun `an invalid snapshot fails its adapter with zero writes while the next adapter still runs`() {
@@ -101,7 +95,6 @@ class CrawlerRunnerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 3 + 4. budgets ----------
 
     @Test
     fun `an adapter over its own budget is FAILED with TIMEOUT and the next adapter still runs`() {
@@ -139,7 +132,6 @@ class CrawlerRunnerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 5. one run at a time ----------
 
     @Test
     fun `a second run is refused without blocking while the first one stays RUNNING and unaffected`() {
@@ -165,7 +157,6 @@ class CrawlerRunnerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 6. robots.txt ----------
 
     @Test
     fun `an adapter robots txt disallows is SKIPPED rather than FAILED and the run continues`() {
@@ -182,7 +173,6 @@ class CrawlerRunnerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 7. a whole-run auth failure ----------
 
     @Test
     fun `a rejected service account stops the run and skips the remaining adapters`() {
@@ -190,8 +180,7 @@ class CrawlerRunnerTest : AbstractDbTest() {
             snapshotAdapter("alpha", stubSnapshot("alpha", clock.instant())),
             snapshotAdapter("bravo", stubSnapshot("bravo", clock.instant())),
         ) { ctx ->
-            // The real server refuses every catalog call, including the one made with a freshly
-            // issued token -- which is what the client turns into its non-retryable Unauthorized.
+            // Reject both the original and refreshed token so the client exhausts its one re-login attempt.
             ctx.harness.rejectCatalogCallsAsUnauthorized = true
 
             val summary = ctx.runner.runOnce(AdapterSelection(), dryRun = false)
@@ -205,7 +194,6 @@ class CrawlerRunnerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 8. the run-history ring buffer ----------
 
     @Test
     fun `the history keeps the last twenty runs newest first and forgets the evicted ones`() {
@@ -220,7 +208,6 @@ class CrawlerRunnerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 9. counters, timestamps and durations ----------
 
     @Test
     fun `a successful run reports the reconciler's counters, the fetcher's pages and both clock instants`() {
@@ -287,7 +274,6 @@ class CrawlerRunnerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 10. logging ----------
 
     @Test
     fun `one INFO opens and one closes the run, a failed adapter logs exactly one WARN, and no secret leaks`() {
@@ -319,7 +305,6 @@ class CrawlerRunnerTest : AbstractDbTest() {
         assertTrue(!captured.contains("eyJ"), "a JWT leaked")
     }
 
-    // ---------- 12. cancellation hygiene ----------
 
     @Test
     fun `cancelling the run releases the slot, records CANCELLED and lets the next run start`() {
@@ -341,13 +326,10 @@ class CrawlerRunnerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- M9. the maxConcurrentAdapters guard ----------
 
     @Test
     fun `a configured concurrency above 1 is refused at construction, not silently ignored`() {
-        // M9 of 05-reviews/vds-002.5-6-combined-quality.md: the one-line comparison standing
-        // between a config of 2 and the broken PageFetcher politeness / pagesFetched accounting
-        // the report names had no test -- every other test constructs with the default of 1.
+        // Reject concurrency above one because per-adapter fetch counts depend on serial execution.
         CrawlerAppHarness(clock).use { harness ->
             CatalogApiClient(config = harness.crawlerConfig(), clock = clock).use { client ->
                 assertFailsWith<ConfigurationException> {
@@ -365,7 +347,6 @@ class CrawlerRunnerTest : AbstractDbTest() {
         }
     }
 
-    // ---------- helpers ----------
 
     private class Ctx(
         val runner: CrawlerRunner,

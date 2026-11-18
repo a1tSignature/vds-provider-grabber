@@ -5,7 +5,7 @@ interface PriceDatesProps {
   lastConfirmedAt: string;
 }
 
-/** Neutral: no colour, icon or label derived from age -- that judgement belongs to the viewer. */
+/** Date display stays neutral regardless of price age. */
 export function PriceDates({ effectiveFrom, lastConfirmedAt }: PriceDatesProps) {
   return (
     <span className="price-dates">

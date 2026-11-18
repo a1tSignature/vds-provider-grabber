@@ -46,33 +46,9 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * **The acceptance criterion of increment vds-002** (spec req. 31 / test 43.8): the whole loop --
- * the shipped `example-static` adapter, the polite fetcher, snapshot validation, the reconciler and
- * the vds-001 admin API -- against the **real** application on a real port, the real Testcontainers
- * PostgreSQL, and a local fixture page. Nothing is mocked: the service account is created through
- * `POST /api/v1/admin/users`, every catalog write is an HTTP call the server really answers, and
- * every assertion reads the result back through the public API.
- *
- * The property that matters is **idempotence**: running the same adapter twice over an unchanged
- * page must create nothing the second time and must leave the append-only price history with
- * exactly one open row per tariff and billing period. A crawler that fails this does not merely
- * duplicate rows -- it writes a second price row per run into a history that is not
- * back-correctable.
- *
- * ### Two traps this test exists to keep tripped
- *
- * - **The clock does not move by itself.** vds-001 answers `409` when a new price's `effectiveFrom`
- *   is not *after* the current row's, so every run that may write a price advances
- *   [AbstractDbTest.clock] first. Without that, a correct crawler looks broken.
- * - **No test may reach the network.** Every page comes from [FixtureHttpServer] on loopback,
- *   including `robots.txt`; the fetcher is the production [KtorPageFetcher] with only its per-host
- *   delay shortened (politeness itself is `PageFetcherTest`'s subject, and 2 s per page would add
- *   nothing here but seconds).
- */
+/** Run the opt-in reference adapters through the real fixture server, API and database. Verify repeat runs, isolation and dry-run behavior. */
 class CrawlerEndToEndTest : AbstractDbTest() {
 
-    // ---------- 1-4 + the headline: run it twice, change nothing ----------
 
     @Test
     fun `the reference adapter fills the catalog once and then changes nothing on a second run`() = withCrawler { ctx ->
@@ -95,7 +71,6 @@ class CrawlerEndToEndTest : AbstractDbTest() {
         assertEquals("Beispielstrasse 1, 10115 Berlin", legal.legalAddress)
         assertEquals(ctx.pageUrl, legal.sourceUrl)
 
-        // The snapshot declares a payment-method set, so the catalog holds exactly that set.
         assertEquals(listOf("BANK_WIRE", "VISA_MASTERCARD"), detail.paymentMethods.map { it.method }.sorted())
 
         assertEquals(
@@ -115,7 +90,6 @@ class CrawlerEndToEndTest : AbstractDbTest() {
         assertEquals("KVM", cx51.virtualization)
         assertTrue(cx51.isActive && cx51.inStock)
 
-        // Both locations are linked to every tariff, and each tariff has its two current prices.
         val locationIds = detail.locations.map { it.id }.sorted()
         tariffs.values.forEach { tariff ->
             val tariffDetail = ctx.probe.get("/api/v1/tariffs/${tariff.id}", ctx.adminToken).jsonObject
@@ -135,7 +109,6 @@ class CrawlerEndToEndTest : AbstractDbTest() {
             "6 price rows, every one of them recorded as CRAWLER",
         )
 
-        // --- the second run, against the very same page ---
         ctx.harness.clearRecordedCalls()
         clock.advance(Duration.ofHours(1))
         val second = ctx.run()
@@ -149,10 +122,7 @@ class CrawlerEndToEndTest : AbstractDbTest() {
             ctx.harness.calls().filter { it.method == "POST" && it.path != "/api/v1/auth/login" },
             "nothing at all was created on the second run",
         )
-        // The whole non-GET call set, not just "no POST": pins the reconciler's unconditional
-        // location-link replace per tariff and the 6 unchanged-price PUTs, so a regression that
-        // re-PUTs /providers/{id}, .../legal-info or .../payment-methods on an unchanged page
-        // (the risk already filed as 01-inbox/vds-002.5-debt-1) would fail this assertion too.
+        // Compare all mutations, including repeated link PUTs and idempotent price PUTs, to catch extra writes.
         val expectedNonGetCalls = tariffs.values.flatMap { tariff ->
             listOf("PUT /api/v1/tariffs/${tariff.id}/locations") + List(2) { "PUT /api/v1/tariffs/${tariff.id}/price" }
         }
@@ -183,7 +153,6 @@ class CrawlerEndToEndTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 5. failure isolation with the shipped adapters ----------
 
     @Test
     fun `the deliberately failing reference adapter fails alone while its neighbours reach the catalog`() {
@@ -209,7 +178,6 @@ class CrawlerEndToEndTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 6. dry run first ----------
 
     @Test
     fun `a dry run writes nothing and predicts exactly what the real run then does`() = withCrawler { ctx ->
@@ -243,7 +211,6 @@ class CrawlerEndToEndTest : AbstractDbTest() {
         assertNotNull(ctx.client.findProviderBySlug("example-static"))
     }
 
-    // ---------- 7. robots.txt ----------
 
     @Test
     fun `a disallowing robots txt makes the run SKIPPED and leaves the catalog empty`() =
@@ -258,7 +225,6 @@ class CrawlerEndToEndTest : AbstractDbTest() {
             assertEquals(emptyList(), ctx.fixture.requestsTo(ExampleStaticAdapter.PAGE_PATH), "the page was never requested")
         }
 
-    // ---------- 8. a price change through the crawler (spec test 43.12) ----------
 
     @Test
     fun `a changed page appends exactly one price row and closes the previous one at the same instant`() = withCrawler { ctx ->
@@ -289,14 +255,12 @@ class CrawlerEndToEndTest : AbstractDbTest() {
             ctx.openHistoryRows(tariffId).count { it.string("billingPeriod") == "MONTHLY" },
             "still exactly one current MONTHLY price",
         )
-        // The other tariff's prices were untouched by the change.
         assertEquals(
             listOf("ANNUAL:96.9800" to "CRAWLER", "MONTHLY:8.9800" to "CRAWLER"),
             ctx.historyByTariffName(ctx.tariffsByName()).getValue("Static CX21"),
         )
     }
 
-    // ---------- the expected summaries, as whole objects ----------
 
     private fun firstRun() = result(
         status = AdapterRunStatus.SUCCESS,
@@ -341,7 +305,6 @@ class CrawlerEndToEndTest : AbstractDbTest() {
     private fun normalise(summary: CrawlRunSummary) =
         summary.copy(adapters = summary.adapters.map { it.copy(durationMs = 0) })
 
-    // ---------- harness ----------
 
     private class Ctx(
         val harness: CrawlerAppHarness,
@@ -375,12 +338,7 @@ class CrawlerEndToEndTest : AbstractDbTest() {
                 .filter { it.optString("effectiveTo") == null }
     }
 
-    /**
-     * The real application, the real fixture server, a service account created **through the admin
-     * API**, and a [CrawlerRunner] over the registry this build actually ships
-     * ([AdapterRegistry.production]) -- so the test proves the shipped adapter is reachable by its
-     * configured id, not merely that a hand-built registry works.
-     */
+    /** Use the real API and fixture server. Create the crawler service account over the admin endpoint. */
     private fun withCrawler(
         robots: String = "User-agent: *\nAllow: /\n",
         extraEntries: List<AdapterEntry> = emptyList(),
@@ -396,12 +354,9 @@ class CrawlerEndToEndTest : AbstractDbTest() {
             ApiProbe(harness.baseUrl).use { probe ->
                 runBlocking {
                     val adminToken = probe.login(BOOTSTRAP_ADMIN, BOOTSTRAP_PASSWORD)
-                    // The operator's real path (ADR-02): an EDITOR service account created over
-                    // HTTP, never inserted into the database by the test.
+                    // Create the EDITOR through the same admin API used by operators.
                     probe.createUser(adminToken, SERVICE_USERNAME, SERVICE_PASSWORD, "EDITOR")
-                    // From here on the recorder sees the crawler's calls only, so "zero creates"
-                    // and "no write at all in a dry run" are claims about the crawler, not about
-                    // this set-up.
+                    // Start recording after setup so the mutation assertions cover crawler calls only.
                     harness.clearRecordedCalls()
                     val crawlerConfig = harness.crawlerConfig(username = SERVICE_USERNAME, password = SERVICE_PASSWORD)
                         // Politeness is PageFetcherTest's subject; 2 s per page would only slow this down.
@@ -412,8 +367,7 @@ class CrawlerEndToEndTest : AbstractDbTest() {
                             val writerFactory: (Boolean) -> CrawlWriter = { dryRun ->
                                 if (dryRun) DryRunWriter() else ApiCrawlWriter(client)
                             }
-                            // The production variable, through the production mapping, so the name
-                            // an operator sets is the name this test proves.
+                            // Feed the adapter settings through production environment mapping.
                             val env = mapOf(ExampleStaticAdapter.BASE_URL_VARIABLE to fixture.url(""))
                             val runner = CrawlerRunner(
                                 config = crawlerConfig,
@@ -444,7 +398,6 @@ class CrawlerEndToEndTest : AbstractDbTest() {
         }
     }
 
-    /** The vds-001 API as a *client* sees it, for the reads `CatalogApiClient` does not model. */
     private class ApiProbe(private val baseUrl: String) : AutoCloseable {
 
         private val client = HttpClient(CIO)

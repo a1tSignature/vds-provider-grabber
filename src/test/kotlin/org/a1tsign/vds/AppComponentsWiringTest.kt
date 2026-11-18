@@ -24,13 +24,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
-/**
- * The composition root itself, which no test covered before: every crawler test builds its own
- * [org.a1tsign.vds.crawler.CrawlerRunner] and passes `adapterConfig` explicitly, so the production
- * path -- `buildComponents` not passing it at all -- stayed broken through three tasks
- * (`01-inbox/vds/vds-002.9-debt-1`). Here the runner under test is the one `buildComponents`
- * actually constructed.
- */
+/** Exercise production composition so per-adapter environment settings reach the reference adapter through real wiring. */
 class AppComponentsWiringTest : AbstractDbTest() {
 
     @Test
@@ -54,12 +48,11 @@ class AppComponentsWiringTest : AbstractDbTest() {
                     "VDS_CRAWLER_PASSWORD" to SERVICE_PASSWORD,
                     "VDS_CRAWLER_ADAPTERS" to ExampleStaticAdapter.ID,
                     ExampleStaticAdapter.BASE_URL_VARIABLE to fixture.url(""),
-                    // Politeness itself is PageFetcherTest's subject; 2 s per page adds nothing here.
+                    // Use a short delay because this fixture exercises wiring.
                     "VDS_CRAWLER_HOST_DELAY_MS" to "50",
                 ),
             )
 
-            // The configured slice reached CrawlerConfig, and masks itself in any log line.
             assertEquals(
                 mapOf(ExampleStaticAdapter.BASE_URL_CONFIG_KEY to fixture.url("")),
                 crawlerAdapterConfig(ExampleStaticAdapter.ID, config.crawler.adapterEnv.reveal()),
@@ -87,7 +80,6 @@ class AppComponentsWiringTest : AbstractDbTest() {
 
                 val result = summary.adapters.single()
                 assertEquals(RunStatus.COMPLETED, summary.status)
-                // Before the wiring fix this was FAILED / ADAPTER_ERROR / "...BASE_URL is not set".
                 assertEquals(AdapterRunStatus.SUCCESS, result.status, result.message)
                 assertNull(result.failureReason)
                 assertEquals(1, result.providersCreated)

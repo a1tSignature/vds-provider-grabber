@@ -8,12 +8,7 @@ interface QueryState<T> {
   loading: boolean;
 }
 
-/**
- * Fetches `path` and refetches whenever it changes -- callers encode filter/sort/page state into
- * the query string, so a filter change is a `path` change. `path === null` skips the request
- * (e.g. a detail screen waiting on a route param). A superseded request is aborted and never
- * surfaces as an error.
- */
+/** Refetch when the path changes. Null skips the request, and superseded requests are aborted without surfacing an error. */
 export function useApiQuery<T>(path: string | null): {
   data: T | undefined;
   error: ApiClientError | undefined;
@@ -55,10 +50,7 @@ interface MutationState<T> {
   loading: boolean;
 }
 
-/**
- * One `method`/`path` pair, like a form submit. `skipAuth` is for the login call: it carries no
- * token and its `401` is a credential error, not a reason to wipe a (nonexistent) session.
- */
+/** Use `skipAuth` for login, where a 401 indicates rejected credentials and leaves session handling to the caller. */
 export function useApiMutation<TBody, TResult>(
   method: "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,

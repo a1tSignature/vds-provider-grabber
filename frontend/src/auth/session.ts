@@ -1,6 +1,6 @@
 const SESSION_STORAGE_KEY = "vds.session";
 
-/** Treat anything inside this margin as already expired, so a request never races token expiry mid-flight. */
+/** Treat tokens as expired shortly before their deadline to allow time for requests in flight. */
 const EXPIRY_SAFETY_MARGIN_MS = 30_000;
 
 export interface SessionData {
@@ -44,7 +44,6 @@ export function clearStoredSession(): void {
   try {
     sessionStorage.removeItem(SESSION_STORAGE_KEY);
   } catch {
-    // Nothing to clean up if storage was never reachable.
   }
 }
 

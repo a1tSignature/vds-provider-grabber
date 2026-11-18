@@ -6,7 +6,6 @@ interface SessionContextValue {
   session: SessionData | null;
   login: (session: SessionData) => void;
   logout: () => void;
-  /** Wipes the session and sends the user back to the login screen with the expiry notice. */
   handleUnauthorized: () => void;
 }
 

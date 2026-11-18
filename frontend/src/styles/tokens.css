@@ -1,8 +1,4 @@
-/*
- * The only file where a literal colour or size may appear; every rule elsewhere reads var(--…).
- * Dark ("night") is the default; a system light preference overrides it only while no explicit
- * choice has been made (html carries no [data-theme]); the toggle's explicit choice always wins.
- */
+/* Define literal colors and sizes here for the source guard. Dark is the default. The system light preference applies until a theme is pinned. */
 :root {
   --bg: #10151d;
   --s1: #171e28;

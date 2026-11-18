@@ -5,15 +5,8 @@ import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 
-/**
- * The only sanctioned way to read "now" in `src/main/kotlin`. Production wiring passes
- * `Clock.systemUTC()`; tests pass a fixed/mutable clock so time-dependent behaviour (token
- * expiry, price effective dates) is controllable.
- */
+/** Use the injected clock for wall time so expiry and effective dates can be controlled in tests. */
 fun Clock.nowUtc(): Instant = instant()
 
-/**
- * The `Instant` <-> `OffsetDateTime` conversion needed at the Exposed boundary
- * (`timestampWithTimeZone` columns store `OffsetDateTime`, the domain uses `Instant`).
- */
+/** Exposed stores timestampWithTimeZone as OffsetDateTime while the domain uses Instant. */
 fun Instant.toUtcOffset(): OffsetDateTime = atOffset(ZoneOffset.UTC)

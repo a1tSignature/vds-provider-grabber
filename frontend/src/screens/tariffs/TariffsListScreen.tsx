@@ -127,9 +127,7 @@ export function TariffsListScreen() {
     if (debouncedMaxPrice !== filters.maxPriceUsd) updateFilters({ maxPriceUsd: debouncedMaxPrice, page: 0 });
   }, [debouncedMaxPrice]);
 
-  // Open/closed state is not URL state and resets whenever the table's own query changes. Keyed on
-  // the query and derived during render: resetting it in an effect would let already-open panels
-  // fire one request with the new filters before they close.
+  // Reset expanded rows during render when the query changes. An effect would let open rows request data with the new filters first.
   const [expandedState, setExpandedState] = useState<{ search: string; ids: ReadonlySet<number> }>({
     search: canonicalSearch,
     ids: new Set(),

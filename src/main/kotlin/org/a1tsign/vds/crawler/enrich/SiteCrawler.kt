@@ -27,16 +27,11 @@ private const val MAX_SCRIPT_FILES = 6
 private const val MAX_ENTRY_SCRIPTS = 20
 private const val MAX_CHUNK_URLS = 500
 
-/** Thrown inside a crawl to stop every further request to the site. */
 private class SiteBlocked(val reason: String) : Exception(reason, null, false, false)
 
 /**
- * Crawls one site: robots.txt → `/` → the pricing page → sitemaps → link candidates ranked by URL
- * and anchor hints, under the page, section and sitemap budgets. Pages are fetched and analysed one at a time; only their signals are kept.
- * A site whose pages carry no text is read from its same-origin JS files instead of more pages.
- *
- * Every request goes through [fetcher] (the shared polite fetcher, which always honours robots.txt
- * for enrichment). An anti-bot challenge anywhere ends the crawl with no further request.
+ * Visit robots.txt, the home and pricing pages, then sitemaps and ranked links within the configured budgets.
+ * Inspect JS only for a shell with little visible text. A challenge stops all further requests.
  */
 internal class SiteCrawler(
     private val fetcher: EnrichmentFetcher,
@@ -186,7 +181,6 @@ internal class SiteCrawler(
             }
         }
 
-        /** Analyses one JS file as SPA text, with its own URL as evidence; returns its chunk imports. */
         private fun analyseScript(url: String, body: String): List<String> {
             val script = ScriptReader.read(body)
             val content = PageContent(
@@ -237,7 +231,6 @@ internal class SiteCrawler(
             return locEntries(body)
         }
 
-        /** Scores a same-site link by URL and anchor hints and keeps the best score per URL. */
         private fun consider(href: String, anchorText: String) {
             val resolved = Parser.unescapeEntities(href.trim(), false).substringBefore('#')
             val uri = parse(resolved) ?: return

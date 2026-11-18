@@ -22,23 +22,15 @@ const val MONEY_SCALE: Int = 4
 /** Integer digits a money value may have -- the other half of `NUMERIC(12, 4)`. */
 const val MONEY_MAX_INTEGER_DIGITS: Int = 8
 
-/** Plain decimal notation: optional `-`, digits, optional `.digits`. No exponent, `+`, grouping or whitespace. */
 private val PLAIN_DECIMAL_PATTERN = Regex("""^-?\d+(\.\d+)?$""")
 
-/**
- * [BigDecimal] is a JSON string in plain notation in requests and responses, so money never passes
- * through a `Double` or reaches a client as `9.2E-1`.
- *
- * With `isLenient = false` on [ApiJson], [Decoder.decodeString] rejects a JSON number token, so
- * `{"amount": 10}` is a `400`.
- */
+/** Encode decimals as plain JSON strings to preserve precision. Strict string decoding rejects number tokens. */
 object BigDecimalSerializer : KSerializer<BigDecimal> {
     override val descriptor: SerialDescriptor =
         PrimitiveSerialDescriptor("org.a1tsign.vds.api.BigDecimal", PrimitiveKind.STRING)
 
     override fun serialize(encoder: Encoder, value: BigDecimal) {
-        // toPlainString(), never toString(): the latter emits scientific notation as soon as the
-        // scale is negative or far from zero (BigDecimal("1E+3").toString() == "1E+3").
+        // Use toPlainString to keep negative scales and very small values out of scientific notation.
         encoder.encodeString(value.toPlainString())
     }
 
@@ -47,12 +39,7 @@ object BigDecimalSerializer : KSerializer<BigDecimal> {
             ?: throw SerializationException("Expected a decimal number in plain notation as a JSON string")
 }
 
-/**
- * [Instant] is written as UTC with `Z` and whole seconds: `2026-10-28T10:00:00Z`.
- *
- * Input must be ISO-8601 with an explicit offset. A timestamp without one is rejected: assuming UTC
- * would shift a client's local time by its offset.
- */
+/** Write UTC instants with whole seconds. Input must carry an explicit ISO-8601 offset. */
 object InstantSerializer : KSerializer<Instant> {
     override val descriptor: SerialDescriptor =
         PrimitiveSerialDescriptor("org.a1tsign.vds.api.Instant", PrimitiveKind.STRING)
@@ -66,7 +53,6 @@ object InstantSerializer : KSerializer<Instant> {
         return try {
             OffsetDateTime.parse(raw, DateTimeFormatter.ISO_OFFSET_DATE_TIME).toInstant()
         } catch (e: DateTimeParseException) {
-            // Keep the cause: the server-side WARN shows what failed to parse; the client gets a fixed message.
             throw SerializationException(
                 "Expected an ISO-8601 timestamp with an explicit offset, e.g. 2026-10-28T12:00:00Z",
                 e,
@@ -75,16 +61,7 @@ object InstantSerializer : KSerializer<Instant> {
     }
 }
 
-/**
- * The only `Json` instance, used by `ContentNegotiation`. A second one would let endpoints disagree
- * on the wire format.
- *
- * - `ignoreUnknownKeys = false`: a typo in a request field is a `400`, not a silently dropped field.
- * - `encodeDefaults = true`: every documented response key is present, even when it equals its default.
- * - `explicitNulls = false`: a null field is omitted, not sent as `null`. In DTOs, optional means absent.
- * - `isLenient = false`: a number where a string is required is a `400`, which keeps `Double` out
- *   of money values ([BigDecimalSerializer]).
- */
+/** Reject unknown request keys. Encode response defaults and omit null fields. Strict decoding preserves string-only decimals. */
 val ApiJson: Json = Json {
     ignoreUnknownKeys = false
     encodeDefaults = true
@@ -102,7 +79,6 @@ val ApiJson: Json = Json {
 fun parsePlainDecimal(raw: String): BigDecimal? =
     if (PLAIN_DECIMAL_PATTERN.matches(raw)) BigDecimal(raw) else null
 
-/** Outcome of reading a money value off the wire -- see [parseAmount]. */
 sealed interface AmountParse {
     /** [value] is normalised to exactly [MONEY_SCALE] fractional digits. */
     data class Valid(val value: BigDecimal) : AmountParse
@@ -111,10 +87,7 @@ sealed interface AmountParse {
     data class Invalid(val reason: String) : AmountParse
 }
 
-/**
- * Applies the `NUMERIC(12, 4)` money rules to a raw string. [Validation.validateAmount] attaches the
- * field name to the failure.
- */
+/** Apply the storage range and scale of NUMERIC(12, 4). */
 fun parseAmount(raw: String): AmountParse {
     val value = parsePlainDecimal(raw)
         ?: return AmountParse.Invalid("must be a decimal number in plain notation")
@@ -124,8 +97,7 @@ fun parseAmount(raw: String): AmountParse {
     if (value.scale() > MONEY_SCALE) {
         return AmountParse.Invalid("must have at most $MONEY_SCALE fractional digits")
     }
-    // toBigInteger() drops the fraction and any leading zeros, so "00012.5" counts as 2 integer
-    // digits and "0.5" as 1 -- the same count PostgreSQL's NUMERIC(12, 4) applies.
+    // Count integer digits without the fraction or leading zeros, as PostgreSQL does.
     if (value.toBigInteger().abs().toString().length > MONEY_MAX_INTEGER_DIGITS) {
         return AmountParse.Invalid("must have at most $MONEY_MAX_INTEGER_DIGITS integer digits")
     }

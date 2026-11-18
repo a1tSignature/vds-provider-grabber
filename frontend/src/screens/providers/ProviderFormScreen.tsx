@@ -16,7 +16,6 @@ import {
 
 const FORBIDDEN = <p className="state-view state-view-error">недостаточно прав</p>;
 
-/** `/providers/new` and `/providers/:id/edit`. */
 export function ProviderFormScreen() {
   const { id } = useParams<{ id: string }>();
   return <EditorOnly fallback={FORBIDDEN}>{id === undefined ? <ProviderCreate /> : <ProviderEdit id={id} />}</EditorOnly>;

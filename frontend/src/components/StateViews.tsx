@@ -8,7 +8,6 @@ export function Empty({ text = "Ничего не найдено" }: { text?: st
   return <p className="state-view">{text}</p>;
 }
 
-/** Renders the error union: a 403/404 get their own text, everything else a retry banner. */
 export function ErrorView({ error, onRetry }: { error: ApiClientError | undefined; onRetry: () => void }) {
   if (error?.kind === "forbidden") return <p className="state-view state-view-error">недостаточно прав</p>;
   if (error?.kind === "notFound") return <p className="state-view state-view-error">не найдено</p>;

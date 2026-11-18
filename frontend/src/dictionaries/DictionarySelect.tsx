@@ -8,7 +8,6 @@ interface DictionarySelectProps {
   placeholder: string;
 }
 
-/** A `<select>` over one named dictionary; options render the raw value, never a hard-coded label. */
 export function DictionarySelect({ dictionary, value, onChange, placeholder }: DictionarySelectProps) {
   const dictionaries = useDictionaries();
   const options = dictionaries[dictionary];

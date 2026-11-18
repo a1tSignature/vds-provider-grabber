@@ -2,10 +2,6 @@ package org.a1tsign.vds.crawler.write
 
 import org.a1tsign.vds.domain.SystemStatus
 
-/**
- * The [CrawlWriter] that really writes, by delegating to [CatalogApiClient]. Catches nothing: every
- * [CatalogApiException] is the reconciler's to interpret.
- */
 class ApiCrawlWriter(private val client: CatalogApiClient) : CrawlWriter {
 
     override suspend fun createProvider(request: ProviderWrite): Long = client.createProvider(request).id

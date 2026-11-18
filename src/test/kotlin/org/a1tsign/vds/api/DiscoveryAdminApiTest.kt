@@ -44,7 +44,6 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** The four `/api/v1/admin/discovery` endpoints through the production wiring and real JWT auth. */
 class DiscoveryAdminApiTest : AbstractDbTest() {
 
     private val endpoints = listOf(

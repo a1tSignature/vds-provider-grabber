@@ -5,10 +5,7 @@ import kotlinx.serialization.Serializable
 import org.a1tsign.vds.domain.Tariff
 import java.time.Instant
 
-/**
- * `vcpuCount` and `ipv4Count` are `Short` in the table but `Int` on the wire; routes check the range
- * with `Validation.validateIntRange` before narrowing.
- */
+/** Validate the Int wire values before narrowing to the Short columns. */
 @Serializable
 data class TariffWriteRequest(
     val externalId: String? = null,

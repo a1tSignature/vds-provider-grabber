@@ -81,7 +81,6 @@ describe("buildExpansionQuery", () => {
     expect(params.get("providerId")).toBe("42");
     expect(params.get("includeAnnual")).toBe("true");
     expect(params.get("hasPrice")).toBe("true");
-    // The fixed sort/size win: the table's own page=3, sort=name,desc and size=50 never reach here.
     expect(params.get("sort")).toBe("priceUsd");
     expect(params.get("size")).toBe("100");
     expect(params.has("page")).toBe(false);

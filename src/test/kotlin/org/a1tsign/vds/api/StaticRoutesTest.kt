@@ -23,10 +23,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * `api/routes/StaticRoutes.kt` against the fixture bundle under
- * `src/test/resources/static-fixture/` (not a Node build -- see the task's "how to verify").
- */
+/** Use a small classpath bundle to exercise the same serving path as a built SPA. */
 class StaticRoutesTest : AbstractDbTest() {
     private fun auth(token: String) = HttpHeaders.Authorization to "Bearer $token"
 

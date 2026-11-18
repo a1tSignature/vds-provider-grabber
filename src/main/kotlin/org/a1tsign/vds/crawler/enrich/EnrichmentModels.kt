@@ -39,7 +39,6 @@ data class SiteTarget(
     val pricingUrl: String,
 )
 
-/** One piece of evidence: the page it was found on, what kind of signal it is and a short snippet. */
 data class EvidenceItem(val url: String, val kind: String, val snippet: String)
 
 enum class LegalStatus { CONFIRMED, PRESUMED }
@@ -61,10 +60,7 @@ data class ValueFinding(
     val evidence: List<EvidenceItem>,
 )
 
-/**
- * The findings of one enrichment. Never mapped onto a `ProviderSnapshot`: a heuristic crawl cannot
- * claim that a set it saw is complete.
- */
+/** Heuristic findings are never treated as a complete snapshot. */
 data class EnrichmentFindings(
     val legalEntityName: LegalFinding?,
     val registrationCountry: LegalFinding?,
@@ -76,7 +72,6 @@ data class EnrichmentFindings(
     val anySignal: Boolean,
 )
 
-/** How a crawl of one site ended. */
 sealed interface CrawlOutcome {
     data class Analysed(val findings: EnrichmentFindings) : CrawlOutcome
 

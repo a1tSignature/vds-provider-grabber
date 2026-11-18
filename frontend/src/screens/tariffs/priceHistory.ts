@@ -4,10 +4,8 @@ import { compareDecimalStrings } from "../../lib/decimalCompare";
 export type HistoryMarker = "up" | "down" | undefined;
 
 /**
- * One marker per row, aligned to `items` (newest `effectiveFrom` first). A row is compared only
- * against the next-older row of the same billing period: a currency change there, or no such row
- * at all (the oldest row for its period), leaves the row unmarked rather than reaching past it
- * for an older match -- colour is never the only signal, so an unmarked row renders with none.
+ * Returns markers in input order, newest first. Compare with the next older row in the same billing period.
+ * Leave the row unmarked if that row is missing or uses another currency.
  */
 export function computeHistoryMarkers(items: PriceHistoryItemDto[]): HistoryMarker[] {
   return items.map((current, index) => {
@@ -29,10 +27,7 @@ export function dateInputToIsoZ(value: string): string | undefined {
   return value === "" ? undefined : `${value}T00:00:00Z`;
 }
 
-/**
- * The upper bound for an inclusive "по" date: the backend filters `effectiveFrom < to`, so the
- * selected day is kept by sending the following midnight.
- */
+/** The API uses an exclusive upper bound, so include the selected day by sending the following UTC midnight. */
 export function endDateInputToIsoZ(value: string): string | undefined {
   if (value === "") return undefined;
   const nextDay = new Date(`${value}T00:00:00Z`);

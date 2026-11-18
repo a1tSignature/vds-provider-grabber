@@ -15,15 +15,11 @@ import org.a1tsign.vds.domain.EnrichmentOutcome
 import java.net.URI
 import java.util.concurrent.TimeUnit
 
-/** The catalog keeps at most this much of an attempt's message. */
 private const val MAX_MESSAGE = 500
 
 private const val FORBIDDEN = 403
 
-/**
- * The catalog refused the write itself: the account lacks `EDITOR`, so every further provider would
- * be crawled in full only to be refused the same way.
- */
+/** A refused write means the service account lacks EDITOR. Stop before fetching more providers whose writes would also fail. */
 class ForbiddenSubmit(cause: CatalogApiException.ClientError) : Exception(cause.message, cause)
 
 /**

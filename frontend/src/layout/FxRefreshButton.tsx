@@ -8,10 +8,7 @@ interface FxRefreshResponse {
 
 const NO_VALUES = {};
 
-/**
- * Fetches today's FX rates. It only adds rates for future conversions: `amountUsd` already
- * stored on prices is never recomputed, so the wording must not suggest it is.
- */
+/** Refreshing rates affects future conversions. Stored `amountUsd` values stay fixed. */
 export function FxRefreshButton() {
   const form = useForm(NO_VALUES);
   const { mutate } = useApiMutation<void, FxRefreshResponse>("POST", "/api/v1/admin/fx/refresh");

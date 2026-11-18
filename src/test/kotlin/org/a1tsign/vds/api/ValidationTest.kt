@@ -24,9 +24,7 @@ class ValidationTest {
 
     @Test
     fun coordinatePairAcceptsBothRawFieldsEvenWhenOneFailedItsOwnValidation() {
-        // longitude is individually out of range (validates to null), but both fields were
-        // supplied -- the pair check must look at the raw request fields, not the validated
-        // outcome, or it would wrongly ALSO report "must be supplied together".
+        // The out-of-range longitude becomes null after validation. The pair check must use raw field presence.
         val v = Validation()
         val longitude = v.validateLocationCoordinate("longitude", "200", BigDecimal("-180"), BigDecimal("180"))
         assertNull(longitude)

@@ -10,7 +10,6 @@ import kotlin.test.assertTrue
 private fun entry(id: String, providerSlug: String = id, includedByDefault: Boolean = true) =
     AdapterEntry(StubAdapter(id, providerSlug), includedByDefault)
 
-/** What `AppComponents` builds out of one loaded source file: the file's `enabled` is the default flag. */
 private fun configEntry(id: String, enabled: Boolean) = AdapterEntry(
     adapter = StubAdapter(id, "$id-slug"),
     includedByDefault = enabled,
@@ -82,8 +81,6 @@ class AdapterRegistryTest {
         val registry = AdapterRegistry.production(listOf(configEntry("on", enabled = true), configEntry("off", enabled = false)))
 
         assertEquals(listOf("on"), registry.select(emptyList()).map { it.id })
-        // Naming an id is the operator's deliberate act: it selects a config source whose own file
-        // says "enabled": false, and an unknown id still fails fast.
         assertEquals(listOf("off", "on"), registry.select(listOf("off", "on")).map { it.id })
         assertFailsWith<ConfigurationException> { registry.select(listOf("nope")) }
 

@@ -2,23 +2,11 @@ package org.a1tsign.vds.crawler.fetch
 
 import org.jsoup.nodes.Document
 
-/**
- * The single outbound HTTP handle an adapter has (ADR-04): an adapter never constructs an
- * `HttpClient` and never calls `Jsoup.connect`, so the politeness and safety limits -- timeouts,
- * redirect cap, robots.txt, per-host delay, the streamed body cap, the content-type allowlist and
- * the configured `User-Agent` -- cannot be opted out of.
- *
- * **Task vds-002.3 owns the behaviour; this file owns only the names**, so the SPI (task 1), the
- * fetcher (task 3) and the adapters (task 8) compile against the same surface.
- *
- * Every method throws a [FetchException]; nothing here reaches the catalog, the database or any
- * write path.
- */
+/** Adapter HTTP operations enforce the shared timeouts, redirects, host delay, robots rules and body limits. */
 interface PageFetcher {
-    /** Fetches [url] as text. */
     suspend fun get(url: String): FetchedPage
 
-    /** Fetches [url] and parses it as HTML; the parse is jsoup's only use in this project. */
+    /** Parse the response as HTML with the final URL as its base. */
     suspend fun getHtml(url: String): Document
 }
 
@@ -63,13 +51,7 @@ data class FetchedPage(
     val body: String,
 )
 
-/**
- * Every failure a [PageFetcher] reports, as one closed hierarchy so an adapter (or the runner)
- * can tell "this page is off limits" from "this page is broken" without string matching.
- * [url] is always the request the failure belongs to; the message never carries a secret.
- *
- * Task vds-002.3 decides when each one is thrown.
- */
+/** Typed fetch failures distinguish disallowed requests from unreachable or invalid responses. Messages omit secrets. */
 sealed class FetchException(
     val url: String,
     message: String,
@@ -83,11 +65,9 @@ sealed class FetchException(
     class BodyTooLarge(url: String, val limitBytes: Long) :
         FetchException(url, "Response body of $url exceeds $limitBytes bytes")
 
-    /** The response `Content-Type` is outside the allowlist. */
     class UnsupportedContentType(url: String, val contentType: String?) :
         FetchException(url, "Unsupported content type '${contentType ?: "<absent>"}' for $url")
 
-    /** More than the allowed number of redirects was followed. */
     class TooManyRedirects(url: String, val redirects: Int) :
         FetchException(url, "More than $redirects redirects while fetching $url")
 

@@ -34,33 +34,9 @@ import org.jsoup.nodes.Element
 import java.math.BigDecimal
 
 /**
- * The **one** compiled adapter that reads every declarative source: it interprets a
- * [SourceConfig] (one JSON file per site, authored by a human) instead of being written per site.
- *
- * It is an ordinary [ProviderAdapter] -- the SPI is unchanged -- so everything vds-002 built around
- * adapters applies to it untouched: the polite shared fetcher, the per-adapter time budget, snapshot
- * validation, the reconciler and its mass-change guard. In particular it constructs no `HttpClient`,
- * never calls `Jsoup.connect`, has no write path, and takes its page from the **config**
- * ([SourceConfig.pageUrl]) rather than from [CrawlContext.config].
- *
- * ### The four-layer defence of ADR-03, through a config instead of through Kotlin
- *
- * 1. A **section omitted** from the config leaves its snapshot field `null` = "not observed", so the
- *    reconciler touches that part of the catalog not at all.
- * 2. A **configured** section whose `rootSelector` matches nothing is an [AdapterFailureException]
- *    (`FAILED`/`ADAPTER_ERROR`, zero writes), exactly like `ExampleStaticAdapter.required()`. It
- *    never degrades into an empty observed set, which would *replace* the catalog's set with
- *    nothing.
- * 3. A list section matching fewer rows than its `minRows` (default 1) fails the same way;
- *    `"minRows": 0` is the author's explicit "this site honestly lists none".
- * 4. `tariffListComplete` comes from the file and defaults to `false`, so the claim the mass-change
- *    guard acts on is always deliberate.
- *
- * A **required** field (the default) that is missing fails the source; an optional one that is
- * absent is `null`. A field that is *present* but unreadable -- a non-numeric cell, a price the
- * options cannot parse, an enum value the map does not name -- always fails, optional or not: the
- * page has changed under the config, and a value quietly dropped would be recorded as "never
- * observed". Amounts are [BigDecimal] throughout; `Double`/`Float` appear nowhere.
+ * Interpret one [SourceConfig] through the shared fetcher. Omitted sections remain unobserved.
+ * Missing configured roots, too few rows and malformed values fail the snapshot. Optional fields may be absent.
+ * Only an explicit tariffListComplete claim permits reconciliation to mark missing tariffs out of stock.
  */
 class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
 
@@ -86,7 +62,6 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
         )
     }
 
-    // ---------- sections ----------
 
     private fun parseProvider(page: Element): ProviderInfo {
         val section: ProviderSection = config.provider
@@ -103,11 +78,7 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
         )
     }
 
-    /**
-     * `confidence` is always [Confidence.LOW] and `sourceUrl` is always the page actually read: a
-     * company blurb on a sales page is weak evidence by nature, and vds-001 keeps a human's
-     * HIGH/MEDIUM record untouched behind that.
-     */
+    /** Sales copy yields LOW confidence, preserving stronger legal information. Cite the page that was read. */
     private fun parseLegalInfo(page: Element, section: LegalInfoSection, pageUrl: String): LegalInfoSnapshot {
         val root = sectionRoot(page, section.rootSelector, "legalInfo")
         return LegalInfoSnapshot(
@@ -120,10 +91,7 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
         )
     }
 
-    /**
-     * An **observed** set, so it really does replace the catalog's set (ADR-03) -- which is why the
-     * section's absence from the page is a failure and only `minRows: 0` can make it empty.
-     */
+    /** An observed set replaces the catalog set. Only minRows: 0 permits an empty result, and a missing root always fails. */
     private fun parsePaymentMethods(page: Element, section: PaymentMethodsSection): Set<PaymentMethod> =
         rows(page, section.rootSelector, section.itemSelector, section.minRows, "paymentMethods").map { item ->
             present(
@@ -179,8 +147,7 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
                     enum(row, section.virtualization, Virtualization.entries, "tariffs.virtualization"),
                     "tariffs.virtualization",
                 ),
-                // Absent from the config = in stock, the snapshot's own default: a source that does
-                // not report stock may never flip a tariff out of it.
+                // Default to in stock when the source has no stock field, so an omitted selector cannot mark a plan out of stock.
                 inStock = section.inStock?.let { flag(row, it, "tariffs.inStock") } ?: true,
                 locationKeys = locationKeys,
                 prices = section.prices.mapIndexedNotNull { index, spec ->
@@ -221,7 +188,6 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
         return result
     }
 
-    // ---------- the page ----------
 
     /** A configured section that matches nothing is a broken selector, never an observation. */
     private fun sectionRoot(page: Element, rootSelector: String?, label: String): Element =
@@ -250,7 +216,6 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
         return rows
     }
 
-    // ---------- values ----------
 
     /**
      * The raw page value, or `null` for an **absent** optional one. Absence of a required value is
@@ -357,12 +322,7 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
         return number(value, spec.grouping, spec.decimal, spec.maxFractionDigits, signed = true, key = key)
     }
 
-    /**
-     * The advertised amount as [BigDecimal] -- never `Double` -- plus the currency its symbol stands
-     * for. A cell that does not parse ("ask us", an unknown symbol, more decimals than
-     * `NUMERIC(12, 4)` stores) fails the source: an amount silently read as `0` would be appended to
-     * a price history that is not back-correctable.
-     */
+    /** Parse exact decimal amounts and reject unreadable prices. Check the storage scale before emitting the snapshot. */
     private fun price(row: Element, spec: PriceSpec, key: String): PriceSnapshot? {
         val value = priceText(row, spec, key) ?: return null
         val fixed = spec.currency.fixed
@@ -471,39 +431,29 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
         return amount
     }
 
-    /**
-     * A constant the config names. Unreachable for a config the format validated -- which checks
-     * every constant against the target enum -- and still a failure rather than a crash here,
-     * because a [DeclarativeAdapter] can be built from a config nobody validated.
-     */
+    /** The format validates enum constants. Keep the defensive failure in case a caller constructs a config directly. */
     private fun <T : Enum<T>> constant(constants: List<T>, name: String, key: String): T =
         constants.firstOrNull { it.name == name }
             ?: throw AdapterFailureException(
                 "$key is not one of ${constants.joinToString { it.name }}: '${cut(name)}'",
             )
 
-    /**
-     * A value the snapshot has no place to be missing from. The format refuses `"required": false`
-     * on such a field, so this is the same defensive backstop as [constant].
-     */
+    /** Mandatory fields must be present. A config constructed outside the format validator can still violate that rule. */
     private fun <T : Any> present(value: T?, key: String): T =
         value ?: throw AdapterFailureException("$key has no value, and the snapshot has no place for a missing one")
 
     private fun cut(value: String): String = value.take(SourceConfigFormat.VALUE_IN_MESSAGE_LIMIT)
 
     private companion object {
-        /** A plain decimal; the separators have already been applied. Code-owned, never from a config. */
         val UNSIGNED_NUMBER = Regex("^[0-9]+(\\.[0-9]+)?$")
 
         val SIGNED_NUMBER = Regex("^-?[0-9]+(\\.[0-9]+)?$")
 
-        /** The first number in a value (`,` groups thousands) and the word right after it. Code-owned. */
         val FIRST_NUMBER = Regex("([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*([A-Za-z]*)")
         // Retain undeclared separators so malformed prices fail instead of losing digits.
         const val PRICE_NUMBER = "[0-9]+(?:\\s*[.,]\\s*[0-9]+)*"
         val FIRST_PRICE_NUMBER = Regex(PRICE_NUMBER)
 
-        /** `2 x 960 GB`: a count, then a size with its unit word. */
         val MULTIPLIED_SIZE = Regex("([0-9]+)\\s*[x×]\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*([A-Za-z]*)")
 
         val ADJACENT_AFTER = Regex("^\\s*($PRICE_NUMBER)")
@@ -516,7 +466,6 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
         fun ram(tariff: TariffSnapshot): String =
             if (tariff.ramMb % 1024 == 0) "${tariff.ramMb / 1024} GB RAM" else "${tariff.ramMb} MB RAM"
 
-        /** Spec combinations tried in order when two tariffs share a name. */
         val PREFIX_PARTS: List<List<(TariffSnapshot) -> String>> = listOf(
             listOf { "${it.diskGb} GB disk" },
             listOf(::ram),

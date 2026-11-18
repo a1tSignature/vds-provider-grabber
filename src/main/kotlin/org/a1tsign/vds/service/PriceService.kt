@@ -27,12 +27,7 @@ private const val NO_FX_RATE_WARNING = "NO_FX_RATE"
 
 data class PriceWriteResult(val price: TariffPrice, val created: Boolean, val warnings: List<String>)
 
-/**
- * Owns the three price-write operations. Every method opens exactly one transaction that locks
- * the tariff row first ([PriceRepository.lockTariff]) -- see the task's "Transaction rule". That
- * lock is what serialises concurrent writers, including the very first price for a billing
- * period, when no current row exists yet to lock instead.
- */
+/** Lock the tariff row first in each write transaction to serialize mutations to its current price. */
 class PriceService(
     private val database: Database,
     private val prices: PriceRepository,

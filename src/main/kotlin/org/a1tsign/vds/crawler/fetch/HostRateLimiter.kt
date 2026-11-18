@@ -5,23 +5,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * The politeness gate every outbound request passes through (spec req. 15): **at most one
- * in-flight request per host** and **at least the configured delay between two requests to the
- * same host**. It lives here, not in an adapter, because an adapter must not be able to opt out --
- * [KtorPageFetcher] is the only caller and it wraps *every* attempt, including each redirect hop
- * and each `robots.txt` fetch.
- *
- * A host is the URL's host name as written, lower-cased: `127.0.0.1` and `localhost` are two
- * different hosts here even when they resolve to the same machine, and a port is deliberately not
- * part of the key -- politeness is owed to the machine, not to the listener.
- *
- * ### Why `System.nanoTime()` and not the injected `Clock`
- *
- * The injected `Clock` is for *timestamps* (what time it was) and is routinely fixed or rewound in
- * tests; it says nothing reliable about *elapsed* time and can jump when the host's wall clock is
- * corrected. An interval is measured with the monotonic [System.nanoTime] instead. This is also
- * why `Instant.now()`/`System.currentTimeMillis()` -- both banned in main sources -- are absent:
- * the ban is about timestamps, and a monotonic nano reading is not one.
+ * Serialize attempts by lower-case hostname across ports, including redirects and robots.txt.
+ * Measure delay from the previous request's end with monotonic time to tolerate wall-clock changes.
  */
 class HostRateLimiter(
     defaultDelayMs: Long,
@@ -35,18 +20,7 @@ class HostRateLimiter(
     /** Access-ordered so the eviction below drops the host untouched for longest. */
     private val hosts = LinkedHashMap<String, HostState>(16, 0.75f, true)
 
-    /**
-     * Runs [block] as the only in-flight request for [host], after waiting out whatever is left of
-     * that host's minimum interval. The interval is measured from the **end** of the previous
-     * request to this host, so a slow response cannot be followed immediately by the next one.
-     *
-     * The state is re-checked against the registry **after** the gate is acquired: between
-     * [stateOf] handing it out and the gate being locked, [evictIfNeeded] may have dropped it (it
-     * can only exempt entries that are already locked), after which another caller would hold a
-     * *different* [HostState] for the same host and both requests would run at once -- the one
-     * guarantee this class exists for. A stale state is therefore discarded and the whole thing
-     * retried against whatever is registered now.
-     */
+    /** Recheck the registry after acquiring the gate. A waiting state may have been evicted, leaving a different gate for that host. */
     suspend fun <T> withHost(host: String, block: suspend () -> T): T {
         val key = host.lowercase()
         while (true) {
@@ -90,27 +64,16 @@ class HostRateLimiter(
         }
     }
 
-    /** [key] is the lower-cased host name; the caller normalises it. */
     private suspend fun stateOf(key: String): HostState = registryGuard.withLock {
         hosts.getOrPut(key) { HostState(defaultDelayNanos) }.also { evictIfNeeded(keep = key) }
     }
 
-    /** Still the state registered for [key], i.e. not evicted while we waited for its gate. */
     private suspend fun isRegistered(key: String, state: HostState): Boolean =
         registryGuard.withLock { hosts[key] === state }
 
     /**
-     * Bounds the registry at [maxTrackedHosts] entries (256 by default -- a crawl run visits a
-     * handful of provider hosts, so this is never reached in practice; it exists so a run against
-     * a page that redirects through generated host names cannot grow the map for the life of the
-     * process). The least recently used entry is dropped, which at worst forgets one host's last
-     * request time and its raised `Crawl-delay`. An entry whose request is in flight is skipped:
-     * dropping it would hand out a second [Mutex] for the same host and break the one-in-flight
-     * guarantee, so the map is allowed to exceed the bound by the number of concurrent requests
-     * rather than lose a live lock. [keep] -- the host the caller is about to use -- is exempt for
-     * the same reason: it is not locked *yet*. That exemption only covers the caller that triggered
-     * this eviction, which is why [withHost] re-checks its state after locking the gate instead of
-     * trusting that it survived.
+     * Evict least-recently-used idle entries only. Keep the pending host and any locked gate so no host gets two in-flight requests.
+     * The registry can temporarily grow beyond the cap while requests are active.
      */
     private fun evictIfNeeded(keep: String) {
         if (hosts.size <= maxTrackedHosts) return

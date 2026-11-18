@@ -48,7 +48,7 @@ services:
       timeout: 5s
       retries: 30
       start_period: 10s
-    # Shutdown drains requests and background passes for up to ~20 s; Docker's default is 10 s.
+    # Allow the application to drain requests and background work for up to about 20 seconds.
     stop_grace_period: 30s
 
   enrich:
@@ -66,8 +66,7 @@ services:
     volumes:
       - enrich-lock:/var/lock/vds-enrich
 
-  # One-off: `docker compose run --rm seed`. Skips itself when the catalogue already has providers,
-  # because dev-seed.sql is not re-runnable.
+  # Run with `docker compose run --rm seed`. Skip a populated catalog because the seed is not rerunnable.
   seed:
     image: postgres:17-alpine
     profiles: ["seed"]
@@ -93,9 +92,7 @@ services:
         psql -v ON_ERROR_STOP=1 -q -f /seed/dev-seed.sql
         echo "dev-seed applied"
 
-  # One-off: `docker compose run --rm catalog` loads catalog-seed/catalog-dump.sql (not committed)
-  # into an empty catalogue after the app has migrated the schema; skips itself otherwise, because
-  # the dump is data only and not re-runnable.
+  # Run with `docker compose run --rm catalog` after migration. The local data dump requires an empty catalog.
   catalog:
     image: postgres:17-alpine
     profiles: ["catalog"]
@@ -121,8 +118,7 @@ services:
         psql -v ON_ERROR_STOP=1 -1 -q -f /seed/catalog-dump.sql
         echo "catalog dump loaded: $$(psql -tAc 'SELECT count(*) FROM provider') providers"
 
-  # Vite dev server with hot reload, proxying the API to the `app` container:
-  # `docker compose --profile dev up -d`, then http://localhost:5173.
+  # Start hot reload with `docker compose --profile dev up -d` and open http://localhost:5173.
   frontend:
     image: node:22.22.0-bookworm-slim
     profiles: ["dev"]

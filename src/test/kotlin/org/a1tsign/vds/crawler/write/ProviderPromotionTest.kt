@@ -29,14 +29,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * Runs against the real application ([CrawlerAppHarness]); "no promotion happened" is proved by the
- * server's call log.
- *
- * The first test also covers the `409` trap: the listing hides `CANDIDATE` rows, so a
- * `findProviderBySlug` that did not ask for them would `POST`, hit `uq_provider_slug`, re-read, miss
- * again and fail with `FailureReason.WRITE` on every run.
- */
+/** Inspect the real server's request log so an unnecessary promotion call is visible even when it writes no change. */
 class ProviderPromotionTest : AbstractDbTest() {
 
     @Test
@@ -55,7 +48,6 @@ class ProviderPromotionTest : AbstractDbTest() {
             assertEquals(1, ctx.systemStatusCalls(providerId), "exactly one promotion call")
             assertTrue(providerId in providerIds(listOf(SystemStatus.CONFIGURED)), "promoted rows are catalog content")
 
-            // An already-CONFIGURED row gets no call at all, however much the run writes.
             clock.advance(Duration.ofHours(1))
             ctx.harness.clearRecordedCalls()
             ctx.reconcile(snapshot(amount = BigDecimal("11.1100")))
@@ -141,7 +133,6 @@ class ProviderPromotionTest : AbstractDbTest() {
         }
     }
 
-    /** A discovered candidate as the discovery leg will create it: `UNKNOWN` + the given system status. */
     private fun seedProvider(systemStatus: SystemStatus): Long = transaction(PostgresSupport.database) {
         ProviderRepository().insert(
             slug = FIXTURE_PROVIDER_SLUG,
@@ -173,10 +164,7 @@ class ProviderPromotionTest : AbstractDbTest() {
     }
 
     private companion object {
-        /**
-         * No location links: the link set is otherwise replaced unconditionally, so a second pass
-         * could never write nothing.
-         */
+        /** Omit observed links because replacing them would count as a write on every pass. */
         fun snapshot(amount: BigDecimal = BigDecimal("9.9900")): ProviderSnapshot = validSnapshot()
             .copy(
                 tariffs = listOf(

@@ -1,4 +1,3 @@
-# Served next to vps.html by scripts/measure-footprint.sh --crawler: the crawler checks
-# robots.txt per origin before it fetches, so the measurement exercises the real path.
+# Serve robots.txt with the fixture so the measurement exercises robots checks.
 User-agent: *
 Allow: /

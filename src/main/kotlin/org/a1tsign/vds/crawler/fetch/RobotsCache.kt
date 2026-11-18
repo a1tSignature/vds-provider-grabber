@@ -6,7 +6,6 @@ import org.slf4j.LoggerFactory
 import java.math.BigDecimal
 import java.math.RoundingMode
 
-/** The parsed rules that apply to *our* `User-Agent` on one origin. */
 data class RobotsRules(
     val allow: List<String>,
     val disallow: List<String>,
@@ -34,11 +33,7 @@ data class RobotsRules(
     }
 }
 
-/**
- * Whether robots rule [pattern] matches [path]. A hand-written matcher rather than a `Regex` built
- * from the rule, because the rule comes from a third party: greedy `*` with backtracking to the
- * last star only, which never recurses and runs in O(pattern × path) at worst.
- */
+/** Match untrusted robots rules without building a regular expression from them. */
 internal fun robotsPatternMatches(pattern: String, path: String): Boolean {
     val anchored = pattern.endsWith('$')
     val rule = if (anchored) pattern.dropLast(1) else pattern
@@ -48,7 +43,6 @@ internal fun robotsPatternMatches(pattern: String, path: String): Boolean {
     var resumeAt = 0
     while (t < path.length) {
         when {
-            // Every rule char consumed: an unanchored rule is a prefix match and is done.
             p == rule.length && !anchored -> return true
             p < rule.length && rule[p] == '*' -> { starAt = p++; resumeAt = t }
             p < rule.length && rule[p] == path[t] -> { p++; t++ }
@@ -61,24 +55,8 @@ internal fun robotsPatternMatches(pattern: String, path: String): Boolean {
 }
 
 /**
- * robots.txt, fetched **once per origin per run** and held for the run (spec req. 16).
- *
- * The cache key is the full origin (`scheme://host:port`), not just the host: robots.txt is a
- * per-origin document, and `http://example.com` and `https://example.com:8443` can legitimately
- * publish different rules. Note that the *politeness* key in [HostRateLimiter] is coarser (host
- * only) on purpose -- see its doc.
- *
- * [load] returns the robots.txt body, or `null` for anything that is not a usable document
- * (missing, `404`, `5xx`, a transport failure or a timeout) -- all of which mean **allowed**.
- * [KtorPageFetcher] supplies it so this class stays free of HTTP concerns and the fetcher keeps
- * ownership of the single client, the 5 s robots timeout and the per-host delay the robots fetch
- * is itself subject to.
- *
- * A run with [maxCrawlDelayMs] exceeded is the one case where robots.txt is partially ignored: a
- * `Crawl-delay` above it would stall the whole run, so it is dropped with a DEBUG line.
- *
- * The cache is bounded at [maxTrackedOrigins] entries, the same way and for the same reason as
- * [HostRateLimiter] bounds its host registry -- see [evictIfNeeded].
+ * Cache robots rules by full origin because schemes and ports can publish different rules.
+ * A missing or unusable document allows access. Ignore a Crawl-delay above the configured maximum.
  */
 class RobotsCache(
     userAgent: String,
@@ -116,18 +94,8 @@ class RobotsCache(
     }
 
     /**
-     * Bounds both maps at [maxTrackedOrigins] entries (256 by default), exactly as
-     * [HostRateLimiter] bounds its host registry and for the same reason: a page that redirects
-     * through generated host names would otherwise grow `rules` -- and keep one `Mutex` per origin
-     * in `origins` -- for the life of the process. Dropping an entry costs one extra robots.txt
-     * fetch if that origin is visited again, nothing more, because the document is immutable for
-     * the run by construction. An origin whose fetch is in flight is skipped (a second gate would
-     * allow a concurrent duplicate fetch), as is [keep], the origin the caller is working on.
-     * Unlike [HostRateLimiter.withHost] the caller does **not** re-check its gate after locking it:
-     * if a not-yet-locked gate is evicted here, the cost is one duplicate robots.txt fetch (the
-     * `rules` check inside the gate still collapses the result), not a broken guarantee.
-     *
-     * Called under [registryGuard], so plain map mutation is safe here.
+     * Evict idle origins under the registry lock. Keep in-flight entries to avoid duplicate gates.
+     * A gate evicted before acquisition can cost one extra robots fetch.
      */
     private fun evictIfNeeded(keep: String) {
         while (rules.size > maxTrackedOrigins) {
@@ -217,14 +185,7 @@ private fun isAbsoluteHttpUrl(value: String): Boolean {
     return (uri.scheme == "http" || uri.scheme == "https") && !uri.host.isNullOrEmpty()
 }
 
-/**
- * Seconds, integral or fractional (`Crawl-delay: 0.5` occurs in the wild); `null` if unparsable.
- *
- * [BigDecimal.longValueExact], not `toLong()`, because `toLong()` **narrows silently**: a hostile
- * `Crawl-delay: 1e19` would wrap to an arbitrary value that can land back under the ceiling and be
- * applied as a real delay. A value too large for a `Long` is reported as [Long.MAX_VALUE] so the
- * ceiling check in [RobotsCache] drops it with its DEBUG line, like any other oversized delay.
- */
+/** Parse fractional seconds and round up to milliseconds. Reject values that cannot fit in Long. */
 private fun parseCrawlDelayMs(value: String): Long? {
     val millis = try {
         BigDecimal(value).takeIf { it.signum() > 0 }?.movePointRight(3) ?: return null

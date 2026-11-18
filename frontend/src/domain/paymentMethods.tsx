@@ -1,15 +1,9 @@
 import type { ReactNode } from "react";
 
-/**
- * Whitelisted for bare backend enum literals: icons and human names are per-constant by nature,
- * a dictionary only lists the codes. A constant missing here still renders, as a generic chip
- * with its raw code.
- */
+/** Unknown payment codes render as generic chips with the raw code. Keep known brand labels and icons here. */
 interface MethodView {
   label: string;
-  /** Chip background, a `--pm-*` token. */
   background: string;
-  /** Light chips get an outline so they don't dissolve into a light page. */
   outlined?: boolean;
   glyph: ReactNode;
 }
@@ -177,10 +171,7 @@ export function paymentMethodLabel(method: string): string {
   return METHODS[method]?.label ?? method;
 }
 
-/**
- * `decorative` hides the icon from assistive tech when a visible label sits next to it; otherwise
- * the label is its accessible name and hover tooltip.
- */
+/** Set `decorative` when a visible label already names the icon for assistive technology. */
 export function PaymentMethodIcon({ method, decorative = false }: { method: string; decorative?: boolean }) {
   const view = METHODS[method];
   const label = view?.label ?? method;

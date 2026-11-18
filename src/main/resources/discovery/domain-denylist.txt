@@ -1,14 +1,5 @@
-# Default discovery denylist: hosts that answer "vps hosting"-style queries without ever being a
-# VPS provider. They are the dominant false-positive class for whole-web search on these terms.
-#
-# Format: one domain per line; "#" starts a comment; blank lines are ignored. An entry also blocks
-# every subdomain of it (reddit.com blocks old.reddit.com). "www." and letter case do not matter.
-#
-# To use your own list, copy this file, edit it and point VDS_DISCOVERY_DOMAIN_DENYLIST_FILE at the
-# copy: your file REPLACES this one, it is not merged with it.
-#
-# Order matters: the first 150 entries are also sent to the search API as excluded domains (its
-# limit), so the sites that crowd VPS queries the most come first. Later entries are filtered here only.
+# Entries match domains and their subdomains, ignoring case and www. An override file replaces this list.
+# The search API accepts only the first 150 exclusions. Keep frequent false positives first. Later entries are filtered locally.
 
 # review / comparison / deal sites
 hostadvice.com

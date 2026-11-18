@@ -5,7 +5,6 @@ import { useForm } from "./useForm";
 
 const NO_VALUES = {};
 
-/** A button that asks for confirmation, then runs `run`; errors render through the shared form slot. */
 export function DestructiveAction({
   label,
   confirmText,

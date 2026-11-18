@@ -13,14 +13,7 @@ import org.a1tsign.vds.crawler.write.TariffWrite
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicLong
 
-/**
- * Every mutation the reconciler **attempted**, in order, and none of them performed.
- *
- * This is how "zero writes" is proved without mocking the HTTP boundary a bug would live on: the
- * catalog is real and read through the real API, only the write side is this recorder. Records are
- * typed (not rendered strings) so a test can assert the exact request a write carried -- notably
- * the echoed `isActive` of a tariff update.
- */
+/** Record attempted writes in call order without applying them to the catalog. */
 class RecordingCrawlWriter(
     /** Returned by [putPrice]; a test that counts `pricesUnchanged` flips it to `false`. */
     private val priceOutcome: PriceOutcome = PriceOutcome(appended = true, noFxRate = false),
@@ -38,7 +31,6 @@ class RecordingCrawlWriter(
         data class ReplaceTariffLocations(val tariffId: Long, val locationIds: List<Long>) : Mutation
         data class PutPrice(val tariffId: Long, val request: PriceWrite) : Mutation
 
-        /** `PUT …/system-status {"systemStatus":"CONFIGURED"}` -- how "a dry run promotes nothing" is proved. */
         data class PromoteProvider(val providerId: Long) : Mutation
         data class SubmitEnrichment(val providerId: Long, val request: EnrichmentApplyWrite) : Mutation
     }

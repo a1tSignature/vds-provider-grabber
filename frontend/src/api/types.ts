@@ -1,8 +1,4 @@
-/**
- * Type mirrors of `src/main/kotlin/org/a1tsign/vds/api/dto/*.kt`. Money, FX rates and
- * coordinates stay decimal strings end to end -- never `number` -- so nothing here can round
- * them through a JS float.
- */
+/** Money, FX rates and coordinates stay decimal strings to preserve precision. */
 export const MONTHLY = "MONTHLY";
 export const ANNUAL = "ANNUAL";
 

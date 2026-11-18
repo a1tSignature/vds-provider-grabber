@@ -2,22 +2,12 @@ package org.a1tsign.vds.crawler.enrich
 
 import java.util.regex.Pattern
 
-/*
- * Dictionaries, weights and patterns of the site enrichment heuristics.
- *
- * Every pattern here runs on third-party text of up to half a million characters, under
- * `-Xss512k`, and a running regex ignores coroutine cancellation. So no pattern puts an unbounded
- * quantifier inside a repeated group: name tokens are bounded and possessive
- * (`[\w&'.\-]{0,40}+`, never `[\w…]*`), whitespace runs are bounded (`\s{1,5}`), and every
- * repeated group has a fixed upper count. A bounded possessive token cannot backtrack, so each
- * start position costs a constant amount of work and a whole scan stays linear.
- */
+/* Regex matching ignores coroutine cancellation. Keep quantifiers bounded within repeated groups and use possessive tokens where possible to bound work on large third-party inputs. */
 
 /** `\w`, `\b` and case folding cover Cyrillic. */
 internal fun rx(pattern: String, ignoreCase: Boolean = false): Pattern =
     Pattern.compile(pattern, Pattern.UNICODE_CHARACTER_CLASS or (if (ignoreCase) Pattern.CASE_INSENSITIVE else 0))
 
-/** One word of an entity name; the separators that may follow it are outside the class. */
 private const val NAME_TOKEN = "[\\w&'.\\-]{0,40}+"
 private const val QUOTED_NAME_TOKEN = "[\\w&'.\\-»\"]{0,40}+"
 
@@ -50,7 +40,6 @@ internal object EnrichmentRules {
     )
     const val LEGAL_PAGE_BONUS_WEIGHT = 3.0
 
-    /** Dated or superseded legal pages. */
     val OUTDATED_PAGE: Pattern = rx("prior-versions|-agreement-\\w{1,40}+-20\\d\\d|20\\d\\d-\\d\\d")
     const val OUTDATED_PAGE_PENALTY = 6.0
     const val DEPTH_PENALTY_PER_SLASH = 0.3
@@ -137,7 +126,6 @@ internal object EnrichmentRules {
     private fun payment(code: String, attribute: String?, text: String, caseSensitiveText: Boolean = false) =
         PaymentRule(code, attribute?.let { rx(it, ignoreCase = true) }, rx(text, ignoreCase = !caseSensitiveText))
 
-    /** Payment-gateway script hosts: (pattern on a script/link URL, codes, label). */
     val GATEWAYS: List<Triple<Pattern, List<String>, String>> = listOf(
         Triple(rx("js\\.stripe\\.com|stripe\\.com/v3|stripe\\.network", true), listOf("VISA_MASTERCARD"), "Stripe"),
         Triple(rx("paypal\\.com/sdk|paypalobjects", true), listOf("PAYPAL"), "PayPal SDK"),
@@ -230,7 +218,6 @@ internal object EnrichmentRules {
         }
     }
 
-    /** The CPU generation, not the city. */
     val MILAN_CPU: Pattern = rx("EPYC|Milan[- ]?\\d|7\\d{2}3")
 
     /** Country names count as server locations only on location-type pages. */
@@ -302,7 +289,6 @@ internal object EnrichmentRules {
         "(?:operated|owned|provided|run|managed) by\\s{1,5}([A-Z]$NAME_TOKEN(?:\\s[A-Z]$NAME_TOKEN){0,5}(?:,?\\s(?:$LEGAL_FORMS)\\b\\.?)?)",
     )
 
-    /** Cut-offs of a raw entity name: a following sentence, "All rights reserved". */
     val NAME_TAIL: Pattern = rx("\\.\\s{1,5}(?=[A-ZА-ЯЁ])|\\s{1,5}All [Rr]ights|\\s{1,5}Все права")
     val NAME_PREFIX: Pattern = rx("^(?:Copyright|All rights reserved|The)\\s{1,5}")
 
@@ -427,7 +413,6 @@ internal object EnrichmentRules {
     const val ADDRESS_OF_THE_COMPANY = "address of the company"
     const val ADDRESS_OF_ANOTHER_COMPANY = "address of another company"
 
-    /** The weight an address next to another company's name keeps. */
     const val OTHER_COMPANY_ADDRESS_FACTOR = 0.3
 
     val JSON_LD_ORGANIZATION_TYPES = setOf("Organization", "Corporation", "LocalBusiness", "OnlineBusiness")

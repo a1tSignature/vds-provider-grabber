@@ -16,7 +16,6 @@ import java.time.Instant
 import java.time.format.DateTimeFormatter
 import kotlin.test.*
 
-/** `GET /api/v1/tariffs/{id}/price-history` -- task vds-001.16. */
 class PriceHistoryApiTest : AbstractDbTest() {
     private val root = "/api/v1"
 

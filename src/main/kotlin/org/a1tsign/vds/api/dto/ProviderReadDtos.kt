@@ -21,7 +21,7 @@ data class ProviderSummaryDto(
     val name: String,
     val websiteUrl: String,
     val status: ProviderStatus,
-    /** Always `CONFIGURED` unless the request asked for other values with `?systemStatus=`. */
+    /** Public listings include CONFIGURED and CANDIDATE by default. */
     val systemStatus: SystemStatus,
     val registrationCountry: String? = null,
     val legalEntityName: String? = null,

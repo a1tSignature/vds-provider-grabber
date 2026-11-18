@@ -21,11 +21,9 @@ data class CrawlRunTriggerRequest(
     val maxOutOfStockRatio: String? = null,
 )
 
-/** `202` response of `POST /api/v1/admin/crawl/run` -- the run is already visible via [CrawlRunSummaryDto]. */
 @Serializable
 data class CrawlRunTriggerResponse(val runId: String)
 
-/** Wire form of `crawler.model.AdapterRunResult`. */
 @Serializable
 data class AdapterRunResultDto(
     val adapterId: String,
@@ -45,7 +43,7 @@ data class AdapterRunResultDto(
     val message: String? = null,
 )
 
-/** Mirrors `crawler.model.CrawlRunSummary`. `finishedAt` is absent while the run is `RUNNING`. */
+/** finishedAt is absent while the run is RUNNING. */
 @Serializable
 data class CrawlRunSummaryDto(
     val runId: String,

@@ -33,7 +33,7 @@ data class PlannedCandidateDto(
     val resultUrl: String,
 )
 
-/** Mirrors `discovery.model.DiscoveryPassSummary`. `finishedAt` is absent while the pass is `RUNNING`. */
+/** finishedAt is absent while the pass is RUNNING. */
 @Serializable
 data class DiscoveryPassSummaryDto(
     val passId: String,
@@ -58,7 +58,6 @@ data class DiscoveryPassSummaryDto(
     val message: String? = null,
 )
 
-/** One declarative source that became a registry entry at startup. */
 @Serializable
 data class DiscoverySourceDto(
     val id: String,
@@ -68,7 +67,6 @@ data class DiscoverySourceDto(
     @Contextual val loadedAt: Instant,
 )
 
-/** One source file that was refused at startup, with every problem found in it. */
 @Serializable
 data class DiscoverySourceFailureDto(
     val file: String,

@@ -9,7 +9,6 @@ import java.time.Instant
 /** A value automation wants to put into one legal field. [origin] is always an `AUTO_*` value. */
 data class AutoLegalValue(val value: String, val origin: FieldOrigin, val sourceUrl: String? = null)
 
-/** The fields of a `HUMAN` or `AUTOMATIC` `PUT …/legal-info`, already validated. */
 data class LegalInfoWrite(
     val legalEntityName: String?,
     val registrationCountry: String?,
@@ -23,7 +22,6 @@ data class LegalInfoWrite(
     val registrationCountryOrigin: FieldOrigin?,
 )
 
-/** "Manual always wins": pure functions that compute the next legal-info row from the current one. */
 object LegalInfoRules {
     /**
      * The enrichment apply. Only the two legal fields change; number, address and `verified_at` are

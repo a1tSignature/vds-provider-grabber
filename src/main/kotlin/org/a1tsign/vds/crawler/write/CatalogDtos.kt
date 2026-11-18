@@ -17,12 +17,7 @@ import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 import java.time.temporal.ChronoUnit
 
-/*
- * The crawler's own mirrors of the catalog API bodies, not the server's `api/dto`: the crawler is a
- * tolerant reader ([CATALOG_JSON]) and must keep working when a response gains fields. Enum-valued
- * fields are `String` because `ignoreUnknownKeys` does not cover an unknown enum constant, and a
- * new `PaymentMethod` must not make a provider unreadable.
- */
+/* Keep catalog client DTOs tolerant of additive responses. The server's request decoder remains strict. */
 
 /** Money and coordinates: a plain-decimal JSON string to and from [BigDecimal]. */
 object PlainDecimalSerializer : KSerializer<BigDecimal> {
@@ -83,10 +78,7 @@ data class LoginResponseBody(
 @Serializable
 data class CatalogErrorDetail(val field: String = "", val message: String = "")
 
-/**
- * Every field has a default: a failed response may come from a proxy or a non-route failure and
- * not be the envelope at all.
- */
+/** Default every field so infrastructure failures without an API envelope can still be reported. */
 @Serializable
 data class CatalogErrorEnvelope(
     val status: Int = 0,
@@ -105,7 +97,6 @@ data class CatalogPage<T>(
     val totalPages: Int = 0,
 )
 
-/** One row of `GET /api/v1/providers`. */
 @Serializable
 data class CatalogProviderSummary(
     val id: Long,
@@ -257,7 +248,6 @@ data class EnrichmentApplyWrite(
 @Serializable
 data class EnrichmentApplyResult(val valuesApplied: Int = 0)
 
-/** Body of `PUT /api/v1/providers/{id}/system-status`. */
 @Serializable
 data class SystemStatusWrite(val systemStatus: String)
 
@@ -281,10 +271,7 @@ data class CandidateProviderWrite(
     val description: String? = null,
 )
 
-/**
- * The crawler only ever sends `dataSource = CRAWLER`. There is no `verifiedAt`: the catalog rejects
- * it in an automatic write.
- */
+/** Send CRAWLER provenance and omit verifiedAt, which automatic writes cannot set. */
 @OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class LegalInfoWrite(

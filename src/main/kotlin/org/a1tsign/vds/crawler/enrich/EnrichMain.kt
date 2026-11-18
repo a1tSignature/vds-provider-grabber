@@ -21,17 +21,12 @@ import kotlin.system.exitProcess
 
 private val logger = LoggerFactory.getLogger("org.a1tsign.vds.crawler.enrich.EnrichMain")
 
-/** Same cap as the service's `VDS_DISCOVERY_MAX_SOURCES` default. */
 private const val MAX_SOURCES = 200
 
 /** How long a `SIGTERM` waits for the launch to unwind before the JVM halts anyway. */
 private const val SHUTDOWN_GRACE_MS = 5_000L
 
-/**
- * The site enrichment process: `java -cp app.jar org.a1tsign.vds.crawler.enrich.EnrichMainKt`. No
- * HTTP server, no database: it reads the catalog and writes enrichment results through the
- * service's API as an `EDITOR` account, then exits with an [EnrichExit] code.
- */
+/** Standalone process that reads and updates the catalog over HTTP. Its exit codes are shared with the launcher. */
 fun main(args: Array<String>) {
     val (options, config) = try {
         parseEnrichOptions(args) to loadEnrichProcessConfig()
@@ -80,10 +75,7 @@ private fun runLaunch(options: EnrichOptions, config: EnrichProcessConfig): Int 
     }
 }
 
-/**
- * On `SIGTERM` the launch is cancelled, so no new request starts; a `PUT` already sent is applied
- * or not as a whole by the server.
- */
+/** SIGTERM cancels the launch before another request starts. The server applies any in-flight PUT atomically. */
 private fun cancelOnShutdown(launch: Job): Thread {
     val hook = Thread {
         launch.cancel()

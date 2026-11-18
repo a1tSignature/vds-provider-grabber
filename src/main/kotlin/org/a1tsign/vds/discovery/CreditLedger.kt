@@ -44,7 +44,6 @@ enum class BudgetRefusal {
     MIN_PASS_INTERVAL,
 }
 
-/** What a refusal reports, so a caller can log and serve the numbers instead of guessing. */
 data class LedgerCounters(
     val creditsThisMonth: Int,
     val creditsThisPass: Int,
@@ -66,30 +65,9 @@ sealed interface CreditDecision {
 }
 
 /**
- * The in-process half of "we will not pay for search" (ADR-02 decision 4). The vendor's own free
- * allowance is a **soft** limit -- it documents a pay-as-you-go path that charges once the plan's
- * credit limit is reached -- so the hard half is an account with no payment method (an operational
- * rule, in `README.md`) and this counter, which **fails closed**:
- *
- * - the state file **absent** ⇒ first run, proceed;
- * - the state file **present but unparsable**, or unreadable, or unwritable ⇒ **refuse**, with one
- *   ERROR line. A lost counter must never become an overage;
- * - a credit is recorded **before** it is spent (write-ahead), so a pass killed between two queries
- *   cannot forget what it consumed;
- * - `lastPassAt` is written when a pass **starts**, not when it ends, so a crash-restart loop cannot
- *   fire a pass every `VDS_DISCOVERY_INITIAL_DELAY_MINUTES` and drain the allowance.
- *
- * ### The budget this cap is built on
- *
- * A 48-hour cadence is ≈ 15 passes/month × 10 queries × 1 credit (`search_depth: basic`) ≈ **150
- * credits/month** of the 1 000 free. The default [maxCreditsPerMonth] of **300** therefore leaves
- * room for roughly as many manual passes again and still stops at **30 %** of the allowance.
- *
- * Month boundaries are **UTC**, and every "now" comes from the injected [clock] -- `Instant.now()`
- * and `System.currentTimeMillis()` are banned in `src/main`.
- *
- * Not thread-safe, and not meant to be: there is one pass at a time (task vds-004.6 owns the single
- * pass slot, exactly as `CrawlerRunner` owns the single run slot).
+ * Record each credit before sending a query and persist the pass start before searching so crashes cannot reset either budget.
+ * A missing state file begins a ledger. Invalid or unwritable state blocks spending. Month boundaries use UTC.
+ * The shared run slot must serialize access to this ledger.
  */
 class CreditLedger(
     private val path: Path,
@@ -99,11 +77,7 @@ class CreditLedger(
     private val minPassIntervalHours: Long = 24,
 ) {
 
-    /**
-     * Opens a pass, or refuses it with the counters. [force] overrides **only**
-     * [BudgetRefusal.MIN_PASS_INTERVAL], with a WARN -- the monthly cap and every state-file problem
-     * stay refusals, because those are the ones that cost money.
-     */
+    /** Force bypasses only the minimum interval. State errors and credit caps still refuse a pass. */
     fun startPass(force: Boolean = false): PassStart {
         val now = clock.nowUtc()
         val state = readState().getOrElse { problem ->
@@ -168,11 +142,7 @@ class CreditLedger(
 
     internal fun now(): Instant = clock.nowUtc()
 
-    /**
-     * `null` state (file absent) reads as a fresh ledger. Every other problem -- an I/O failure, a
-     * foreign schema version, a month key or timestamp that does not parse, a negative count -- is a
-     * failure, so the caller refuses instead of silently starting from zero.
-     */
+    /** Treat a missing state file as a fresh ledger. Invalid or unreadable state fails closed. */
     internal fun readState(): Result<CreditLedgerState> = try {
         val bytes = try {
             Files.readAllBytes(path)
@@ -199,10 +169,7 @@ class CreditLedger(
         Result.failure(IllegalStateException("the file could not be read: ${failure.javaClass.simpleName}", failure))
     }
 
-    /**
-     * Temp file in the **same directory** plus a rename: a half-written state file would be an
-     * unparsable one, which fails closed and would block every later pass.
-     */
+    /** Write the temporary file beside the state file and rename it so readers never see a partial write. */
     internal fun write(state: CreditLedgerState): Boolean {
         val directory = path.toAbsolutePath().parent
         if (directory == null) {
@@ -232,12 +199,10 @@ class CreditLedger(
         }
     }
 
-    /** Keeps the current month and the two before it; anything older is dropped. */
     private fun prune(months: Map<String, Int>, now: Instant): Map<String, Int> {
         val oldest = YearMonth.from(now.atZone(ZoneOffset.UTC)).minusMonths(KEPT_MONTHS - 1L)
         return months.filterKeys { key ->
-            // A key is already known to parse (readState refused the file otherwise); a future key
-            // is kept rather than dropped, so a clock moved backwards cannot erase a spend.
+            // Preserve future month keys so a backward clock jump cannot erase recorded credits.
             !YearMonth.parse(key).isBefore(oldest)
         }
     }
@@ -245,7 +210,6 @@ class CreditLedger(
     internal companion object {
         const val SCHEMA_VERSION: Int = 1
 
-        /** Three months of history: enough to see the previous cycle, small enough to stay tiny. */
         const val KEPT_MONTHS: Int = 3
 
         private val json = Json {
@@ -258,11 +222,7 @@ class CreditLedger(
     }
 }
 
-/**
- * One pass's spending. [requestCredit] is the question a caller asks **before** every query; it
- * records the credit before the query is made, so nothing that happens afterwards -- a timeout, a
- * cancellation, a hard kill -- can lose it.
- */
+/** Persist a credit before each query. A timeout or ambiguous response still consumes the reserved credit. */
 class CreditPass internal constructor(
     private val ledger: CreditLedger,
     private var state: CreditLedgerState,
@@ -303,7 +263,6 @@ class CreditPass internal constructor(
                 counters,
             )
         }
-        // Write-ahead: the credit is on disk before it is spent, never after.
         val next = state.copy(months = state.months + (month to spentThisMonth + 1))
         if (!ledger.write(next)) {
             return CreditDecision.Refused(
@@ -318,17 +277,7 @@ class CreditPass internal constructor(
         return CreditDecision.Granted(counters)
     }
 
-    /**
-     * Flushes the counters now. Redundant while [requestCredit] writes ahead, and kept as the
-     * operation a caller invokes before it unwinds -- a pass that is cancelled or times out calls
-     * this and is guaranteed not to have forgotten a credit.
-     *
-     * The flush **merges with what is on disk** instead of overwriting it with this pass's copy: a
-     * late flush (a timed-out pass unwinding after a forced pass has already started and spent)
-     * must never erase the newer pass's credits or its `lastPassAt`. Per month the larger count
-     * wins and the later `lastPassAt` wins, so a flush can only ever raise the counter. A state
-     * file that has become unreadable is left alone and reported as a failed flush.
-     */
+    /** Flush while unwinding, merging with persisted state so a cleanup write cannot lose an already recorded credit. */
     fun persistSpent(): Boolean {
         val onDisk = ledger.readState().getOrElse { problem ->
             logger.error("discovery credit ledger could not be re-read for a flush ({})", problem.message)

@@ -17,11 +17,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
-/**
- * The money safety. Every case here is about one rule: the ledger **refuses rather than
- * overspends**. A test that finds the fail-closed behaviour inconvenient is the wrong test -- a
- * counter that failed open on an unreadable file would turn a disk problem into a bill.
- */
 class CreditLedgerTest {
 
     private fun clockAt(instant: String) = MutableTestClock(Instant.parse(instant))
@@ -68,12 +63,10 @@ class CreditLedgerTest {
         assertEquals(2, refused.counters.creditsThisPass)
         pass.finish()
 
-        // And the next pass does not even start: the cap is a month-wide refusal.
         clock.advance(Duration.ofHours(48))
         val blocked = assertIs<PassStart.Refused>(monthly.startPass())
         assertEquals(BudgetRefusal.MONTHLY_CAP_REACHED, blocked.reason)
         assertEquals(2, blocked.counters.creditsThisMonth)
-        // Not even with force: the monthly cap is the one refusal nothing overrides.
         assertIs<PassStart.Refused>(monthly.startPass(force = true))
 
         val perPass = ledger(dir, clock, maxQueriesPerPass = 1, file = "per-pass.json")
@@ -112,7 +105,6 @@ class CreditLedgerTest {
         val unwritable = CreditLedger(dir.resolve("absent").resolve("state.json"), clock)
         assertEquals(BudgetRefusal.STATE_UNWRITABLE, assertIs<PassStart.Refused>(unwritable.startPass()).reason)
 
-        // A flush that cannot write says so, instead of letting a caller believe the credits are safe.
         val vanishing = dir.resolve("vanishing").createDirectory()
         val pass = assertIs<PassStart.Started>(CreditLedger(vanishing.resolve("state.json"), clock).startPass()).pass
         assertIs<CreditDecision.Granted>(pass.requestCredit())
@@ -139,7 +131,6 @@ class CreditLedgerTest {
         assertFalse(afterPrune.contains("2026-07"), "only the current month and the two before it are kept")
         assertTrue(afterPrune.contains("2026-08"))
 
-        // Across the boundary, inside the same pass: the credit lands in the new month.
         clock.advance(Duration.ofMinutes(2))
         assertIs<CreditDecision.Granted>(pass.requestCredit())
 
@@ -161,7 +152,6 @@ class CreditLedgerTest {
         val refused = assertIs<PassStart.Refused>(ledger.startPass())
         assertEquals(BudgetRefusal.MIN_PASS_INTERVAL, refused.reason)
         assertTrue(refused.message.contains("24 hour"), refused.message)
-        // The credit the abandoned pass spent was recorded before it was spent.
         assertEquals(1, refused.counters.creditsThisMonth)
 
         val logs = capturingLogs {

@@ -1,28 +1,7 @@
 #!/usr/bin/env bash
-# Measures the numbers the service's whole design is budgeted against.
-#
-# Default invocation (no arguments) -- the vds-001 profile, unchanged:
-#   - cold start:  JVM process launch -> first 200 from GET /health/ready   (budget <= 5 s)
-#   - idle RSS:    after a fixed 50-request load, measured with `ps -o rss=` INSIDE the
-#                  eclipse-temurin:21-jre container (Linux)                 (budget <= 260 MB)
-#
-# `--crawler` (vds-002 req. 41, task vds-002.9) -- three further measurements with the same image,
-# the same JVM flags and the same 50-request load profile, against a baseline measured in the very
-# same invocation (never copied from a knowledge note, which would compare against another day's
-# machine):
-#   0. baseline       no VDS_CRAWLER_* variable at all                 the number 1 and 2 use
-#   1. crawler off    VDS_CRAWLER_ENABLED=false                        baseline +- 3 MB
-#   2. crawler idle   VDS_CRAWLER_ENABLED=true, no adapter selected    <= baseline + 15 MB
-#   3. crawler peak   one `example-static` run over a 1 MiB page       <= 300 MB
-#                     (RSS sampled every 200 ms while the run is in flight, maximum reported)
-#
-# Profile 3 serves `scripts/footprint-fixture/` -- `vps.html` expanded in memory to exactly 1 MiB
-# by repeating its marked filler section (the repository keeps only the few-KB template), plus an
-# allowing `robots.txt` -- from a throwaway `python3` HTTP server on the host, which the container reaches
-# as `host.docker.internal` (`--add-host=host.docker.internal:host-gateway`, one line that works
-# on Docker Desktop and on Linux alike). That server binds every interface, because it has to be
-# reachable from inside the container, but only for the duration of the measurement: the cleanup
-# trap kills it. `robots.txt` is served rather than switched off with
+# Measure cold start and Linux-container RSS under a fixed load. See README §6 for setup, profile thresholds and output.
+# The crawler peak uses a local HTML and robots fixture reached from Docker via host-gateway.
+# The enrichment profile requires saved pages and a built SPA. It tries one JVM first, then one JVM per batch if the drain fails the memory gate.
 # VDS_CRAWLER_RESPECT_ROBOTS=false, so the measured run goes through the crawler's real robots
 # path. The run writes the `example-static` reference provider into the measured database through
 # the admin API, exactly as a production run would; re-running is idempotent (the second run
@@ -80,7 +59,6 @@ RSS_BUDGET_MB="260"
 HOST_PORT="18080"
 JAVA_IMAGE="eclipse-temurin:21-jre"
 
-# --- the three crawler limits of spec req. 41 / ADR-01 ---
 CRAWLER_DISABLED_TOLERANCE_MB="3"
 CRAWLER_IDLE_MAX_DELTA_MB="15"
 CRAWLER_PEAK_LIMIT_MB="300"
@@ -88,14 +66,11 @@ CRAWLER_PEAK_SAMPLE_SECONDS="0.2"
 CRAWLER_RUN_TIMEOUT_SECONDS="120"
 FIXTURE_DIR="scripts/footprint-fixture"
 FIXTURE_PORT="18099"
-# The service account the crawler logs in as, created through POST /api/v1/admin/users below.
-# Fixed on purpose: a second invocation reuses the account the first one created (409 is fine).
+# Reuse the service account between measurements. The create request may return 409 on a rerun.
 CRAWLER_USER="crawler-footprint"
 CRAWLER_PASSWORD="Footprint-Crawler-2026!"
 
-# --- the --enrich gate (vds-007); the first two are the owner's Q1/Q2 of 2026-11-15 ---
-# ENRICH_SERVICE_PEAK_LIMIT_MB is reported only: it sits within measurement noise of what the service
-# needs just to serve the process, and the owner made the sum the deciding check (2026-11-15).
+# Report the service peak separately. The combined peak is the memory gate.
 ENRICH_SUM_LIMIT_MB="700"
 ENRICH_HEAP_GROWTH_LIMIT_MB="8"
 ENRICH_RSS_GROWTH_LIMIT_MB="15"
@@ -123,8 +98,6 @@ JVM_FLAGS=(
   -Duser.timezone=UTC
 )
 
-# Bootstrap-admin credentials for this measurement run only: 20 chars / <= 72 UTF-8 bytes, so
-# VDS_BOOTSTRAP_ADMIN_PASSWORD's policy in loadConfig (>= 12 chars, <= 72 UTF-8 bytes) is met.
 BOOTSTRAP_USER="footprint-admin"
 BOOTSTRAP_PASSWORD="Footprint-Measure-2026!"
 JWT_SECRET="footprint-measurement-script-jwt-secret-value"
@@ -175,9 +148,7 @@ REPLAY_PIDS=()
 ENRICH_TMP=""
 EXTRA_JVM_FLAGS=()
 
-# `wait` reaps the killed python3 job inside this redirection, so bash does not print its
-# "Terminated: 15 python3 - ... <<PYTHON" job notice -- which would dump the whole heredoc into
-# the measurement output.
+# Reap the fixture job under redirection to keep Bash from dumping its heredoc in the job notice.
 stop_fixture_server() {
   if [[ -n "$FIXTURE_PID" ]]; then
     { kill "$FIXTURE_PID" && wait "$FIXTURE_PID"; } >/dev/null 2>&1 || true
@@ -210,9 +181,7 @@ cleanup() {
 trap cleanup EXIT
 
 now_ms() {
-  # python3 is used for a portable millisecond timestamp (available on both the macOS dev box
-  # this was authored/validated on, and any target Linux box); falls back to whole-second
-  # resolution via bash's SECONDS if python3 is somehow absent.
+  # Use Python for portable millisecond timestamps, with whole seconds as a fallback.
   if command -v python3 >/dev/null 2>&1; then
     python3 -c 'import time; print(int(time.time() * 1000))'
   else
@@ -222,9 +191,6 @@ now_ms() {
 
 BASE_URL="http://localhost:${HOST_PORT}"
 
-# ---------------------------------------------------------------------------------------------
-# the measurement steps, each usable by every profile
-# ---------------------------------------------------------------------------------------------
 
 # Launches the jar under measurement and waits for readiness. Extra `-e`/`--add-host` arguments
 # are taken from the global SERVICE_DOCKER_ARGS array, so the JVM flags, the image and the
@@ -276,7 +242,6 @@ stop_service() {
   fi
 }
 
-# --- fixed load: 1 login + 20x tariffs search + 20x providers list + 9x providers/{id} = 50 ---
 run_load() {
   echo "Running the fixed load (50 requests)..."
 
@@ -326,7 +291,7 @@ run_load() {
     request_ok "/api/v1/providers/${provider_ids[$idx]}"
   done
 
-  local total_requests=$((TOTAL_CATALOGUE + 1)) # + login
+  local total_requests=$((TOTAL_CATALOGUE + 1))
   echo "Load profile: ${total_requests} requests total (1 login + ${TOTAL_CATALOGUE} catalogue), ${OK_COUNT}/${TOTAL_CATALOGUE} catalogue requests returned 200"
 
   if [[ "$OK_COUNT" -ne "$TOTAL_CATALOGUE" ]]; then
@@ -347,7 +312,6 @@ request_ok() {
   fi
 }
 
-# --- RSS, measured inside the Linux container ---
 read_rss_kb() {
   local rss_kb
   rss_kb="$(docker exec "$CID" sh -c "ps -o rss= -p 1" | tr -d ' ')"
@@ -362,11 +326,8 @@ jar_line() {
   echo "jar: ${JAR_PATH} ($(du -h "$JAR_PATH" | cut -f1))"
 }
 
-# ---------------------------------------------------------------------------------------------
-# profiles
-# ---------------------------------------------------------------------------------------------
 
-# The vds-001 profile. Its output lines are the script's original contract -- do not reword them.
+# Preserve the default profile's output format.
 profile_default() {
   SERVICE_DOCKER_ARGS=()
   start_service
@@ -402,11 +363,7 @@ measure_idle_profile() {
   stop_service
 }
 
-# Serves $FIXTURE_DIR to the container: vps.html expanded to 1 MiB for any path, robots.txt for
-# /robots.txt.
-# `python3 -m http.server` is not used because it would answer the extensionless `/vps` the
-# adapter asks for with `application/octet-stream`, which the crawler's content-type allowlist
-# (text/html, application/xhtml+xml, application/json, text/plain) rejects.
+# Serve the extensionless /vps path as HTML. Python's default file server would send application/octet-stream, which the crawler rejects.
 start_fixture_server() {
   if [[ ! -f "${FIXTURE_DIR}/vps.html" || ! -f "${FIXTURE_DIR}/robots.txt" ]]; then
     echo "ERROR: ${FIXTURE_DIR}/vps.html and ${FIXTURE_DIR}/robots.txt are required for the peak profile." >&2
@@ -517,9 +474,7 @@ measure_peak_during_run() {
         PEAK_RSS_KB="$rss"
       fi
     fi
-    # A transient non-2xx/reset from the status endpoint must not abort the whole measurement with
-    # a bare curl exit code and no FAIL/STOP line -- the loop's own deadline below already handles
-    # "never reaches terminal", so a failed poll here just tries again next tick.
+    # Retry transient status failures until the polling deadline.
     status="$(crawl_run_status "$RUN_ID" || true)"
     if [[ -n "$status" && "$status" != "RUNNING" ]]; then
       break
@@ -577,8 +532,7 @@ profile_crawler() {
   disabled_rss_mb="$PROFILE_RSS_MB"
   disabled_cold_ms="$PROFILE_COLD_START_MS"
   disabled_delta=$((disabled_rss_mb - baseline_rss_mb))
-  # Printed here as well as in the Results block below, so a profile that is measured survives a
-  # later profile aborting the run.
+  # Print each result as it finishes so a later profile failure cannot hide it.
   printf 'Profile 1 RSS: %d MB (%d kB), delta %+d MB vs the %d MB baseline, tolerance +-%s MB\n' \
     "$disabled_rss_mb" "$PROFILE_RSS_KB" "$disabled_delta" "$baseline_rss_mb" "$CRAWLER_DISABLED_TOLERANCE_MB"
   echo
@@ -650,7 +604,6 @@ profile_crawler() {
   fi
 }
 
-# --- --enrich ---------------------------------------------------------------------------------
 
 # "NOT MEASURED": the run was not the run the numbers would describe. Never prints a number.
 not_measured() {
@@ -683,9 +636,7 @@ check_enrich_prerequisites() {
   fi
 }
 
-# The built SPA as a browser loads it: `/`, `/index.html` and every `/assets/...` file the served
-# HTML references, read from the HTML itself so a new build needs no edit here. Run 20 times, like
-# the API passes. Every request must return 200.
+# Read asset URLs from the served HTML so each build is exercised without maintaining a separate asset list.
 run_frontend_load() {
   local html assets asset i code ok=0 total=0
   html="$(curl -fsS "${BASE_URL}/")"
@@ -813,9 +764,7 @@ list_queue_members() {
   done
 }
 
-# Records a NOTHING_FOUND attempt for every non-gate provider the process would otherwise queue
-# (never attempted, or older than the 720 h default interval), then snapshots every non-gate
-# member's lastAttemptAt into ${ENRICH_TMP}/others.tsv for the "untouched" check.
+# Record fresh attempts for non-gate providers so the process queue contains only gate fixtures.
 premark_other_providers() {
   local gate="$1" id last marked=0 code
   list_queue_members "${ENRICH_TMP}/members.tsv"
@@ -1034,7 +983,7 @@ profile_enrich() {
   run_mode 0
   cp "${ENRICH_TMP}/batches" "${ENRICH_TMP}/batches-a"
   local a_proc="$PROC_PEAK_MB" a_svc="$SVC_PEAK_MB" a_pg="$PG_PEAK_MB" a_after="$SVC_AFTER_MB" a_cold="$PROC_COLD_MS"
-  # Per-batch process peak from the samples tagged with the number of batch lines seen so far.
+  # Samples count completed batches, so add one to label the batch in flight.
   awk '{b = $5 + 1; if ($2 > p[b]) p[b] = $2} END {for (b in p) print b, int(p[b] / 1024)}' "${ENRICH_TMP}/samples" | sort -n >"${ENRICH_TMP}/peaks-a"
   local last_batch
   last_batch="$(wc -l <"${ENRICH_TMP}/batches-a" | tr -d ' ')"
@@ -1091,7 +1040,7 @@ else:
   echo "=== Mode B: per-batch (one JVM per batch of ${ENRICH_BATCH_SIZE}, relaunched by the launcher) ==="
   run_mode 1
   local b_svc="$SVC_PEAK_MB" b_pg="$PG_PEAK_MB" b_after="$SVC_AFTER_MB"
-  # Per-JVM peak and duration from the samples tagged with the number of JVM exits seen so far.
+  # Samples count completed JVMs, so add one to identify the JVM in flight.
   awk '{j = $6 + 1; if ($2 > p[j]) p[j] = $2; if (!(j in s)) s[j] = $1; e[j] = $1}
        END {for (j in p) print j, int(p[j] / 1024), int((e[j] - s[j]) / 1000)}' "${ENRICH_TMP}/samples" | sort -n >"${ENRICH_TMP}/peaks-b"
   b_max_peak="$(awk '{if ($2 > m) m = $2} END {print m + 0}' "${ENRICH_TMP}/peaks-b")"

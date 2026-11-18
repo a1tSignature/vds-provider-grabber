@@ -8,20 +8,12 @@ import java.util.UUID
 /** How an adapter obtains its data. Used for logging and reporting only, never for a decision. */
 enum class SourceKind { API, HTML }
 
-/**
- * The crawler plugin SPI: one adapter owns exactly one provider and returns a read-only
- * [ProviderSnapshot] of what it observed. Reconciling that snapshot into the catalog happens
- * elsewhere, through the vds-001 admin HTTP API (ADR-02), so an adapter has **no** write path at
- * all -- see [CrawlContext] for the complete set of capabilities it is given.
- */
+/** One adapter owns one provider and reports observed data. Reconciliation and writes belong to the runner. */
 interface ProviderAdapter {
     /** Stable adapter id, `^[a-z0-9-]+$`, unique inside an [AdapterRegistry]. */
     val id: String
 
-    /**
-     * The `provider.slug` this adapter owns, same charset as [id]. Immutable: changing it would
-     * re-point the adapter at a different catalog row.
-     */
+    /** Treat providerSlug as immutable because changing it points the adapter at another catalog row. */
     val providerSlug: String
 
     val sourceKind: SourceKind
@@ -45,9 +37,6 @@ data class CrawlContext(
     val fetcher: PageFetcher,
     val clock: Clock,
     val runId: UUID,
-    /**
-     * The adapter's own `VDS_CRAWLER_ADAPTER_<ID>_*` settings, keyed by the lower-cased suffix;
-     * built by `org.a1tsign.vds.config.crawlerAdapterConfig`.
-     */
+    /** Adapter-specific environment settings with lower-case suffix keys. See [org.a1tsign.vds.config.crawlerAdapterConfig]. */
     val config: Map<String, String> = emptyMap(),
 )

@@ -10,27 +10,18 @@ import java.nio.file.Path
 import java.time.Clock
 import java.time.Instant
 
-/** One file that became a registry entry: the parsed config plus where and when it came from. */
 data class LoadedSource(
     val config: SourceConfig,
     val file: String,
     val loadedAt: Instant,
 )
 
-/** One file that did **not** become a registry entry, with every problem the format found in it. */
 data class FailedSource(
     val file: String,
     val problems: List<String>,
 )
 
-/**
- * What one startup made of `VDS_DISCOVERY_SOURCES_DIR`. Exposed on `AppComponents` so task 6's
- * `GET /api/v1/admin/discovery/sources` can serve it: after a restart-to-apply load this report is
- * the only way to tell whether a file was picked up, and why not when it was not.
- *
- * [problems] are directory-level refusals (the directory itself is unreadable, or it holds more
- * files than `VDS_DISCOVERY_MAX_SOURCES` allows) as opposed to [failed], which is per file.
- */
+/** Startup snapshot of loaded sources and refusals, served by the admin sources endpoint until restart. */
 data class SourceLoadReport(
     val directory: String?,
     val loaded: List<LoadedSource>,
@@ -39,44 +30,18 @@ data class SourceLoadReport(
 ) {
     val hasFailures: Boolean get() = failed.isNotEmpty() || problems.isNotEmpty()
 
-    /** Every refusal on one line, each naming its file -- the message strict mode fails startup with. */
     fun failureSummary(): String =
         (problems + failed.map { "${it.file}: ${it.problems.joinToString("; ")}" }).joinToString("; ")
 
     companion object {
-        /**
-         * Nothing was read at all: the crawler is disabled, or `VDS_DISCOVERY_SOURCES_DIR` is unset
-         * (the default), which is what makes "discovery disabled => nothing happens" literal.
-         */
+        /** No files were read because the crawler or source directory was unavailable. */
         val NOT_LOADED = SourceLoadReport(directory = null, loaded = emptyList(), failed = emptyList(), problems = emptyList())
     }
 }
 
 /**
- * The **error boundary** between semi-trusted file data and `AdapterRegistry`: it reads a directory
- * of `*.json` source files, validates each one through [SourceConfigFormat.parse], and returns the
- * valid configs *plus* every file that failed, with its error. Nothing it is given can make it
- * throw -- a malformed file, an unreadable directory and an I/O failure are all reported, the file
- * is skipped with one ERROR line, and **the process still starts** (ADR-01 decision 4;
- * `VDS_DISCOVERY_SOURCES_STRICT=true` is what turns that into a startup failure, and the
- * composition root owns that decision, not this class).
- *
- * Because validation happens here, before the registry is constructed, `AdapterRegistry.init{}`'s
- * `require(...)` is never reached by file data at all -- it stays the programming-error guard it was.
- *
- * Bounds, both with their own message: **64 KB per file** ([SourceConfigFormat.MAX_FILE_BYTES],
- * checked on the file's size *before* it is read and enforced again by the read itself, which
- * never takes more than one byte past the limit -- so a file whose reported size is wrong (a
- * pseudo-file) or that grows between the two calls is still never buffered; it also keeps a future
- * bot submission inside the API's existing 256 KB request-body limit) and
- * `VDS_DISCOVERY_MAX_SOURCES` files. A **symbolic link is never followed**: it is reported as a
- * skipped file, so a link cannot point the loader at an arbitrary file outside the directory. Only the **parsed** configs are kept: no raw file content is
- * retained, which matters on a 192 MB heap.
- *
- * Uniqueness is enforced across *all* entries, config-sourced and compiled: a file whose `id` or
- * `providerSlug` is already taken is refused rather than allowed to shadow or collide with
- * `example-static`. Files are read **non-recursively** and in sorted order, so which of two
- * colliding files wins is stable across restarts.
+ * Read bounded JSON files in sorted order from one directory without following symlinks. Report refusals and keep parsed configs only.
+ * Enforce uniqueness against both compiled and already accepted entries so collisions cannot shadow an adapter.
  */
 class SourceConfigLoader(private val clock: Clock) {
 
@@ -158,7 +123,6 @@ class SourceConfigLoader(private val clock: Clock) {
         return report(directory, loaded = loaded, failed = failed)
     }
 
-    /** The file's bytes, or the one problem that stops it from becoming an entry. */
     private fun readBounded(path: Path): Result<ByteArray> = try {
         val limit = SourceConfigFormat.MAX_FILE_BYTES
         if (Files.isSymbolicLink(path)) {
@@ -166,11 +130,9 @@ class SourceConfigLoader(private val clock: Clock) {
         } else {
             val size = Files.size(path)
             if (size > limit) {
-                // Refused on the size alone: an oversized file is never read into the heap.
                 Result.failure(IllegalStateException("the file is $size bytes, above the $limit byte limit"))
             } else {
-                // The reported size is not trusted: at most one byte past the limit is ever read, and
-                // NOFOLLOW_LINKS makes the open itself fail if the file became a link meanwhile.
+                // Cap reads independently of reported size. Use NOFOLLOW_LINKS when opening in case the file changed after listing.
                 val bytes = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS).use { it.readNBytes(limit + 1) }
                 if (bytes.size > limit) {
                     Result.failure(IllegalStateException("the file is above the $limit byte limit"))

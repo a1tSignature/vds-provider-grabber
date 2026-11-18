@@ -31,7 +31,6 @@ import org.jetbrains.exposed.v1.jdbc.update
 import java.math.BigDecimal
 import java.time.Instant
 
-/** The `GET /api/v1/providers` filter set -- every field `null`/empty means "no constraint". */
 /**
  * The cheapest current monthly price and the cheapest current annual price divided by 12, both in
  * USD; [lowest] is the smaller of the two, the value the provider list sorts by.
@@ -60,7 +59,6 @@ class ProviderRepository {
         description: String?,
         status: ProviderStatus,
         now: Instant,
-        /** Omitted = a normal, visible catalog member -- the same safe direction as the column's DEFAULT. */
         systemStatus: SystemStatus = SystemStatus.CONFIGURED,
     ): Provider {
         val id = ProviderTable.insert {
@@ -79,12 +77,7 @@ class ProviderRepository {
         .where { ProviderTable.id eq id }
         .forUpdate(ForUpdateOption.ForUpdate)
         .firstOrNull()?.toProvider()
-    /**
-     * [systemStatus] `null` = **leave the column alone** (it is then not part of the `UPDATE`
-     * statement at all), which is what makes an ordinary `PUT /api/v1/providers/{id}` unable to
-     * promote a candidate as a side effect. The nullable parameter was chosen over a second
-     * statement so the whole provider row still moves in one `UPDATE`.
-     */
+    /** Null leaves the column untouched so an ordinary update cannot promote a candidate. */
     fun update(
         id: Long,
         slug: String,
@@ -121,7 +114,6 @@ class ProviderRepository {
         )
     }
 
-    /** Inserts or fully overwrites the row, origins included; `updated_at` is [now]. */
     fun writeLegalInfo(info: LegalInfo, now: Instant) {
         val exists = ProviderLegalInfoTable.select(ProviderLegalInfoTable.providerId)
             .where { ProviderLegalInfoTable.providerId eq info.providerId }.any()
@@ -162,9 +154,7 @@ class ProviderRepository {
     }
     fun paymentMethods(id: Long): List<ProviderPaymentMethod> = ProviderPaymentMethodTable.selectAll().where { ProviderPaymentMethodTable.providerId eq id }.map { it.toProviderPaymentMethod() }
 
-    // ---- Read queries added for the provider list/detail endpoints (task vds-001.15) ----
 
-    /** Total providers matching [filter], ignoring sort/pagination. */
     fun countFiltered(filter: ProviderListFilter): Long =
         ProviderTable.selectAll().where { providerFilter(filter) }.count()
 
@@ -226,13 +216,7 @@ class ProviderRepository {
             .associate { it[TariffTable.providerId] to it[countExpr].toInt() }
     }
 
-    /**
-     * Hand-written, parameterised SQL (ADR-04's named exception for this exact aggregate): the
-     * minimum **current** (`effective_to IS NULL`) MONTHLY and ANNUAL `amount_usd` among a
-     * provider's tariffs that can be bought now (**active and in stock**), skipping rows with no FX
-     * rate (`amount_usd IS NULL`). [ids] is bound as individual `?` placeholders, never
-     * concatenated into the statement text.
-     */
+    /** Aggregate current prices from active, in-stock tariffs. Use a parameterized query and divide annual USD prices by 12. */
     fun minPricesUsdByProvider(ids: Collection<Long>): Map<Long, MinPricesUsd> {
         if (ids.isEmpty()) return emptyMap()
         val idList = ids.distinct()
@@ -265,7 +249,6 @@ class ProviderRepository {
         return result
     }
 
-    /** `WHERE` builder for [ProviderListFilter] -- every subquery below correlates on `ProviderTable.id`. */
     private fun providerFilter(filter: ProviderListFilter): Op<Boolean> {
         var op: Op<Boolean> = Op.TRUE
         // Always constrained -- an empty list matches nothing, never everything.

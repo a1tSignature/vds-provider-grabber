@@ -102,8 +102,6 @@ class PriceWriteApiTest : AbstractDbTest() {
             val provider = fixture.createProvider("price-one", clock.instant())
             val tariff = fixture.createTariff(provider.id, "Basic", clock.instant())
 
-            // 1. first write -> 201; second write with a different amount -> 201, closes the first
-            // at the second's effectiveFrom (DB-exact instant equality, not "is not null").
             val first = putPrice(tariff.id, token, priceBody(amount = "10", currency = "USD"))
             assertEquals(HttpStatusCode.Created, first.status)
             val firstId = json(first).getValue("id").jsonPrimitive.long
@@ -121,8 +119,6 @@ class PriceWriteApiTest : AbstractDbTest() {
             assertEquals(secondEffectiveFrom, secondRow.effectiveFrom)
             assertNull(secondRow.effectiveTo)
 
-            // 2. re-submission of the same amount+currency, "10" vs "10.0000" style equality ->
-            // 200, no new row, same id returned; a different currency DOES create a new row.
             clock.advance(Duration.ofSeconds(5))
             val resubmit = putPrice(tariff.id, token, priceBody(amount = "12.0000", currency = "USD"))
             assertEquals(HttpStatusCode.OK, resubmit.status)
@@ -135,8 +131,6 @@ class PriceWriteApiTest : AbstractDbTest() {
             assertEquals(3L, rowCount(tariff.id, BillingPeriod.MONTHLY))
             val thirdId = json(currencyChange).getValue("id").jsonPrimitive.long
 
-            // 3. effectiveFrom earlier than or equal to the current row's -> 409; now + 61s -> 400;
-            // now + 59s -> stored as given.
             val thirdRow = transaction(PostgresSupport.database) { repo.findById(thirdId)!! }
             val equalAttempt = putPrice(tariff.id, token, priceBody(amount = "99", currency = "EUR", effectiveFrom = thirdRow.effectiveFrom))
             assertEquals(HttpStatusCode.Conflict, equalAttempt.status)
@@ -155,7 +149,6 @@ class PriceWriteApiTest : AbstractDbTest() {
             }
             assertEquals(now.plusSeconds(59), storedSkewed.effectiveFrom)
 
-            // 10. dataSource absent -> MANUAL; CRAWLER stored as given; unknown value -> 400.
             assertEquals(PriceDataSource.MANUAL, storedSkewed.dataSource)
             clock.advance(Duration.ofSeconds(5))
             val crawlerWrite = putPrice(tariff.id, token, priceBody(billingPeriod = BillingPeriod.QUARTERLY, amount = "7", currency = "USD", dataSource = "CRAWLER"))
@@ -166,10 +159,8 @@ class PriceWriteApiTest : AbstractDbTest() {
             assertEquals(HttpStatusCode.BadRequest, badDataSource.status)
             assertEquals(setOf("dataSource"), json(badDataSource).getValue("details").jsonArray.map { it.jsonObject.getValue("field").jsonPrimitive.content }.toSet())
 
-            // 9. unknown tariff -> 404.
             assertEquals(HttpStatusCode.NotFound, putPrice(999999, token, priceBody()).status)
 
-            // roles: VIEWER -> 403, no token -> 401.
             val viewerToken = loginAs(UserFixture(PostgresSupport.database, UserRepository(), PasswordHasher()), "price-viewer", "long-password-viewer", setOf(Role.VIEWER), clock.instant())
             assertEquals(HttpStatusCode.Forbidden, putPrice(tariff.id, viewerToken, priceBody()).status)
             assertEquals(
@@ -192,7 +183,6 @@ class PriceWriteApiTest : AbstractDbTest() {
             val refreshService = FxRefreshService(stub, PostgresSupport.database, rateRepository, converter, clock)
             assertEquals(1, refreshService.refresh())
 
-            // 4. amount_usd computed at write time and frozen even after a later refresh changes the rate.
             val written = putPrice(tariff.id, token, priceBody(amount = "10", currency = "EUR"))
             assertEquals(HttpStatusCode.Created, written.status)
             val priceId = json(written).getValue("id").jsonPrimitive.long
@@ -209,19 +199,15 @@ class PriceWriteApiTest : AbstractDbTest() {
             assertEquals(beforeRefresh.usdRate, afterRefresh.usdRate)
             assertEquals(beforeRefresh.usdRateAt, afterRefresh.usdRateAt)
 
-            // 5. a currency with no known rate -> 2xx, NULL fx columns, "warnings":["NO_FX_RATE"].
             val noRate = putPrice(tariff.id, token, priceBody(billingPeriod = BillingPeriod.ANNUAL, amount = "5", currency = "GBP"))
             assertTrue(noRate.status.value in 200..299)
             assertEquals(listOf("NO_FX_RATE"), json(noRate).getValue("warnings").jsonArray.map { it.jsonPrimitive.content })
             val noRateRow = transaction(PostgresSupport.database) { repo.findById(json(noRate).getValue("id").jsonPrimitive.long)!! }
             assertNull(noRateRow.amountUsd); assertNull(noRateRow.usdRate); assertNull(noRateRow.usdRateAt)
 
-            // Normal case: warnings is present as an empty list, never absent.
             assertTrue(json(written).containsKey("warnings"))
             assertEquals(emptyList(), json(written).getValue("warnings").jsonArray.map { it.jsonPrimitive.content })
 
-            // 6. currency = USD -> usd_rate = 1, usd_rate_at = effectiveFrom, amount_usd = amount,
-            // with no currency_rate row for USD at all.
             val usdWrite = putPrice(tariff.id, token, priceBody(billingPeriod = BillingPeriod.SEMIANNUAL, amount = "8", currency = "USD"))
             assertEquals(HttpStatusCode.Created, usdWrite.status)
             val usdRow = transaction(PostgresSupport.database) { repo.findById(json(usdWrite).getValue("id").jsonPrimitive.long)!! }
@@ -252,11 +238,9 @@ class PriceWriteApiTest : AbstractDbTest() {
                 PriceRepository().findById(json(write).getValue("id").jsonPrimitive.long)!!.effectiveFrom
             }
 
-            // effectiveTo <= effectiveFrom -> 409.
             assertEquals(HttpStatusCode.Conflict, closePrice(tariff.id, token, closeBody(effectiveTo = rowEffectiveFrom)).status)
             assertEquals(HttpStatusCode.Conflict, closePrice(tariff.id, token, closeBody(effectiveTo = rowEffectiveFrom.minusSeconds(1))).status)
 
-            // effectiveTo = now + 61s -> 400.
             val now = clock.instant()
             assertEquals(HttpStatusCode.BadRequest, closePrice(tariff.id, token, closeBody(effectiveTo = now.plusSeconds(61))).status)
 
@@ -265,10 +249,8 @@ class PriceWriteApiTest : AbstractDbTest() {
             assertEquals(HttpStatusCode.OK, closed.status)
             assertEquals(0L, currentRowCount(tariff.id, BillingPeriod.MONTHLY))
 
-            // closing again -> 404 (no current row left).
             assertEquals(HttpStatusCode.NotFound, closePrice(tariff.id, token, closeBody()).status)
 
-            // unknown tariff -> 404.
             assertEquals(HttpStatusCode.NotFound, closePrice(999999, token, closeBody()).status)
         }
     }
@@ -285,23 +267,18 @@ class PriceWriteApiTest : AbstractDbTest() {
             val otherTariff = fixture.createTariff(two.id, "Other", clock.instant())
             val repo = PriceRepository()
 
-            // Simple chain: A, then B closes A at B's effectiveFrom. Deleting B as ADMIN reopens A.
             val aResponse = putPrice(tariff.id, token, priceBody(amount = "10"))
             val aId = json(aResponse).getValue("id").jsonPrimitive.long
             clock.advance(Duration.ofSeconds(5))
             val bResponse = putPrice(tariff.id, token, priceBody(amount = "12"))
             val bId = json(bResponse).getValue("id").jsonPrimitive.long
 
-            // EDITOR attempting the correction -> 403.
             assertEquals(HttpStatusCode.Forbidden, correctPrice(tariff.id, bId, editorToken).status)
 
-            // deleting a non-current row (A, already closed) -> 409.
             assertEquals(HttpStatusCode.Conflict, correctPrice(tariff.id, aId, token).status)
 
-            // priceId belonging to another tariff -> 404, not 204.
             assertEquals(HttpStatusCode.NotFound, correctPrice(otherTariff.id, bId, token).status)
 
-            // unknown priceId -> 404.
             assertEquals(HttpStatusCode.NotFound, correctPrice(tariff.id, 999999, token).status)
 
             val logs = capturingLogs {
@@ -314,7 +291,6 @@ class PriceWriteApiTest : AbstractDbTest() {
             val warnLines = logs.messagesAt(Level.WARN)
             assertTrue(warnLines.any { it.contains(tariff.id.toString()) && it.contains("MONTHLY") && it.contains("12.0000") && it.contains("USD") })
 
-            // Gap case: close C, wait, write D (new current). Deleting D leaves C closed (gap untouched).
             val cResponse = putPrice(tariff.id, token, priceBody(billingPeriod = BillingPeriod.ANNUAL, amount = "100"))
             val cId = json(cResponse).getValue("id").jsonPrimitive.long
             clock.advance(Duration.ofSeconds(5))

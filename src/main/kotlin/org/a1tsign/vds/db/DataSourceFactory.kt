@@ -4,11 +4,7 @@ import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.a1tsign.vds.config.DbConfig
 
-/**
- * Builds the single HikariCP pool the process uses for its entire lifetime. Every tunable comes
- * from [DbConfig] (itself sourced from [org.a1tsign.vds.config.loadConfig]) — nothing here is
- * hardcoded beyond the pool's name. The pool is closed on shutdown, see `Application.kt`.
- */
+/** Build the process-owned pool from [DbConfig]. The caller closes it at shutdown. */
 fun buildDataSource(cfg: DbConfig): HikariDataSource {
     val hikariConfig = HikariConfig().apply {
         jdbcUrl = cfg.url

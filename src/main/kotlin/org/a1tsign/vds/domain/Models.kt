@@ -3,12 +3,6 @@ package org.a1tsign.vds.domain
 import java.math.BigDecimal
 import java.time.Instant
 
-/**
- * Framework-free row models for the core schema (`db/RowMappers.kt` builds these from a
- * `ResultRow`). No Ktor/Exposed/serialization annotation belongs in this file -- timestamps are
- * [Instant] (never `OffsetDateTime`, which is an Exposed/DB-boundary concern), money and
- * coordinates are [BigDecimal], ids are [Long], and enum-like columns are the `domain.*` enums.
- */
 data class Provider(
     val id: Long,
     val slug: String,
@@ -22,7 +16,6 @@ data class Provider(
     val updatedAt: Instant,
 )
 
-/** 0..1 per [Provider]; `provider_legal_info.provider_id` is both PK and FK. */
 data class LegalInfo(
     val providerId: Long,
     val legalEntityName: String?,

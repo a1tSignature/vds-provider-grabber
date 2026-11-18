@@ -36,7 +36,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/** Provider visibility and the write contract of `provider.systemStatus`. */
 class ProviderSystemStatusApiTest : AbstractDbTest() {
 
     @Test
@@ -100,7 +99,6 @@ class ProviderSystemStatusApiTest : AbstractDbTest() {
             // By id, a tariff follows the provider-detail rule rather than the listing rule.
             assertEquals(HttpStatusCode.OK, rawGet(token, "/api/v1/tariffs/$candidateTariff").status)
 
-            // Promotion does not change catalog visibility.
             setSystemStatus(token, candidate, "CONFIGURED")
             val afterPromotion = get(token, "/api/v1/tariffs?size=50").jsonObject
             assertEquals(
@@ -119,13 +117,11 @@ class ProviderSystemStatusApiTest : AbstractDbTest() {
             assertEquals("CONFIGURED", providerDto(token, id).string("systemStatus"), "POST without the field is visible")
 
             setSystemStatus(token, id, "CANDIDATE")
-            // The dangerous case: an ordinary field update must not promote a candidate.
             val updated = updateProvider(token, id, "write-contract", name = "Renamed", systemStatus = null)
             assertEquals(HttpStatusCode.OK, updated.status)
             assertEquals("CANDIDATE", providerDto(token, id).string("systemStatus"), "an absent systemStatus leaves it alone")
             assertEquals("Renamed", providerDto(token, id).string("name"), "the rest of the update did happen")
 
-            // ... but an explicit one on the same endpoint is applied.
             updateProvider(token, id, "write-contract", name = "Renamed", systemStatus = "CONFIGURED")
             assertEquals("CONFIGURED", providerDto(token, id).string("systemStatus"))
 
@@ -161,7 +157,6 @@ class ProviderSystemStatusApiTest : AbstractDbTest() {
         }
     }
 
-    // ---------- helpers ----------
 
     private suspend fun ApplicationTestBuilder.adminToken() = loginForToken("bootstrap-admin", "bootstrap-password-1")
 

@@ -20,7 +20,6 @@ import org.slf4j.LoggerFactory
 import java.math.BigDecimal
 import java.time.Instant
 
-/** Long-lived CIO client owned by AppComponents and closed with the application. */
 class ErApiCurrencyRateProvider(
     config: AppConfig,
     val client: HttpClient = HttpClient(CIO) {

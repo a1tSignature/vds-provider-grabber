@@ -43,23 +43,13 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * The interpreter: that one config file reproduces a hand-written adapter exactly, and that the
- * data-safety rules of ADR-03 hold through the declarative path.
- *
- * The write-path cases run against the **real** vds-001 application and the real PostgreSQL
- * ([CrawlerAppHarness]), because "the catalog was not touched" is a claim about the catalog, not
- * about a mock. The parsing cases need no HTTP at all: [StubPageFetcher] answers with the page and
- * parses it exactly as the production fetcher does.
- */
+/** Compare declarative and handwritten snapshots, then check how missing and empty sections affect real catalog data. */
 class DeclarativeAdapterTest : AbstractDbTest() {
 
-    // ---------- 1. the headline: one config == the hand-written reference adapter ----------
 
     @Test
     fun `a declarative config reproduces the reference adapter's snapshot of the same page exactly`() {
-        // The fixture resource is scripts/footprint-fixture/vps.html without its 1 MiB of filler
-        // sections -- the same markup every selector below reads.
+        // The fixture retains the footprint page's selector markup with the filler removed.
         val page = resource("example-static.html")
         val parsed = assertIs<SourceConfigParse.Valid>(
             SourceConfigFormat.parse(SOURCE_FILE, resource(SOURCE_FILE)),
@@ -86,7 +76,6 @@ class DeclarativeAdapterTest : AbstractDbTest() {
         )
     }
 
-    // ---------- 2. ADR-03: not observed vs observed empty vs broken ----------
 
     @Test
     fun `an omitted section is not observed, while a configured one that matches nothing fails`() {
@@ -114,8 +103,7 @@ class DeclarativeAdapterTest : AbstractDbTest() {
         val failure = assertFailsWith<AdapterFailureException> { snapshot(acmeConfig(tariffsSection()), emptyPage) }
         assertTrue(failure.message!!.contains("tariffs.minRows"), failure.message)
 
-        // The same rule for the other two lists: there is no mass-change guard behind an empty
-        // locations or payment-method set, so an empty one must never reach the reconciler.
+        // An observed empty location or payment set can clear catalog data without a tariff mass-change guard.
         val emptyLocations = assertFailsWith<AdapterFailureException> {
             snapshot(acmeConfig(tariffsSection() + LOCATIONS_SECTION), acmePage(extra = "<table class=\"locations\"></table>"))
         }
@@ -187,7 +175,6 @@ class DeclarativeAdapterTest : AbstractDbTest() {
                 ipv4Count = 1,
                 ipv6Supported = true,
                 virtualization = Virtualization.KVM,
-                // An observed out-of-stock tariff: the only disappearance signal an adapter may give.
                 inStock = false,
                 locationKeys = listOf(LocationKey("DE", "Berlin", "BER1")),
                 prices = listOf(PriceSnapshot(BillingPeriod.MONTHLY, BigDecimal("9.99"), "USD")),
@@ -324,7 +311,6 @@ class DeclarativeAdapterTest : AbstractDbTest() {
         )
     }
 
-    // ---------- 3. ADR-03 against the real catalog ----------
 
     @Test
     fun `an omitted section issues no replace-the-whole-set write, while a configured one does`() {
@@ -397,7 +383,6 @@ class DeclarativeAdapterTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 4. money ----------
 
     @Test
     fun `money is read with the config's own separator and currency options, exactly`() {
@@ -515,7 +500,6 @@ class DeclarativeAdapterTest : AbstractDbTest() {
         )
     }
 
-    // ---------- helpers ----------
 
     private fun price(
         cell: String,
@@ -566,7 +550,6 @@ class DeclarativeAdapterTest : AbstractDbTest() {
             return listOf(client.getProvider(providerId).toString(), tariffs.toString(), history.toString()).joinToString("\n")
         }
 
-        /** One real run of one declarative adapter, through the production orchestrator. */
         suspend fun run(adapter: ProviderAdapter, page: String, writer: CrawlWriter) = CrawlerRunner(
             config = harness.crawlerConfig(),
             registry = AdapterRegistry(listOf(AdapterEntry(adapter, includedByDefault = true))),
@@ -593,7 +576,6 @@ class DeclarativeAdapterTest : AbstractDbTest() {
     }
 
     private companion object {
-        /** Every selector of the reference page, as a config file. */
         const val SOURCE_FILE = "example-static-source.json"
 
         /** The base URL both adapters are pointed at, so their `sourceUrls` can be compared. */
@@ -641,7 +623,6 @@ class DeclarativeAdapterTest : AbstractDbTest() {
             </tr></table>
         """.trimIndent()
 
-        /** Every optional field of `TariffSnapshot` the format can express, and the location claim. */
         val OPTIONAL_TARIFF_FIELDS = """
             , "externalId": {"selector": "td.id", "text": true}
             , "url": {"selector": "a.plan", "attr": "href"}
@@ -718,7 +699,6 @@ class DeclarativeAdapterTest : AbstractDbTest() {
             </body></html>
         """.trimIndent()
 
-        /** The adapter identity the reconciler writes under; only its `providerSlug` matters there. */
         val ACME_CONFIG = SourceConfig(
             schemaVersion = SourceConfigFormat.SCHEMA_VERSION,
             id = "acme",

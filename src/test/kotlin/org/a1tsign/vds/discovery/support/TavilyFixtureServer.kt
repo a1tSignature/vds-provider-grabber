@@ -32,7 +32,6 @@ data class TavilyReply(
     val delayMs: Long = 0,
 )
 
-/** What the server saw: the only sound place to assert the pinned body and the Bearer header. */
 class RecordedTavilyRequest(
     val method: String,
     val path: String,
@@ -44,22 +43,10 @@ class RecordedTavilyRequest(
 
     fun header(name: String): String? = headers[name]
 
-    /** Every header value, for the "the key appears in no log line *and* in no URL" assertions. */
     fun headerValues(): Collection<String> = headers.values
 }
 
-/**
- * A local, Tavily-shaped HTTP server. **No test in `discovery` makes a real outbound call** --
- * nothing here may ever reach `api.tavily.com` -- so every status the vendor documents (`401`,
- * `403`, `432`, `429` with and without `Retry-After`, `434`, `5xx`), a snippet-only `200`, a `200`
- * that also carries `raw_content`, a `200` with unknown extra fields, malformed JSON, an oversized
- * body and a stalled response are all canned here, and every arrival is recorded with its **body**
- * and headers (which is what `crawler/support/FixtureHttpServer` does not capture).
- *
- * Binds the loopback interface on an ephemeral port -- never `0.0.0.0`.
- *
- * Owned by the test: `TavilyFixtureServer().use { … }`.
- */
+/** Serve Tavily-shaped replies locally so assertions see the actual request without contacting the vendor. */
 class TavilyFixtureServer : AutoCloseable {
 
     private val replies = ConcurrentHashMap<String, List<TavilyReply>>()
@@ -77,7 +64,6 @@ class TavilyFixtureServer : AutoCloseable {
         port = runBlocking { server.engine.resolvedConnectors().first().port }
     }
 
-    /** The endpoint to construct the provider with; it appends `/search` and `/usage` itself. */
     fun url(): String = "http://127.0.0.1:$port"
 
     fun onSearch(vararg replies: TavilyReply): TavilyFixtureServer = on("/search", *replies)
@@ -153,6 +139,5 @@ fun tavilySearchBody(): String = """
     }
 """.trimIndent()
 
-/** A syntactically valid `200` body of at least [bytes] bytes, for the response-cap case. */
 fun tavilyOversizedBody(bytes: Int): String =
     """{"results": [], "padding": "${"p".repeat(bytes)}"}"""

@@ -26,10 +26,10 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.min
 
-/** The one depth this build ever asks for: **1 credit**; `advanced` costs 2 (ADR-02). */
+/** Basic depth costs one credit, the unit used by the ledger. */
 private const val SEARCH_DEPTH_BASIC = "basic"
 
-/** `Retry-After` above this ends the pass instead of blocking it (ADR-02 decision 5). */
+/** A longer Retry-After ends the pass to bound wait time. */
 private const val MAX_RETRY_AFTER_MS = 60_000L
 
 private const val READ_BUFFER_BYTES = 8 * 1024
@@ -39,12 +39,7 @@ private const val CONNECT_TIMEOUT_MS = 5_000L
 /** The vendor's documented maximum for `exclude_domains`. */
 const val TAVILY_MAX_EXCLUDED_DOMAINS: Int = 150
 
-/**
- * The pinned request body. **Declared without default values on purpose**: kotlinx omits a property
- * equal to its default unless `encodeDefaults` is set, and these four fields are acceptance
- * criteria, not conveniences -- they must appear on the wire whatever the `Json` instance is
- * configured to do.
- */
+/** Keep these request fields explicit because serialization can omit values equal to defaults. */
 @Serializable
 private data class TavilySearchRequest(
     val query: String,
@@ -56,11 +51,7 @@ private data class TavilySearchRequest(
     @SerialName("exclude_domains") val excludeDomains: List<String>?,
 )
 
-/**
- * Only the three fields vds-004 is allowed to keep. `raw_content`, `score`, `published_date`,
- * `favicon` and whatever the vendor adds next are **not declared**, so a tolerant parser drops them
- * instead of this process storing them.
- */
+/** Retain only the URL, title and snippet. Ignore other fields the vendor adds. */
 @Serializable
 private data class TavilySearchResult(
     val url: String,
@@ -87,16 +78,7 @@ private data class TavilyUsageFigures(
     @SerialName("plan_limit") val planLimit: Int? = null,
 )
 
-/**
- * The provider's own client: a trusted JSON peer, so it must **not** go through
- * `crawler/fetch/PageFetcher` (robots.txt and a 2 s per-host delay are meaningless for an
- * authenticated API, and ADR-04 keeps the two outbound clients separate). The caller owns it and
- * closes it on shutdown exactly as `fxHttpClient` / `crawlerFetchHttpClient` are closed.
- *
- * `expectSuccess = false` is load-bearing: the status **is** the contract here (`432` is the quota
- * signal, `429` carries `Retry-After`), so the client must never turn a non-2xx into an exception
- * before [TavilySearchProvider] has seen it.
- */
+/** Use a dedicated JSON client so provider-site delays and robots rules do not apply to the authenticated search API. */
 fun tavilySearchHttpClient(requestTimeoutMs: Long): HttpClient = HttpClient(CIO) {
     expectSuccess = false
     install(HttpTimeout) {
@@ -113,48 +95,9 @@ fun tavilySearchHttpClient(requestTimeoutMs: Long): HttpClient = HttpClient(CIO)
 }
 
 /**
- * The one shipped [SearchProvider]: `POST <endpoint>/search` with `Authorization: Bearer <key>`.
- *
- * ### What is pinned, and why each element is an acceptance criterion
- *
- * | Field | Value | Why it is not an inherited default |
- * |---|---|---|
- * | `search_depth` | `basic` | 1 credit; `advanced` costs 2 and would silently double the cost the ledger assumes |
- * | `include_answer` | `false` | it would generate an **LLM** answer, which the product owner forbade outright |
- * | `include_raw_content` | `false` | it would carry full page content -- against "URL + snippet only", and unbounded on a 192 MB heap |
- * | `max_results` | configured, 1..20 | the vendor's own maximum; validated in `loadConfig` |
- *
- * | `exclude_domains` | the first [TAVILY_MAX_EXCLUDED_DOMAINS] of [excludeDomains], omitted when empty | the denylist applied before ranking, so excluded sites do not take result slots; the credit is spent per request either way |
- *
- * Deliberately **absent**: `include_images`, `include_domains`, and `max_age_hours` -- the last
- * one opts into the flex tier and its `434` response.
- *
- * ### The key
- *
- * Travels in a **header**, never in a URL or a query string, and neither the key nor the header
- * value is ever logged. The failure log line carries the category, the status and the credits spent
- * so far, and nothing else; no response body and no snippet is ever logged.
- *
- * ### Status mapping, from status codes and headers only
- *
- * The vendor documents the *message text* as varying by which limit was hit, so nothing here reads
- * it: `432` → [SearchFailureKind.SEARCH_QUOTA], `401`/`403` → [SearchFailureKind.SEARCH_AUTH],
- * `429` → [SearchFailureKind.SEARCH_RATE_LIMIT] (honouring `Retry-After` **once** when it is
- * ≤ 60 s, otherwise ending the pass), `5xx` / `434` / transport failures / timeouts →
- * [SearchFailureKind.SEARCH_UNAVAILABLE], and a `200` whose body does not parse into the expected
- * shape -- including one above [maxResponseBytes] -- → [SearchFailureKind.SEARCH_MALFORMED]. An
- * undocumented status is reported as `SEARCH_UNAVAILABLE` rather than guessed at.
- *
- * ### The body cap
- *
- * [maxResponseBytes] (default 512 KiB) is counted **while streaming** and is the backstop that
- * keeps `include_raw_content: false` safe even if the vendor's default ever changes: at most one
- * 8 KiB buffer above the cap is ever held.
- *
- * ### Construction
- *
- * Explicit parameters, never `AppConfig`: task vds-004.4 owns the `VDS_DISCOVERY_*` block and task
- * vds-004.6 maps it onto this constructor, which keeps every test here a plain unit test.
+ * Use basic search at one credit per request, without generated answers or raw page content.
+ * Classify failures by HTTP status and headers. Honor an eligible rate-limit retry once and cap response bytes while streaming.
+ * Send the key in the authorization header and keep it and all raw response content out of logs.
  */
 class TavilySearchProvider(
     endpoint: String,
@@ -164,7 +107,6 @@ class TavilySearchProvider(
     val client: HttpClient = tavilySearchHttpClient(requestTimeoutMs),
     /** Canonical domains; only the first [TAVILY_MAX_EXCLUDED_DOMAINS] are sent, the rest is filtered locally. */
     excludeDomains: List<String> = emptyList(),
-    /** The `Retry-After` wait. Injectable so a rate-limit test does not add seconds to the suite. */
     private val sleep: suspend (Long) -> Unit = { millis -> delay(millis) },
 ) : SearchProvider {
 
@@ -214,18 +156,8 @@ class TavilySearchProvider(
     }
 
     /**
-     * `GET <endpoint>/usage`, the **advisory** cross-check (ADR-02 decision 6). Three caveats, all
-     * of them reasons this is not a refusal mechanism:
-     *
-     * 1. The vendor's window is a **billing cycle**; ours is a **calendar month**. A disagreement is
-     *    therefore legitimate, and the **stricter** of the two figures wins -- which is also why the
-     *    local `CreditLedger` stays authoritative for refusing a query.
-     * 2. Whether this endpoint itself **costs a credit is undocumented**. If a measurement ever
-     *    shows that it does, the cross-check is **dropped** rather than paid for.
-     * 3. It is rate-limited to 10 calls per 10 minutes, so a caller may make **at most one per
-     *    pass**.
-     *
-     * Any failure -- a non-200, a transport error, an unreadable body -- is `null` and one WARN line.
+     * Vendor usage is advisory because its billing cycle can differ from the ledger's UTC month. Use the stricter available figure.
+     * Call at most once per pass due to the usage endpoint's own rate limit. Return null on failure.
      */
     override suspend fun usage(): SearchUsage? = try {
         client.prepareGet(usageUrl) { header(HttpHeaders.Authorization, bearer()) }.execute { response ->
@@ -246,7 +178,6 @@ class TavilySearchProvider(
     } catch (cancellation: CancellationException) {
         throw cancellation
     } catch (failure: Exception) {
-        // Advisory by contract: a failed cross-check must never fail a pass.
         logger.warn("tavily /usage failed ({}); the cross-check is skipped", failure.javaClass.simpleName)
         null
     }
@@ -326,11 +257,7 @@ class TavilySearchProvider(
         return Outcome.Failed(failure(kind, status, "the provider refused the request"))
     }
 
-    /**
-     * `Retry-After` in milliseconds when it is given in seconds; the HTTP-date form is not used.
-     * The conversion saturates: a value too large for milliseconds stays "too large" (and so ends
-     * the pass above the ceiling) instead of overflowing into an immediate retry.
-     */
+    /** Parse Retry-After seconds into milliseconds with saturation so overflow cannot produce a short wait. */
     private fun retryAfterMs(response: HttpResponse): Long? =
         response.headers[HttpHeaders.RetryAfter]?.trim()?.toLongOrNull()?.let { seconds ->
             when {
@@ -363,7 +290,6 @@ class TavilySearchProvider(
         return sink.toByteArray()
     }
 
-    /** One WARN line per failure: the category, the status and the credits spent so far. Nothing else. */
     private fun failure(
         kind: SearchFailureKind,
         status: Int?,
@@ -391,12 +317,7 @@ class TavilySearchProvider(
     private companion object {
         private const val INITIAL_SINK_BYTES = 32L * 1024
 
-        /**
-         * Tolerant on purpose, and this is the **one** place in this project where that is correct:
-         * the vendor adds result fields over time and an additive field must not break a pass.
-         * Unlike the source configs, which are strict because a typo there would silence a section
-         * of a catalog. Its own instance, never `api/Serializers.kt`'s strict `ApiJson`.
-         */
+        /** Ignore additive vendor fields so an upstream schema extension cannot break a pass. */
         private val json = Json {
             ignoreUnknownKeys = true
             isLenient = false

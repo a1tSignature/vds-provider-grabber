@@ -24,17 +24,7 @@ private fun ApplicationCall.setStaticCacheControl() {
     response.header(HttpHeaders.CacheControl, value)
 }
 
-/**
- * Serves the SPA bundle from [basePackage] (production: `"static"`) under `/`, with `index.html`
- * as both the directory index and the deep-link fallback (so `/providers/42` resolves client-side).
- *
- * `filter` -- not `fallback` -- is what keeps the API safe: it skips this route entirely for a
- * reserved first segment, so Ktor falls through to a genuine route miss instead of this route's own
- * `default("index.html")`, which would otherwise happily turn `/api/v1/typo` into a `200 text/html`
- * (`default` resolves unconditionally once the exact resource lookup fails, regardless of path).
- * `StatusPagesConfig.unhandled` (`api/ApiError.kt`) then turns that genuine miss into the standard
- * JSON envelope, for every path including one with no bundle on the classpath at all.
- */
+/** Serve index.html for SPA paths. Filter reserved prefixes before Ktor's default resource can turn an API miss into HTML. */
 fun Route.staticRoutes(basePackage: String) {
     staticResources("/", basePackage) {
         default("index.html")

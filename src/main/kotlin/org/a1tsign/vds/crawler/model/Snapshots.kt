@@ -10,18 +10,8 @@ import java.math.BigDecimal
 import java.time.Instant
 
 /**
- * What one adapter observed about one provider during one run -- a read-only description, never a
- * command: the reconciler decides which catalog calls it implies.
- *
- * **`null` means "not observed", an empty collection means "observed and empty"** (ADR-03). A
- * `null` section leaves that part of the catalog untouched; a non-null collection is the complete
- * observed set and may therefore drive a replace-the-whole-set endpoint. [tariffListComplete] is
- * the separate, explicit claim that [tariffs] is the provider's full catalog -- only such a
- * snapshot may ever flip a tariff to out of stock.
- *
- * Plain immutable data classes on purpose: no serialization/Exposed annotation belongs in this
- * package, money and coordinates are [BigDecimal] (`Double`/`Float` appear nowhere) and time is
- * [Instant] taken from the injected `Clock`.
+ * A null section leaves its catalog facet untouched. An empty collection records an observed empty set.
+ * [tariffListComplete] separately claims the provider's full tariff catalog and permits marking missing tariffs out of stock.
  */
 data class ProviderSnapshot(
     val provider: ProviderInfo,
@@ -43,10 +33,7 @@ data class ProviderInfo(
     val status: ProviderStatus,
 )
 
-/**
- * `dataSource` is deliberately **not** a field: everything the crawler writes is `CRAWLER`, and an
- * adapter may not claim otherwise.
- */
+/** Legal snapshots cannot supply provenance. The writer assigns CRAWLER. */
 data class LegalInfoSnapshot(
     val legalEntityName: String? = null,
     val registrationCountry: String? = null,
@@ -72,16 +59,7 @@ data class LocationKey(
     val city: String? = null,
     val datacenterName: String? = null,
 ) {
-    /**
-     * The comparison form of this key, mirroring vds-001's unique index
-     * `uq_location_provider_country_city_dc`:
-     * `(provider_id, country_code, lower(coalesce(city, '')), lower(coalesce(datacenter_name, '')))`
-     * -- a missing city/datacenter collapses to `""` and both are compared case-insensitively.
-     *
-     * `countryCode` is compared verbatim, like the index does: the column carries
-     * `ck_location_country_code` (`^[A-Z]{2}$`) and snapshot validation enforces the same shape, so
-     * there is no case to fold. Two keys with the same match form are the same catalog row.
-     */
+    /** Match uq_location_provider_country_city_dc by lowercasing and coalescing missing city and datacenter names. The provider is fixed by the caller. */
     fun matchKey(): LocationMatchKey = LocationMatchKey(
         countryCode = countryCode,
         city = (city ?: "").lowercase(),
@@ -89,21 +67,13 @@ data class LocationKey(
     )
 }
 
-/** Normalised [LocationKey] -- equality here is "the same `location` row". */
 data class LocationMatchKey(
     val countryCode: String,
     val city: String,
     val datacenterName: String,
 )
 
-/**
- * One observed tariff. There is deliberately **no `isActive`**: an adapter may never express
- * deactivation (ADR-03). [inStock] `false` is the only disappearance signal, and the reconciler
- * honours it only from a snapshot with `tariffListComplete = true`.
- *
- * [locationKeys] `null` means the adapter did not observe the tariff's locations, so the
- * tariff-to-location assignment is left alone.
- */
+/** Snapshots can express stock changes but have no concept of tariff activation. Prices contain only observed billing periods. */
 data class TariffSnapshot(
     val externalId: String? = null,
     val name: String,
@@ -123,7 +93,7 @@ data class TariffSnapshot(
     val prices: List<PriceSnapshot> = emptyList(),
 )
 
-/** [amount] is the price as advertised, in [currency] (ISO-4217); FX conversion stays in vds-001. */
+/** Use the advertised amount and ISO 4217 currency. The catalog handles FX conversion. */
 data class PriceSnapshot(
     val billingPeriod: BillingPeriod,
     val amount: BigDecimal,

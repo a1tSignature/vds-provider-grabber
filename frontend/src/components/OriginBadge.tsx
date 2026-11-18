@@ -3,7 +3,6 @@ import { originMarker } from "../domain/provenanceLabels";
 const PRESUMED_TITLE = "Значение найдено автоматически по косвенным признакам и требует проверки";
 const AUTO_TITLE = "Значение собрано автоматически с сайта провайдера";
 
-/** `compact` keeps only the icon visible, for table cells; the full text stays in the tooltip. */
 export function OriginBadge({ origin, compact = false }: { origin: string | undefined; compact?: boolean }) {
   const marker = originMarker(origin);
   if (marker === null) return null;

@@ -19,11 +19,7 @@ export interface Submitter<V> {
   retry: () => Promise<boolean>;
 }
 
-/**
- * The submit/retry logic, outside React so it is testable without a DOM. The in-flight flag is a
- * plain variable set synchronously: a second click in the same tick, before React re-renders the
- * disabled button, is still rejected.
- */
+/** Set the guard synchronously to reject a second submit before React renders the disabled button. */
 export function createSubmitter<V extends object>(
   getValues: () => V,
   dispatch: (action: FormAction<V>) => void,
@@ -65,7 +61,6 @@ export interface FormApi<V> extends Submitter<V> {
   state: FormState<V>;
   set: (values: Partial<V>) => void;
   reset: (values: V) => void;
-  /** Field name → message: a backend `details[]` entry, or "обязательное поле" after a blocked submit. */
   fieldErrors: Record<string, string>;
 }
 

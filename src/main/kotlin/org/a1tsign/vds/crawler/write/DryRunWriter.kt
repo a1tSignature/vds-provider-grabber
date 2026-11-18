@@ -6,21 +6,7 @@ import java.util.concurrent.atomic.AtomicLong
 /** How many planned-operation lines one run keeps; the rest are dropped. */
 const val PLANNED_OPERATIONS_LIMIT: Int = 200
 
-/**
- * The preview [CrawlWriter]: performs no mutation, records one line per intended mutation, and
- * returns ids that let planning continue as if the write had happened.
- *
- * - A created entity gets one synthetic id per catalog identity (slug, location unique key, tariff
- *   `externalId` or lower-cased name), so follow-up links and prices are planned against it. The
- *   ids are negative so one that leaked into a URL could not address a real row.
- * - [putPrice] reports `appended = true` (whether the server would answer `200` is unknowable) and
- *   `noFxRate = false` (the FX state is not consulted without a write).
- * - Lines are capped at [PLANNED_OPERATIONS_LIMIT] to bound the in-memory run history; counters
- *   are unaffected.
- *
- * One instance per run, shared by its adapters. The lock lets an HTTP thread read the summary while
- * the run writes it; adapters themselves run one at a time.
- */
+/** Record a bounded preview without making catalog writes. Fabricated IDs allow dependent operations to continue. */
 class DryRunWriter : CrawlWriter {
 
     private val lock = Any()
@@ -139,7 +125,6 @@ class DryRunWriter : CrawlWriter {
         fabricated.getOrPut(key) { -ids.incrementAndGet() }
     }
 
-    /** The tariff's name once this run has seen it, otherwise its id. */
     private fun tariffLabel(tariffId: Long): String =
         synchronized(lock) { tariffNames[tariffId] } ?: "#$tariffId"
 

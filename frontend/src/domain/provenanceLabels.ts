@@ -1,11 +1,7 @@
-/**
- * Whitelisted for bare backend enum literals: field/row origins, enrichment outcomes and legal field
- * names are wire vocabularies with no dictionary entry, so the UI decides on them here and nowhere else.
- */
+/** The dictionaries API omits origins, enrichment outcomes and legal field names. Keep their labels here. */
 
 export type OriginMarker = "presumed" | "auto" | null;
 
-/** Only a presumed value asks for review; a confirmed automatic value or row is merely tagged. */
 export function originMarker(origin: string | undefined): OriginMarker {
   if (origin === "AUTO_PRESUMED") return "presumed";
   if (origin === "AUTO_CONFIRMED" || origin === "AUTO") return "auto";
@@ -54,7 +50,6 @@ const OUTCOME_TEXT: Record<string, string> = {
   DISABLED: "автосбор выключен",
 };
 
-/** The raw value for an outcome not listed, so a new enum constant degrades instead of disappearing. */
 export function enrichmentOutcomeText(outcome: string): string {
   return OUTCOME_TEXT[outcome] ?? outcome;
 }

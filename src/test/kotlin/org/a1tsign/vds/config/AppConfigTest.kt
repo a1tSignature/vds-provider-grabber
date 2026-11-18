@@ -13,7 +13,6 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class AppConfigTest {
-    /** Every variable set to a deliberately non-default, valid value. */
     private fun fullValidEnv(): Map<String, String> = mapOf(
         "VDS_DB_URL" to "jdbc:postgresql://localhost:5432/vds",
         "VDS_DB_USER" to "vds",
@@ -34,7 +33,6 @@ class AppConfigTest {
         "VDS_HTTP_TRUST_FORWARDED_FOR" to "true",
     )
 
-    /** The minimal set of variables that have no default: required and nothing else. */
     private fun minimalRequiredEnv(): Map<String, String> = mapOf(
         "VDS_DB_URL" to "jdbc:postgresql://localhost:5432/vds",
         "VDS_DB_USER" to "vds",
@@ -384,7 +382,6 @@ class AppConfigTest {
         assertEquals(listOf("https://a.example", "https://b.example"), config.http.corsAllowedOrigins)
     }
 
-    // --- crawler (vds-002.1) ---
 
     private fun assertCrawlerFailure(variable: String, value: String, expectedMessage: String) {
         val exception = assertFailsWith<ConfigurationException> {
@@ -482,9 +479,7 @@ class AppConfigTest {
 
     @Test
     fun `a URL with a scheme but no host fails for every URL setting`() {
-        // "http://" parses as an absolute http URI whose host is null: parseable, unusable, and it
-        // used to pass startup validation and only break once the first admin call was issued.
-        // One test for all three, because they share `isAbsoluteHttpUrl`.
+        // Include HTTP URLs without a host because URI can parse them successfully.
         assertCrawlerFailure("VDS_FX_API_URL", "http://", "VDS_FX_API_URL must be an absolute http or https URL")
         assertCrawlerFailure(
             "VDS_CRAWLER_API_BASE_URL",
@@ -614,7 +609,6 @@ class AppConfigTest {
         assertEquals(emptyMap(), crawlerAdapterConfig("unconfigured", env))
     }
 
-    // --- discovery (vds-004.4) ---
 
     /** Enabled discovery with everything it needs; [extra] breaks exactly one thing. */
     private fun discoveryEnv(stateDir: Path, extra: Map<String, String> = emptyMap()): Map<String, String> =
@@ -684,13 +678,11 @@ class AppConfigTest {
             assertFalse(exception.message!!.contains(DISCOVERY_API_KEY), "$description leaked the API key")
         }
 
-        // The 1..20 bound is inclusive at both ends -- the vendor's own range.
         listOf(1, 20).forEach { limit ->
             val env = discoveryEnv(dir, mapOf("VDS_DISCOVERY_MAX_RESULTS_PER_QUERY" to limit.toString()))
             assertEquals(limit, loadConfig(env).discovery.maxResultsPerQuery)
         }
 
-        // The valid baseline itself loads, and `none` needs no key at all.
         assertTrue(loadConfig(discoveryEnv(dir)).discovery.enabled)
         val none = loadConfig(
             discoveryEnv(dir, mapOf("VDS_DISCOVERY_SEARCH_PROVIDER" to "none", "VDS_DISCOVERY_SEARCH_API_KEY" to "")),
@@ -715,12 +707,10 @@ class AppConfigTest {
         val discovery = loadConfig(env).discovery
 
         assertFalse(discovery.enabled)
-        // Each broken value fell back to its default instead of taking the process down.
         assertEquals(10, discovery.maxResultsPerQuery)
         assertEquals(48L, discovery.intervalHours)
 
-        // A malformed VDS_DISCOVERY_ENABLED reads as false for the same reason, and the WARN is
-        // what tells the operator discovery did not come up.
+        // A malformed enable flag falls back to disabled and must produce an operator warning.
         assertFalse(loadConfig(minimalRequiredEnv() + ("VDS_DISCOVERY_ENABLED" to "yes")).discovery.enabled)
     }
 

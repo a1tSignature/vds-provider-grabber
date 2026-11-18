@@ -6,11 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * Proves the test harness itself works: Flyway applied cleanly against an empty
- * `db/migration` directory (today's state — task 4 adds the first real migration) and the shared
- * pool can actually run a query.
- */
+/** Smoke-test the shared PostgreSQL and Flyway harness. */
 class MigrationSmokeTest : AbstractDbTest() {
     @Test
     fun `flyway applied cleanly with no failed migrations`() {

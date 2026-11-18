@@ -18,11 +18,6 @@ import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicLong
 
-/**
- * The adapters the runner tests need: one that returns a given snapshot, one that throws, one that
- * sleeps past a budget, one whose snapshot the validator rejects. Test-only -- the two shipped
- * reference adapters are task vds-002.8.
- */
 class StubProviderAdapter(
     override val id: String,
     override val providerSlug: String = id,
@@ -52,18 +47,13 @@ fun sleepingAdapter(id: String, duration: Duration, snapshot: ProviderSnapshot):
         snapshot
     }
 
-/** A snapshot with no `sourceUrls` -- one problem, from an otherwise perfectly writable snapshot. */
 fun invalidSnapshotAdapter(id: String, observedAt: Instant): ProviderAdapter =
     StubProviderAdapter(id) { stubSnapshot(id, observedAt).copy(sourceUrls = emptyList()) }
 
 fun robotsDisallowedAdapter(id: String): ProviderAdapter =
     StubProviderAdapter(id) { throw FetchException.RobotsDisallowed("https://$id.example/vps") }
 
-/**
- * A valid snapshot for the provider [slug], observed at [observedAt] -- which **must** come from the
- * test's clock: `SnapshotValidator` rejects an `observedAt` more than 60 s ahead of it, and the
- * shared fixture's own instant is years away from `AbstractDbTest`'s clock.
- */
+/** Set observedAt from the test clock so snapshot skew validation does not obscure the case under test. */
 fun stubSnapshot(
     slug: String,
     observedAt: Instant,
@@ -79,7 +69,6 @@ fun stubSnapshot(
     sourceUrls = listOf("https://$slug.example/vps"),
 )
 
-/** USD so no FX rate is needed; see `ReconcilerTest`. */
 fun stubTariff(name: String, externalId: String? = null): TariffSnapshot =
     validTariff(name, externalId, BigDecimal("9.9900")).let { tariff ->
         tariff.copy(prices = tariff.prices.map { it.copy(currency = "USD") })

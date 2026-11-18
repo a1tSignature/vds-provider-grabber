@@ -42,10 +42,7 @@ data class EnrichmentApplyRequest(
     val locations: List<ValueFindingDto> = emptyList(),
 )
 
-/**
- * The stored evidence document (`provider_enrichment.evidence`) and its read-side shape: every
- * finding of the latest successful enrichment, including the ones that were not written.
- */
+/** Evidence includes every finding from the latest successful enrichment, including findings skipped during writes. */
 @Serializable
 data class EnrichmentEvidenceDto(
     val legalEntityName: LegalFindingDto? = null,
@@ -74,6 +71,5 @@ data class ProviderEnrichmentDto(
     val evidence: EnrichmentEvidenceDto? = null,
 )
 
-/** Body of `POST /api/v1/providers/{id}/legal-info/confirm` and `/release`. */
 @Serializable
 data class LegalFieldsRequest(val fields: List<String>)

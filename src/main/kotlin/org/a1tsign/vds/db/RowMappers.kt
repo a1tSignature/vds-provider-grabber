@@ -12,12 +12,7 @@ import org.a1tsign.vds.domain.TariffPrice
 import org.a1tsign.vds.domain.parseDbEnum
 import org.jetbrains.exposed.v1.core.ResultRow
 
-/**
- * One mapper per entity: `ResultRow` -> framework-free `domain.*` model. Every `OffsetDateTime`
- * column becomes an [java.time.Instant] via the plain `.toInstant()` (the reverse direction,
- * `Instant.toUtcOffset()`, already exists in `config/TimeSource.kt`); every enum-like `varchar`
- * column goes through [parseDbEnum], never a silent fallback.
- */
+/** Convert offset timestamps to Instant. Decode enum-like columns through [parseDbEnum] so unknown values fail with context. */
 
 fun ResultRow.toProvider(): Provider =
     Provider(

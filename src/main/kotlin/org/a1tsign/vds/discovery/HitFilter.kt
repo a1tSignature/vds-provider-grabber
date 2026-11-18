@@ -12,17 +12,10 @@ private val SERVICE_LABELS = setOf(
 /** A two-letter first label is a language or country edition: `us.`, `kr.`, `en.`, `fr.`. */
 private val EDITION_LABEL = Regex("^[a-z]{2}$")
 
-/**
- * `co.uk`, `com.br`, `ne.jp`: a bare second-level public suffix. Without a public-suffix list this
- * shape is the guard that keeps `en.co.uk`-like hosts from collapsing into a suffix.
- */
+/** Keep edition labels when removing them would leave only a public suffix such as co.uk. */
 private val SECOND_LEVEL_SUFFIX = Regex("^(co|com|net|org|gov|edu|ac|or|ne|go|in)\\.[a-z]{2}$")
 
-/**
- * Titles of roundups and rankings. Deliberately narrow: hosting providers publish plenty of their
- * own guides and "best X" articles, so a broad blog/guide/best filter drops about as many real
- * providers as junk. A provider lost here is found again through its own pricing page.
- */
+/** Keep roundup detection narrow because providers also publish their own guides and comparisons. */
 private val LISTICLE_TITLE = Regex(
     "(?iU)\\btop[ -]?\\d+\\b|\\b\\d+\\s+(best|cheapest|top)\\b|\\bcompare\\b|\\breviews\\b|\\branking\\b" +
         "|рейтинг|\\bтоп[- ]?\\d+|\\d+\\s+лучш|лучших|подборк" +
@@ -47,7 +40,6 @@ fun collapseServiceSubdomain(domain: String): String {
     }
 }
 
-/** A ranking or comparison page, judged by its title and URL path only. */
 fun isListicle(hit: SearchHit): Boolean {
     if (hit.title != null && LISTICLE_TITLE.containsMatchIn(hit.title)) return true
     val path = runCatching { URI(hit.url.trim()).rawPath }.getOrNull() ?: return false

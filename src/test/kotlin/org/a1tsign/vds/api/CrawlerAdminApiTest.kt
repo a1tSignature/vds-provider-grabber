@@ -80,13 +80,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * The four `/api/v1/admin/crawl` endpoints, end to end through the real Ktor routing and real
- * JWT auth -- `AdapterRegistry.production()` ships zero adapters until vds-002.8, so every scenario
- * that needs an adapter builds its own small [AdapterRegistry]/[CrawlerRunner] (same pattern as
- * `CrawlerRunnerTest`) and mounts [crawlerRoutes] directly instead of going through
- * `AppComponents.buildComponents`'s own (necessarily empty) registry.
- */
+/** Supply a fixture registry to exercise crawler routes through real JWT auth. */
 class CrawlerAdminApiTest : AbstractDbTest() {
     private fun auth(token: String) = HttpHeaders.Authorization to "Bearer $token"
 
@@ -94,14 +88,12 @@ class CrawlerAdminApiTest : AbstractDbTest() {
         Json.parseToJsonElement(response.bodyAsText()).jsonObject.getValue("runId").jsonPrimitive.content
     }
 
-    /** Mints a token for a freshly created user with [role], bypassing HTTP login entirely. */
     private fun CrawlerAppHarness.token(role: Role): String {
         val user = UserFixture(components.database, components.userRepository, components.passwordHasher)
             .create("crawl-${role.name.lowercase()}-${System.nanoTime()}", "irrelevant-password-1", setOf(role), UserStatus.ACTIVE, clock.instant())
         return components.jwtService.issue(user.user.id, user.user.tokenVersion).token
     }
 
-    /** One adapter, a registry/runner/scope around it, and the three admin tokens. */
     private class Harness(
         val registry: AdapterRegistry,
         val runner: CrawlerRunner,
@@ -182,7 +174,6 @@ class CrawlerAdminApiTest : AbstractDbTest() {
             error("unreachable")
         }
 
-    // ---------- 1. disabled by default ----------
 
     @Test
     fun `disabled by default -- 503 through the envelope, and no crawler component is constructed`() = runBlocking {
@@ -202,20 +193,16 @@ class CrawlerAdminApiTest : AbstractDbTest() {
             }
             assertEquals(HttpStatusCode.ServiceUnavailable, run.status)
 
-            // Consistent with GET /adapters below: both 503 while disabled, never one 503 and the
-            // other an empty 200.
             val runs = client.get("/api/v1/admin/crawl/runs") { header(auth(admin).first, auth(admin).second) }
             assertEquals(HttpStatusCode.ServiceUnavailable, runs.status)
 
             val adapters = client.get("/api/v1/admin/crawl/adapters") { header(auth(admin).first, auth(admin).second) }
             assertEquals(HttpStatusCode.ServiceUnavailable, adapters.status)
 
-            // No regression: the rest of the (disabled-crawler) app behaves exactly as before.
             assertEquals(HttpStatusCode.OK, client.get("/health").status)
         }
     }
 
-    // ---------- 2. trigger ----------
 
     @Test
     fun `trigger starts a run visible immediately, which reaches a terminal state with counters`() = runBlocking {
@@ -248,9 +235,7 @@ class CrawlerAdminApiTest : AbstractDbTest() {
         CrawlerAppHarness(clock).use { appHarness ->
             val alpha = snapshotAdapter("alpha", stubSnapshot("alpha", clock.instant()))
             val bravo = snapshotAdapter("bravo", stubSnapshot("bravo", clock.instant()))
-            // alpha is the registry's own includedByDefault entry; the operator's configured
-            // selection is bravo only -- an absent `adapterIds` in the request body must follow the
-            // configured selection, not the registry's hardcoded default.
+            // Give the registry and operator different defaults to verify omission follows the operator's selection.
             CatalogApiClient(appHarness.crawlerConfig(), appHarness.clock).use { catalogClient ->
                 val registry = AdapterRegistry(
                     listOf(AdapterEntry(alpha, includedByDefault = true), AdapterEntry(bravo, includedByDefault = false)),
@@ -290,7 +275,6 @@ class CrawlerAdminApiTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 3. concurrency ----------
 
     @Test
     fun `a run already in progress answers 409, then a third trigger succeeds once it finishes`() = runBlocking {
@@ -327,7 +311,6 @@ class CrawlerAdminApiTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 4. dry run ----------
 
     @Test
     fun `dry run performs no writes and reports dryRun=true with planned operations`() = runBlocking {
@@ -346,7 +329,6 @@ class CrawlerAdminApiTest : AbstractDbTest() {
                     assertTrue(summary.getValue("plannedOperations").jsonArray.isNotEmpty())
                 }
 
-                // The catalog was never touched: the provider this dry run "created" does not exist.
                 CatalogApiClient(appHarness.crawlerConfig(), appHarness.clock).use { client ->
                     assertNull(client.findProviderBySlug(slug))
                 }
@@ -354,7 +336,6 @@ class CrawlerAdminApiTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 5. maxOutOfStockRatio override ----------
 
     @Test
     fun `maxOutOfStockRatio is validated and an override changes the mass-change guard's outcome`() = runBlocking {
@@ -372,7 +353,6 @@ class CrawlerAdminApiTest : AbstractDbTest() {
             }
             buildHarness(appHarness, adapter).use { harness ->
                 crawlApp(appHarness, harness) {
-                    // Invalid before anything is reserved: a run already in progress or not plays no part.
                     val tooHigh = client.post("/api/v1/admin/crawl/run") {
                         header(auth(harness.admin).first, auth(harness.admin).second)
                         contentType(ContentType.Application.Json)
@@ -387,7 +367,6 @@ class CrawlerAdminApiTest : AbstractDbTest() {
                     }
                     assertEquals(HttpStatusCode.BadRequest, jsonNumber.status)
 
-                    // Run 1: seeds the provider with 3 in-stock tariffs.
                     val seed = client.post("/api/v1/admin/crawl/run") {
                         header(auth(harness.admin).first, auth(harness.admin).second)
                         contentType(ContentType.Application.Json)
@@ -396,7 +375,6 @@ class CrawlerAdminApiTest : AbstractDbTest() {
                     assertEquals(HttpStatusCode.Accepted, seed.status)
                     waitForTerminal(harness.admin, extractRunId(seed))
 
-                    // Run 2: all 3 disappear, above the default 0.5 ratio -> the guard trips, zero writes.
                     val guarded = client.post("/api/v1/admin/crawl/run") {
                         header(auth(harness.admin).first, auth(harness.admin).second)
                         contentType(ContentType.Application.Json)
@@ -405,11 +383,9 @@ class CrawlerAdminApiTest : AbstractDbTest() {
                     assertEquals(HttpStatusCode.Accepted, guarded.status)
                     val guardedSummary = waitForTerminal(harness.admin, extractRunId(guarded))
                     val guardedAdapter = guardedSummary.getValue("adapters").jsonArray[0].jsonObject
-                    // 3 of 3 flipping exceeds even the 0.9 override (3 <= 0.9*3=2.7 is false): still guarded.
                     assertEquals("FAILED", guardedAdapter.getValue("status").jsonPrimitive.content)
                     assertEquals("MASS_CHANGE_GUARD", guardedAdapter.getValue("failureReason").jsonPrimitive.content)
 
-                    // Run 3: the same disappearance, with ratio=1 -- "exceeds" is strict, so 1.0 always passes.
                     val allowed = client.post("/api/v1/admin/crawl/run") {
                         header(auth(harness.admin).first, auth(harness.admin).second)
                         contentType(ContentType.Application.Json)
@@ -425,7 +401,6 @@ class CrawlerAdminApiTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 6. unknown adapter id ----------
 
     @Test
     fun `an unknown adapter id in the body is a 400 listing the known ids`() = runBlocking {
@@ -456,14 +431,11 @@ class CrawlerAdminApiTest : AbstractDbTest() {
                 "VDS_CRAWLER_ADAPTERS" to "does-not-exist",
             ),
         )
-        // AdapterRegistry.production() ships zero adapters in this increment, so any non-empty
-        // selection is unknown by definition -- which is exactly the fail-fast path under test.
         assertFailsWith<ConfigurationException> {
             buildComponents(cfg, PostgresSupport.dataSource, clock, PostgresSupport.database)
         }
     }
 
-    // ---------- 7. authorization ----------
 
     @Test
     fun `401 without a token, 403 as VIEWER and as EDITOR, success as ADMIN -- on all four endpoints`() = runBlocking {
@@ -500,7 +472,6 @@ class CrawlerAdminApiTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 8. runs/{id} 404s and the 20-entry ring buffer ----------
 
     @Test
     fun `a random or malformed runId is 404, and 25 runs keep exactly the last 20, newest first`() = runBlocking {
@@ -527,14 +498,12 @@ class CrawlerAdminApiTest : AbstractDbTest() {
                     assertEquals(HttpStatusCode.OK, list.status)
                     val ids = Json.parseToJsonElement(list.bodyAsText()).jsonArray.map { it.jsonObject.getValue("runId").jsonPrimitive.content }
                     assertEquals(20, ids.size)
-                    // Newest first: the ring buffer kept the last 20 of the 25, in reverse creation order.
                     assertEquals(runIds.takeLast(20).reversed().map { it.toString() }, ids)
                 }
             }
         }
     }
 
-    // ---------- 9. adapters list ----------
 
     @Test
     fun `adapters lists every registered entry, enabled reflecting the configured selection`() = runBlocking {
@@ -582,14 +551,10 @@ class CrawlerAdminApiTest : AbstractDbTest() {
         }
     }
 
-    // ---------- 10. shutdown ----------
 
     @Test
     fun `the crawler's scope and HTTP clients are cancellable and closeable, as shutdownGracefully relies on`() = runBlocking {
-        // Application.kt's shutdownGracefully itself touches process-wide shared state
-        // (activeRequests/shuttingDown) that must not leak into the rest of this JVM's test suite,
-        // so this exercises the real objects it closes, in the same order, directly -- see the
-        // Developer Report for why the private function itself is not invoked via reflection here.
+        // Exercise shutdown components directly because the full application's shutdown flags are JVM-wide.
         CrawlerAppHarness(clock).use { appHarness ->
             val components = appHarness.components
             val scope = requireNotNull(components.crawlerScope)
@@ -602,16 +567,13 @@ class CrawlerAdminApiTest : AbstractDbTest() {
             catalogClient.close()
             fetchClient.close()
 
-            // join (not just the synchronous isCancelled flip, which Job documents as flipping
-            // immediately on cancel() even if the child never got a chance to react) proves
-            // cancellation actually propagated and the coroutine really unwound.
+            // Join the job to prove its coroutine unwound. isCancelled flips before cleanup.
             inFlight.join()
             assertTrue(inFlight.isCancelled)
             assertTrue(inFlight.isCompleted)
         }
     }
 
-    // ---------- 11. declarative sources (vds-004.4) ----------
 
     private fun sourcesConfig(dir: Path, extraEnv: Map<String, String> = emptyMap()) = testAppConfig(
         extraEnv = mapOf(
@@ -629,7 +591,6 @@ class CrawlerAdminApiTest : AbstractDbTest() {
         dir.resolve("acme.json").writeText(sourceFile("acme", enabled = true))
         dir.resolve("broken.json").writeText("""{"schemaVersion": 1, "id": "broken"}""")
 
-        // Strict mode is set but discovery is off, so it must not be applied -- and must say so.
         lateinit var components: org.a1tsign.vds.AppComponents
         val logs = capturingLogs {
             components = buildComponents(
@@ -655,8 +616,6 @@ class CrawlerAdminApiTest : AbstractDbTest() {
             assertEquals(AdapterOrigin.CONFIG, entry.origin)
             assertEquals("acme.json", entry.file)
             assertTrue(registry.entries.none { it.adapter.id == "broken" }, "a refused file is absent from the registry")
-            // The file turned itself on, so the empty configured selection picks it -- and no
-            // compiled reference adapter.
             assertEquals(listOf("acme"), registry.select(components.config.crawler.adapters).map { it.id })
         } finally {
             components.crawlerScope?.cancel()
@@ -719,7 +678,6 @@ class CrawlerAdminApiTest : AbstractDbTest() {
                             assertEquals("acme.json", acme.getValue("file").jsonPrimitive.content)
                             assertTrue(acme.getValue("enabled").jsonPrimitive.boolean)
 
-                            // The default "enabled": false means registered but not selected.
                             val beta = rows.getValue("beta").jsonObject
                             assertEquals("CONFIG", beta.getValue("origin").jsonPrimitive.content)
                             assertTrue(!beta.getValue("enabled").jsonPrimitive.boolean)
@@ -750,7 +708,6 @@ class CrawlerAdminApiTest : AbstractDbTest() {
     }
 
     private companion object {
-        /** A valid declarative source; `providerSlug` is the slug of `baseUrl`'s own domain. */
         fun sourceFile(
             id: String,
             domain: String = "acme.example",

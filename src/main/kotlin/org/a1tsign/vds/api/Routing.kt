@@ -21,7 +21,7 @@ import org.a1tsign.vds.api.routes.openApiRoutes
 import org.a1tsign.vds.api.routes.internalCatalogRoutes
 import org.a1tsign.vds.api.routes.staticRoutes
 
-/** Registers every route group, one line per group. [staticBasePackage] lets tests point the SPA fallback at a fixture. */
+/** Pass [staticBasePackage] to serve an alternate SPA bundle. */
 fun Application.registerRoutes(components: AppComponents, staticBasePackage: String = "static") {
     if (components.isConfigured) installBearerJwtAuth(components.authService)
     routing {

@@ -2,13 +2,6 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
-/**
- * One repo-wide convention, enforced by regex instead of review discipline. Scans every source
- * file under `src/` and fails on any match outside the rule's whitelist.
- *
- * To add a rule: push a `Rule` below and, if some files are a deliberate exception (like
- * `tokens.css` for the hex-colour rule), list their `src/`-relative path in `whitelist`.
- */
 interface Rule {
   name: string;
   pattern: RegExp;
@@ -16,14 +9,7 @@ interface Rule {
   whitelist?: string[];
 }
 
-/**
- * Every value of a backend `domain.*` enum (`src/main/kotlin/org/a1tsign/vds/domain/Enums.kt`)
- * that the frontend can receive as catalog/business data. Deliberately excludes `Role`
- * (`ADMIN`/`EDITOR`/`VIEWER`): there is no `/api/v1/dictionaries` entry for it, so
- * `auth/SessionContext.tsx`'s `canEdit` comparing against those two names directly is not "an enum
- * value smuggled in instead of reading the dictionary" the way a catalog enum would be -- do not
- * add `Role`'s values here.
- */
+/** Include only catalog enums. Role checks have no dictionaries API entry. */
 const BACKEND_ENUM_LITERALS = [
   "ACTIVE", "INACTIVE", "UNKNOWN", "CANDIDATE", "CONFIGURED", "REJECTED",
   "DISABLED",
@@ -79,7 +65,6 @@ const RULES: Rule[] = [
 const SRC_DIR = import.meta.dirname;
 const SCANNED_EXTENSIONS = [".ts", ".tsx", ".css"];
 
-/** Source files under `src/`, excluding this file's own siblings (`*.test.ts(x)`). */
 function listSourceFiles(dir: string): string[] {
   const files: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -121,8 +106,6 @@ describe("source guards", () => {
     });
   }
 
-  // Proves each matcher actually fires, so a rule that silently stopped matching (a typo in the
-  // regex, an overly narrow whitelist check) fails loudly instead of just never finding anything.
   it.each([
     ["no `any` type", "const value: any = 1;"],
     ["no literal hex colour outside tokens.css", "const colour = '#ff00ff';"],

@@ -55,7 +55,6 @@ class ProviderService(
     suspend fun putLegalInfo(id: Long, entity: String?, country: String?, number: String?, address: String?, source: LegalDataSource, confidence: Confidence, sourceUrl: String?, verifiedAt: java.time.Instant?): LegalInfo =
         putLegalInfo(id, LegalInfoWrite(entity, country, number, address, source, confidence, sourceUrl, verifiedAt, null, null), WriteMode.HUMAN)
 
-    /** See [LegalInfoRules.applyHumanWrite] and [LegalInfoRules.applyAutomaticWrite]. */
     suspend fun putLegalInfo(id: Long, write: LegalInfoWrite, mode: WriteMode): LegalInfo = withContext(Dispatchers.IO) {
         transaction(database) {
             providers.lockProvider(id) ?: throw NotFoundException("Provider not found")

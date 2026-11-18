@@ -17,13 +17,9 @@ import java.time.Duration
 /** One rejected value. [path] locates it inside the snapshot, e.g. `tariffs[2].prices[0].amount`. */
 data class SnapshotProblem(val path: String, val message: String)
 
-/** How far ahead of the injected clock an `observedAt` may be before it is a problem. */
 val MAX_OBSERVED_AT_SKEW: Duration = Duration.ofSeconds(60)
 
-// Mirrors of vds-001's limits. Deliberately duplicated rather than imported: `api/Validation.kt`
-// owns the same rules but reports them as an HTTP 400 (`ValidationException`), which is not a
-// concern of the crawler. Diff this block against `api/Validation.kt` + `api/Serializers.kt` when
-// either side changes -- where the two disagree, vds-001 wins.
+// Keep storage limits aligned with API validation while returning snapshot paths rather than HTTP errors.
 private const val SLUG_MAX_LENGTH = 64
 private const val URL_MAX_LENGTH = 2048
 private const val PROVIDER_NAME_MAX_LENGTH = 255
@@ -40,33 +36,8 @@ private val LONGITUDE_MIN = BigDecimal("-180")
 private val LONGITUDE_MAX = BigDecimal("180")
 
 /**
- * The gate between an adapter and the catalog: a [ProviderSnapshot] is checked **in full** before
- * the first write is issued, so a broken adapter fails locally instead of half-applying a bad
- * snapshot and producing a cascade of `400`s against the vds-001 admin API (spec req. 9, ADR-03).
- *
- * Like `api/Validation.kt` it **accumulates** -- [validate] reports every problem it finds and
- * never throws on the first one -- and unlike a parser it never normalises, trims, upper-cases or
- * otherwise repairs its input: a snapshot is either writable as it stands or rejected.
- *
- * "Every problem" is per *value*, not per *rule*: one rejected value yields one [SnapshotProblem],
- * the first rule it breaks, so a negative amount with six decimals is reported once rather than
- * twice. That mirrors `parseAmount`/`Validation.validateLocationCoordinate`, which stop at the
- * first thing wrong with a value too, and it is enough for the caller -- the value has to be fixed
- * either way. What accumulation does guarantee is that no *other* value is left unchecked because
- * this one failed.
- *
- * ### `null` is never a problem
- *
- * `legalInfo`, `paymentMethods`, `locations` and `tariffs` are nullable, and `null` means **"not
- * observed"** -- a perfectly valid snapshot that leaves that part of the catalog untouched. An
- * **empty** non-null collection is equally valid and means "observed, and empty". No check here may
- * treat the two alike; that distinction is the increment's main data-safety property (ADR-03), so
- * every rule below is applied only to the elements a non-null section actually contains.
- *
- * `paymentMethods` therefore has no rule at all: a non-null set carries `PaymentMethod` enum values,
- * which cannot be malformed, and an empty one is a legitimate observation.
- *
- * Time comes from the injected [clock] -- `Instant.now()` appears nowhere.
+ * Validate the entire snapshot before writes, reporting the first failure per invalid value without repairing input.
+ * A null section leaves catalog data untouched. An empty collection records an observed empty set.
  */
 class SnapshotValidator(private val clock: Clock) {
 
@@ -83,13 +54,7 @@ class SnapshotValidator(private val clock: Clock) {
         return problems
     }
 
-    /**
-     * `tariffListComplete = true` is a claim **about** `tariffs` (ADR-03 point 1), and point 2 lets
-     * only such a snapshot flip tariffs out of stock. Combined with `tariffs == null` ("I did not
-     * observe the catalog") it is self-contradictory, and a reconciler reading it as "nothing
-     * observed in the complete catalog" could flip a small provider entirely out of stock below the
-     * mass-change guard's threshold. `false` + `null` is the honest shape of "not observed".
-     */
+    /** A complete tariff list can mark missing tariffs out of stock. Require an observed tariff list for that claim. */
     private fun validateTariffListComplete(problems: MutableList<SnapshotProblem>, snapshot: ProviderSnapshot) {
         if (snapshot.tariffListComplete && snapshot.tariffs == null) {
             problems += SnapshotProblem("tariffListComplete", "must be false while tariffs are not observed")
@@ -101,8 +66,7 @@ class SnapshotValidator(private val clock: Clock) {
         adapter: ProviderAdapter,
         provider: ProviderInfo,
     ) {
-        // Exact string equality, not a case-insensitive or trimmed comparison: a snapshot that
-        // names a different provider than the adapter owns would write into someone else's rows.
+        // Require the adapter's exact slug to prevent writes to another provider.
         if (provider.slug != adapter.providerSlug) {
             problems += SnapshotProblem("provider.slug", "must equal the adapter's providerSlug")
         }
@@ -158,9 +122,7 @@ class SnapshotValidator(private val clock: Clock) {
         val longitude = location.longitude
         latitude?.let { validateCoordinate(problems, "$path.latitude", it, LATITUDE_MIN, LATITUDE_MAX) }
         longitude?.let { validateCoordinate(problems, "$path.longitude", it, LONGITUDE_MIN, LONGITUDE_MAX) }
-        // ck_location_lat_lon_both_or_neither. Reported on the missing half (vds-001's
-        // Validation.validateCoordinatePair records both field names; one problem per actual
-        // offender keeps `path` usable for an operator).
+        // The database requires both coordinates or neither. Report the missing half.
         if (latitude == null && longitude != null) {
             problems += SnapshotProblem("$path.latitude", "must be set together with longitude")
         }
@@ -207,8 +169,6 @@ class SnapshotValidator(private val clock: Clock) {
         path: String,
         tariff: TariffSnapshot,
     ) {
-        // vcpuCount and ipv4Count are SMALLINT in vds-001, so an Int that does not fit a Short is a
-        // problem here rather than a silently wrapped value the database would reject later.
         validateIntRange(problems, "$path.vcpuCount", tariff.vcpuCount, 1, Short.MAX_VALUE.toInt())
         validateIntRange(problems, "$path.ipv4Count", tariff.ipv4Count, 0, Short.MAX_VALUE.toInt())
         validateIntRange(problems, "$path.ramMb", tariff.ramMb, 1, Int.MAX_VALUE)
@@ -341,17 +301,9 @@ class SnapshotValidator(private val clock: Clock) {
     }
 }
 
-/** How many problems [toLogLine] spells out before it falls back to a count. */
 const val PROBLEM_LOG_LIMIT: Int = 10
 
-/**
- * The WARN line the orchestrator writes when a snapshot is rejected: one line, at most
- * [PROBLEM_LOG_LIMIT] problems spelled out, the rest counted.
- *
- * Safe to log by construction -- a [SnapshotProblem] carries a generated path and a fixed message
- * and never echoes a snapshot value, so no page body, URL or credential can reach the log through
- * it.
- */
+/** Log a bounded problem list with the remaining count. Paths and messages cannot contain raw page values. */
 fun List<SnapshotProblem>.toLogLine(): String {
     if (isEmpty()) {
         return "no problems"
@@ -361,8 +313,7 @@ fun List<SnapshotProblem>.toLogLine(): String {
     return if (omitted > 0) "$size problems: $shown; ... and $omitted more" else "$size problems: $shown"
 }
 
-// The host check is what separates a usable URL from a merely parseable one ("http://" is an
-// absolute http URI with no host at all) -- the same rule as `api/Validation.kt`.
+// Require a host even when the input parses as an absolute HTTP URI.
 private fun isAbsoluteHttpUrl(value: String): Boolean {
     val uri = runCatching { URI(value) }.getOrNull() ?: return false
     return uri.isAbsolute && (uri.scheme == "http" || uri.scheme == "https") && !uri.host.isNullOrEmpty()

@@ -9,7 +9,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/** "Writes nothing" is proved against the real application in [ReconcilerTest]. */
 class DryRunWriterTest {
 
     @Test
@@ -21,7 +20,7 @@ class DryRunWriterTest {
         val providerAgain = writer.createProvider(providerWrite("acme"))
         val other = writer.createProvider(providerWrite("beta"))
         val berlin = writer.createLocation(provider, location(city = "Berlin"))
-        // Same row by the unique index (case-insensitive city/datacenter), so the same id.
+        // Case variants must reuse the location ID because they conflict under the database key.
         val berlinAgain = writer.createLocation(provider, location(city = "berlin"))
         val hamburg = writer.createLocation(provider, location(city = "Hamburg"))
         val tariff = writer.createTariff(provider, tariffWrite("VPS 1", externalId = "p-1"))

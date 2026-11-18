@@ -34,12 +34,7 @@ import org.a1tsign.vds.support.UserFixture
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import java.nio.file.Path
 
-/**
- * The **production** composition root with crawler + discovery enabled, served on a real loopback
- * port: the pass talks to the catalog over real HTTP (the crawler's `CatalogApiClient`) and to a
- * [TavilyFixtureServer] over real HTTP (the real `TavilySearchProvider`). Nothing reaches the
- * internet. Owned by the test, inside an `AbstractDbTest`.
- */
+/** Serve the production crawler and discovery wiring on loopback against the shared test database. */
 class DiscoveryAppHarness(
     val clock: MutableTestClock,
     searchEndpoint: String,
@@ -91,7 +86,6 @@ class DiscoveryAppHarness(
         server.start(wait = false)
     }
 
-    /** A token for a fresh user with [role], minted without an HTTP login. */
     fun token(role: Role): String {
         val user = UserFixture(components.database, components.userRepository, components.passwordHasher)
             .create("disc-${role.name.lowercase()}-${System.nanoTime()}", "irrelevant-password-1", setOf(role), UserStatus.ACTIVE, clock.instant())

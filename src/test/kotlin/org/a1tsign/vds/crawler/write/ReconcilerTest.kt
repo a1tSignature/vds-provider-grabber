@@ -37,13 +37,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Runs against the real application and PostgreSQL ([CrawlerAppHarness]): the data-safety rules
- * are about the resulting catalog, which a mocked write boundary cannot show.
- *
- * "Nothing was written" is proved by the server's call log (`harness.countCalls`) or a
- * [RecordingCrawlWriter], never by the absence of a log line. Counts are scoped to the test's rows.
- */
+/** Assert real catalog state so partial writes and unsafe replacements cannot be hidden by mocked responses. */
 class ReconcilerTest : AbstractDbTest() {
 
     @Test
@@ -436,8 +430,7 @@ class ReconcilerTest : AbstractDbTest() {
     @Test
     fun `a provider created by another writer between the read and the create is absorbed`() {
         withCatalog { ctx ->
-            // The race, at the real boundary: the create this writer delegates is preceded by the
-            // other writer's successful create, so the API really answers 409.
+            // Interleave a successful create just before the reconciler's create to generate a real conflict.
             val racing = object : CrawlWriter by ctx.writer {
                 override suspend fun createProvider(request: ProviderWrite): Long {
                     ctx.client.createProvider(request)
@@ -686,7 +679,6 @@ class ReconcilerTest : AbstractDbTest() {
     private companion object {
         val DEFAULT_RATIO: BigDecimal = BigDecimal("0.5")
 
-        /** Production retry budget, shorter timeouts: a loopback call that fails, fails fast. */
         val FAST_LIMITS = CatalogClientLimits(
             connectTimeoutMs = 1_000,
             requestTimeoutMs = 5_000,
@@ -705,7 +697,6 @@ class ReconcilerTest : AbstractDbTest() {
             ),
         )
 
-        /** Only tariffs are observed: no legal info, no payment methods, no locations, no links. */
         fun tariffsSnapshot(vararg tariffs: TariffSnapshot): ProviderSnapshot = validSnapshot().copy(
             legalInfo = null,
             paymentMethods = null,
@@ -721,7 +712,6 @@ class ReconcilerTest : AbstractDbTest() {
             ),
         )
 
-        /** A `tariffListComplete = true` snapshot that observed no tariff at all. */
         fun emptyCompleteSnapshot(slug: String): ProviderSnapshot = validSnapshot().copy(
             provider = validSnapshot().provider.copy(slug = slug),
             legalInfo = null,

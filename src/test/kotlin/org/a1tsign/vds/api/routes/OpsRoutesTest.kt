@@ -37,12 +37,7 @@ class OpsRoutesTest : AbstractDbTest() {
 
     @Test
     fun `health ready returns 503 DOWN when the database is unreachable`() = testApplication {
-        // A throwaway pool pointed at a port nothing listens on, with a short connectionTimeout
-        // (300ms -- HikariConfig's own floor is 250ms) so the test fails fast instead of waiting
-        // out the endpoint's own 2 s bound.
-        // initializationFailTimeout = -1 skips Hikari's eager connectivity check at construction
-        // time (which would otherwise throw PoolInitializationException immediately), so the
-        // failure is observed where the handler itself is supposed to catch it: on first use.
+        // Use an unused port and a timeout just above Hikari's 250 ms floor.
         val unreachableDataSource = HikariDataSource(
             HikariConfig().apply {
                 jdbcUrl = "jdbc:postgresql://localhost:1/nonexistent"

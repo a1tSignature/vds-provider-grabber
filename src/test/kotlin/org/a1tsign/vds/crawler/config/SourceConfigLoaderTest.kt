@@ -14,11 +14,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * The error boundary itself: everything in here is semi-trusted **file** data, so the one property
- * every case shares is that the loader *returns a report* instead of throwing -- an
- * `IllegalArgumentException` escaping to `main()` is precisely what ADR-01 forbids.
- */
+/** Invalid files belong in the load report and must never escape as startup exceptions. */
 class SourceConfigLoaderTest {
 
     private val loader = SourceConfigLoader(TEST_CLOCK)
@@ -156,7 +152,6 @@ class SourceConfigLoaderTest {
             }
         }
 
-        // Both bounds are inclusive: exactly MAX_SOURCES files, one of them exactly 64 KB, load.
         val atLimit = root.resolve("at-limit").createDirectory()
         atLimit.resolve("a.json").writeText(source("alpha", domain = "alpha.example", slug = "alpha-example"))
         atLimit.resolve("b.json").writeText(exactlyMaxBytes("bravo", domain = "bravo.example", slug = "bravo-example"))
@@ -194,11 +189,7 @@ class SourceConfigLoaderTest {
     }
 
     private companion object {
-        /**
-         * A valid source file for [id]. [padding] appends that many spaces *inside* the JSON object,
-         * so an oversized file is still syntactically valid -- which is what pins "refused on its
-         * size, before its content is even read".
-         */
+        /** Pad inside the JSON object so the byte limit can be tested independently of validity. */
         fun source(
             id: String,
             domain: String = "acme.example",

@@ -14,46 +14,22 @@ import org.slf4j.LoggerFactory
 import java.net.URI
 
 /**
- * The declarative description of **one** HTML source: a human writes one JSON file per site and
- * [org.a1tsign.vds.crawler.adapters.DeclarativeAdapter] -- one compiled class -- interprets it. It
- * replaces "a hand-written Kotlin adapter per site", which does not scale to the dozens of sites
- * the discovery leg finds, without giving a semi-trusted file any executable power:
- *
- * - **no regular expression, template or expression of any kind comes from a config.** Number and
- *   currency handling is declarative options only ([PriceSpec]), enum handling is an explicit
- *   value -> constant map ([EnumSpec]), and even a jsoup *selector* is screened for jsoup's own
- *   regex syntax (`:matches(…)`, `[attr~=…]`) in [SourceConfigFormat] -- that syntax would smuggle
- *   a `java.util.regex` pattern, i.e. a ReDoS lever on a 192 MB heap, in through the back door;
- * - **`Double`/`Float` appear nowhere** in this model or in the interpreter: an amount is a
- *   [java.math.BigDecimal] parsed from the page text, as everywhere else in this project;
- * - [providerSlug] must be the slug of [baseUrl]'s own domain (see [SourceConfigFormat.validate]),
- *   so a config is structurally unable to point at an unrelated catalog row.
- *
- * ### `null` means "not observed" (ADR-03), and the section is the unit of that claim
- *
- * A section **omitted** from the file leaves the corresponding
- * [org.a1tsign.vds.crawler.model.ProviderSnapshot] field `null`, so the reconciler touches that part
- * of the catalog not at all. A section that *is* configured but whose `rootSelector` matches nothing
- * is a **failure** of the source, never an empty observed set -- an empty set would replace (and so
- * clear) what the catalog holds.
- *
- * JSON rather than YAML: the only YAML parser on the classpath arrives through artifacts earmarked
- * for removal, and this increment adds no dependency.
+ * A JSON description of one HTML source. Selector regexes and executable expressions are prohibited.
+ * The source slug must match its domain unless explicitly acknowledged. Omitted sections remain unobserved, and missing configured roots fail.
  */
 @Serializable
 data class SourceConfig(
     /** Must equal [SourceConfigFormat.SCHEMA_VERSION]; a file from another format is refused, not guessed at. */
     val schemaVersion: Int,
-    /** The adapter id this file becomes, `^[a-z0-9-]+$` -- unique across the directory (task 4). */
+    /** Adapter ID matching ^[a-z0-9-]+$, unique in the source directory. */
     val id: String,
     /** The `provider.slug` this source owns; checked against [baseUrl]'s domain. */
     val providerSlug: String,
     /** Absolute `http`/`https`, without query or fragment: [pagePath] is appended to it verbatim. */
     val baseUrl: String,
-    /** Default `false`: a new file is inert until somebody deliberately turns it on. */
     val enabled: Boolean = false,
     val pagePath: String = "/",
-    /** `HTML` only -- an `API` source is a task of its own, not a selector config. */
+    /** The selector format supports HTML sources only. */
     val sourceKind: String = SourceConfigFormat.SOURCE_KIND_HTML,
     val provider: ProviderSection? = null,
     val legalInfo: LegalInfoSection? = null,
@@ -69,7 +45,6 @@ data class SourceConfig(
     /** Accepts a [providerSlug] that is not [baseUrl]'s slug, with a WARN on load. */
     val acknowledgeSlugMismatch: Boolean = false,
 ) {
-    /** The one page this source reads. Not [org.a1tsign.vds.crawler.CrawlContext.config]: the file owns it. */
     fun pageUrl(): String = baseUrl.trimEnd('/') + pagePath
 }
 
@@ -312,32 +287,20 @@ data class TariffsSection(
     val disambiguateNames: Boolean = false,
 )
 
-/** The outcome of reading **one** file: the config (possibly with warnings) or its problems. */
 sealed interface SourceConfigParse {
     data class Valid(val config: SourceConfig, val warnings: List<String> = emptyList()) : SourceConfigParse
 
     data class Invalid(val problems: List<String>) : SourceConfigParse
 }
 
-/**
- * The per-file half of the format: the size bound, the strict parse and the validation.
- * **Cross-file** concerns -- id/slug uniqueness across the directory, how many files there may be,
- * strict mode -- belong to the loader (task 4), which calls [parse] once per file.
- *
- * Every problem names the file and the offending key, and repeats at most
- * [VALUE_IN_MESSAGE_LIMIT] characters of the offending value (the convention
- * `ExampleStaticAdapter` uses for its own failures): a config is semi-trusted input, and an
- * operator-facing message must never become a dumping ground for whatever a file happens to hold.
- */
+/** Owns parsing and validation for one bounded source file. Directory-wide rules belong to [SourceConfigLoader]. */
 object SourceConfigFormat {
 
-    /** The single schema version this build understands. */
     const val SCHEMA_VERSION: Int = 1
 
     /** A config file is at most this large; the bound is enforced wherever content is parsed. */
     const val MAX_FILE_BYTES: Int = 64 * 1024
 
-    /** How much of an offending value a problem message repeats. */
     const val VALUE_IN_MESSAGE_LIMIT: Int = 40
 
     const val SOURCE_KIND_HTML: String = "HTML"
@@ -348,7 +311,6 @@ object SourceConfigFormat {
 
     const val LOCATIONS_ALL: String = "ALL_LOCATIONS"
 
-    /** The units an [IntSpec.unit] may name. */
     val SIZE_UNITS: List<String> = listOf("MB", "GB", "TB")
 
     /** `NUMERIC(12, 4)` on `tariff_price.amount`. */
@@ -357,10 +319,8 @@ object SourceConfigFormat {
     /** `NUMERIC(9, 6)` on `location.latitude`/`longitude`. */
     const val COORDINATE_SCALE: Int = 6
 
-    /** How long a parser's own message may grow before it is cut. */
     private const val MESSAGE_LIMIT: Int = 300
 
-    /** Same charset as `ProviderAdapter.id`/`providerSlug`. */
     internal val ID_PATTERN = Regex("^[a-z0-9-]+$")
 
     internal val CURRENCY_PATTERN = Regex("^[A-Z]{3}$")
@@ -373,22 +333,12 @@ object SourceConfigFormat {
 
     internal val HTTP_SCHEMES = setOf("http", "https")
 
-    /**
-     * jsoup's own regex-bearing selector syntax. `td:matches(^\d+$)` and `td[class~=^a+$]` compile
-     * a `java.util.regex` pattern **out of the config file** (verified against jsoup 1.21), which
-     * is exactly what the "no expression from a config" rule is about. Checked as plain substrings,
-     * so there is no pattern of our own to get wrong.
-     */
+    /** jsoup compiles regex patterns in these selector forms, so the format rejects them. */
     internal val REGEX_SELECTOR_MARKERS = listOf(":matches", "~=")
 
     private val logger = LoggerFactory.getLogger(SourceConfigFormat::class.java)
 
-    /**
-     * Strict on purpose: an unknown key is an **error**. A typo in a selector key would otherwise
-     * degrade into "that section was not observed", i.e. into silence about part of a catalog --
-     * the one failure mode this format exists to make impossible. Its own instance, never the API's
-     * `ApiJson`: the two formats answer to different schemas.
-     */
+    /** Reject unknown keys so a typo cannot silently make a section unobserved. */
     private val json = Json {
         ignoreUnknownKeys = false
         isLenient = false
@@ -401,11 +351,7 @@ object SourceConfigFormat {
     fun parse(fileName: String, content: String): SourceConfigParse =
         parse(fileName, content.toByteArray(Charsets.UTF_8))
 
-    /**
-     * Reads and validates one file's [bytes]. Returns [SourceConfigParse.Valid] with any warnings,
-     * or [SourceConfigParse.Invalid] with every problem found -- so an author fixes a file once
-     * instead of once per round trip.
-     */
+    /** Returns a validated config with warnings or all problems found in the file. */
     fun parse(fileName: String, bytes: ByteArray): SourceConfigParse {
         if (bytes.size > MAX_FILE_BYTES) {
             return SourceConfigParse.Invalid(
@@ -420,14 +366,7 @@ object SourceConfigFormat {
         return validate(fileName, config)
     }
 
-    /**
-     * Everything the model's types cannot express: the schema version, the charsets and lengths,
-     * the slug rule, section well-formedness, the money bounds and enum constants that really
-     * exist.
-     *
-     * Exposed separately so the loader of task 4 can validate a config it assembled itself, and so
-     * the slug rule -- the format's strongest safety property -- has exactly one implementation.
-     */
+    /** Validate configs from both parsed files and direct callers against the same format rules. */
     fun validate(fileName: String, config: SourceConfig): SourceConfigParse {
         val check = Problems(fileName)
 
@@ -466,7 +405,6 @@ object SourceConfigFormat {
             .take(MESSAGE_LIMIT)
     }
 
-    /** One file's accumulated problems and warnings. */
     private class Problems(private val fileName: String) {
         val problems = mutableListOf<String>()
         val warnings = mutableListOf<String>()
@@ -503,11 +441,7 @@ object SourceConfigFormat {
             return DomainName.normalize(baseUrl)
         }
 
-        /**
-         * The format's strongest safety property: the slug a file writes to is the slug of the site
-         * the file reads. Without it a semi-trusted config could point at an unrelated catalog row
-         * and overwrite somebody else's provider.
-         */
+        /** Bind the target slug to the source domain to prevent accidental writes to unrelated provider rows. An explicit acknowledgement allows an exception. */
         fun slugRule(config: SourceConfig, domain: String?) {
             val expected = domain?.let { DomainName.slug(it) }
             if (expected == config.providerSlug) return
@@ -520,7 +454,6 @@ object SourceConfigFormat {
             }
         }
 
-        // ---------- sections ----------
 
         fun provider(section: ProviderSection?) {
             if (section == null) {
@@ -593,7 +526,6 @@ object SourceConfigFormat {
             }
         }
 
-        // ---------- fields ----------
 
         /**
          * Everything a field's own type decides: where it is read from, plus the options that type
@@ -618,8 +550,7 @@ object SourceConfigFormat {
                     fail("$key.unit", "must be one of ${SIZE_UNITS.joinToString()}", spec.unit)
                 }
             }
-            // The snapshot has no place for a missing value here, so "optional" would only mean
-            // "fail later, in the interpreter, after the page was already fetched".
+            // Reject optional selectors for mandatory snapshot fields before fetching any page.
             if (mandatory && !spec.required) {
                 fail(key, "must not set \"required\": false: this field has no optional form")
             }
@@ -695,18 +626,8 @@ object SourceConfigFormat {
             }
         }
 
-        // ---------- primitives ----------
 
-        /**
-         * A selector jsoup can parse, and one that carries no regex: jsoup's `:matches(…)` and
-         * `[attr~=…]` would compile a pattern straight out of the file. A plain substring check on
-         * the raw text is not enough by itself: jsoup's `QueryParser` resolves CSS escapes in a
-         * pseudo name before matching it, so `:\6D atches(^(a+)+$)` parses as `:matches(^(a+)+$)`
-         * while never containing the literal text `:matches` (verified against jsoup 1.21.1). A CSS
-         * escape has no legitimate use in this format, so it is refused outright; as a second,
-         * independent layer, the markers are also checked against jsoup's own canonical rendering
-         * of the parsed evaluator, which normalises any escaping jsoup understands.
-         */
+        /** Reject CSS escapes because jsoup can decode them into regex selector markers. Check the canonical parsed selector too. */
         fun selector(key: String, selector: String?) {
             if (selector == null) return
             if (selector.isBlank()) {

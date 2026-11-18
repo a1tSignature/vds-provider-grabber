@@ -14,16 +14,7 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import kotlin.test.*
 
-/**
- * `GET /api/v1/tariffs(/{id})` and `GET /api/v1/dictionaries` -- task vds-001.16.
- *
- * The filter/sort tests below all scope by `providerId=zephyr` and look at [SearchFixture]'s
- * "Zeta *" tariffs: they are attached to the *existing* `zephyr` provider, never a new one, so
- * none of task 15's provider-list exact-set assertions (`hasActiveTariffs`, the
- * `minMonthlyPriceUsd` ranking, `locationCountry=DE`) shift. The `maxPriceUsd`/`billingPeriod`/
- * `activeOnly`/`inStock` tests reuse `nimbus`/`vertex`/`polaris` outright, which [SearchFixture]'s
- * own doc comment already documents for exactly these edge cases.
- */
+/** Scope filter and sort cases to the fixture provider so additional seed rows cannot change their expectations. */
 class TariffSearchApiTest : AbstractDbTest() {
     private val root = "/api/v1"
 
@@ -53,21 +44,18 @@ class TariffSearchApiTest : AbstractDbTest() {
                 "Zeta Delta", "Zeta Epsilon", "Zeta History", "Zeta Empty",
             )
 
-            // providerId -- every tariff of this provider, exactly.
             assertEquals(allZeta, search(token, "providerId" to zephyrId).names())
 
-            // paymentMethod -- zephyr accepts CRYPTO_ETH, not SBP.
             assertEquals(allZeta, search(token, "providerId" to zephyrId, "paymentMethod" to "CRYPTO_ETH").names())
             assertEquals(emptySet(), search(token, "providerId" to zephyrId, "paymentMethod" to "SBP").names())
 
-            // country, via tariff_location -- Delta counted once despite two JP location links.
+            // Delta deliberately has two Japanese location links to catch duplicate result rows.
             assertEquals(setOf("Zeta Alpha", "Zeta Beta"), search(token, "providerId" to zephyrId, "country" to "BR").names())
             assertEquals(
                 setOf("Zeta Gamma", "Zeta Delta", "Zeta Epsilon"),
                 search(token, "providerId" to zephyrId, "country" to "JP").names(),
             )
 
-            // diskType.
             assertEquals(setOf("Zeta Alpha", "Zeta Empty"), search(token, "providerId" to zephyrId, "diskType" to "HDD").names())
             assertEquals(
                 setOf("Zephyr Prime", "Zeta Beta", "Zeta Gamma"),
@@ -76,21 +64,17 @@ class TariffSearchApiTest : AbstractDbTest() {
             assertEquals(setOf("Zeta Delta", "Zeta History"), search(token, "providerId" to zephyrId, "diskType" to "NVME").names())
             assertEquals(setOf("Zeta Epsilon"), search(token, "providerId" to zephyrId, "diskType" to "UNKNOWN").names())
 
-            // minVcpu / minRamMb -- inclusive lower bounds, Zephyr Prime included.
             val atOrAboveTwo = setOf("Zephyr Prime", "Zeta Beta", "Zeta Gamma", "Zeta Delta")
             assertEquals(atOrAboveTwo, search(token, "providerId" to zephyrId, "minVcpu" to "2").names())
             assertEquals(atOrAboveTwo, search(token, "providerId" to zephyrId, "minRamMb" to "2048").names())
-            // minDiskGb -- Zephyr Prime's 40 GB falls below this one, unlike the other two.
             assertEquals(
                 setOf("Zeta Beta", "Zeta Gamma", "Zeta Delta"),
                 search(token, "providerId" to zephyrId, "minDiskGb" to "100").names(),
             )
 
-            // unmeteredTraffic -- Zeta Beta is the one metered tariff in the whole fixture.
             assertEquals(allZeta - "Zeta Beta", search(token, "providerId" to zephyrId, "unmeteredTraffic" to "true").names())
             assertEquals(setOf("Zeta Beta"), search(token, "providerId" to zephyrId, "unmeteredTraffic" to "false").names())
 
-            // combined filters intersect, never union.
             assertEquals(
                 setOf("Zeta Delta"),
                 search(token, "providerId" to zephyrId, "country" to "JP", "minVcpu" to "5").names(),

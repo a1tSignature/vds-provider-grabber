@@ -1,26 +1,11 @@
 package org.a1tsign.vds.domain
 
-/**
- * Mirrors the `ck_provider_status` CHECK constraint on `provider.status` in
- * `V1__core_schema.sql`. Same spelling, same order -- keep the two in lockstep
- * (`SchemaEnumParityTest` proves it on every build).
- */
+/** Keep names and order aligned with the ck_provider_status constraint. */
 enum class ProviderStatus { ACTIVE, INACTIVE, UNKNOWN }
 
 /**
- * Mirrors the `ck_provider_system_status` CHECK on `provider.system_status` in
- * `V2__provider_system_status.sql` -- same spelling, same order (`SchemaEnumParityTest` proves it).
- *
- * **Independent of [ProviderStatus]**: that one is a claim about the provider's *business*, this one
- * is a claim about *our own* relationship to the row -- has anybody described how to read this site.
- * No combination is forbidden and neither field is derived from the other; a discovered candidate is
- * created as `status = UNKNOWN` + `systemStatus = CANDIDATE`.
- *
- * - [CANDIDATE] -- discovered, not configured. Visible in the public catalog.
- * - [CONFIGURED] -- a normal catalog member. Set automatically by the **first** crawl run for that
- *   slug that reaches `SUCCESS`/`PARTIAL` **and** performed at least one write.
- * - [REJECTED] -- terminal "won't do". Set only by a human, hidden from the public catalog, and
- *   never promoted automatically.
+ * Catalog relationship independent of [ProviderStatus]. Candidates are visible. A material crawl write can promote them.
+ * Rejected providers are hidden and cannot be promoted automatically.
  */
 enum class SystemStatus { CANDIDATE, CONFIGURED, REJECTED }
 
@@ -32,18 +17,7 @@ enum class LegalDataSource { MANUAL, CRAWLER, WHOIS, PROVIDER_SITE, UNKNOWN }
 /** Mirrors `ck_provider_legal_info_confidence` on `provider_legal_info.confidence`. */
 enum class Confidence { HIGH, MEDIUM, LOW, UNVERIFIED }
 
-/**
- * Mirrors `ck_provider_payment_method_method` on `provider_payment_method.method` -- exactly
- * these 20 values, extensible only by a new migration (see the comment next to that constraint).
- *
- * Semantics, since the raw constant names don't carry them:
- * - [VISA_MASTERCARD] / [AMERICAN_EXPRESS] / [UNIONPAY] -- international card acquiring.
- * - [MIR] / [SBP] / [RU_BANK_TRANSFER] -- Russian payment rails.
- * - [CRYPTO_BTC] / [CRYPTO_ETH] / [CRYPTO_USDT] -- specific coins; [CRYPTO_OTHER] is any other
- *   cryptocurrency not worth its own constant.
- * - [OTHER] -- anything not yet modelled by a dedicated constant; the free-text description goes
- *   into `provider_payment_method.note`, never encoded into this enum.
- */
+/** Mirrors ck_provider_payment_method_method. For OTHER, keep the free-text method description in the row's note. */
 enum class PaymentMethod {
     VISA_MASTERCARD, AMERICAN_EXPRESS, UNIONPAY, MIR, SBP, RU_BANK_TRANSFER,
     BANK_WIRE, PAYPAL, ALIPAY, WECHAT_PAY, APPLE_PAY, GOOGLE_PAY, CRYPTO_BTC,
@@ -75,12 +49,10 @@ enum class EnrichmentOutcome(val isAttempt: Boolean) {
 /** Mirrors `ck_provider_enrichment_dismissal_facet`. */
 enum class DismissalFacet { PAYMENT_METHOD, LOCATION }
 
-// The enums below are wire-only: no column stores them.
 
 /** What an enrichment result can carry; also the vocabulary of `observedFacets`. */
 enum class EnrichmentFacet { LEGAL_ENTITY_NAME, REGISTRATION_COUNTRY, PAYMENT_METHOD, LOCATION }
 
-/** The two legal fields that carry an origin. */
 enum class LegalField { LEGAL_ENTITY_NAME, REGISTRATION_COUNTRY }
 
 /** Strength of a legal finding; maps to [FieldOrigin.AUTO_CONFIRMED] / [FieldOrigin.AUTO_PRESUMED]. */
@@ -113,36 +85,12 @@ enum class UserStatus { ACTIVE, DISABLED }
 /** Mirrors the seeded `role.code` values in `V1__core_schema.sql`. */
 enum class Role { ADMIN, EDITOR, VIEWER }
 
-/**
- * Parses a `VARCHAR` value read from an enum-like column into its Kotlin enum. Deliberately not
- * `enumerationByName`/`customEnumeration` on the Exposed [org.jetbrains.exposed.v1.core.Table]
- * side -- their failure message doesn't name the column, which makes a bad row hard to track down.
- * Used by every mapper in `db/RowMappers.kt`.
- *
- * An unknown value is a sign the database and the Kotlin mirror have drifted apart; it must fail
- * loudly, never fall back to `null` or a default.
- *
- * @throws IllegalStateException naming [table], [column] and the offending [raw] value.
- */
+/** Keep enum columns as VARCHAR so unknown values fail with the table, column and raw value in the error. */
 inline fun <reified E : Enum<E>> parseDbEnum(table: String, column: String, raw: String): E =
     enumValues<E>().firstOrNull { it.name == raw } ?: throw IllegalStateException(
         "Unknown value '$raw' for $table.$column; expected one of " +
             enumValues<E>().joinToString { it.name },
     )
 
-/**
- * Explicit privilege ordering `ADMIN ⊃ EDITOR ⊃ VIEWER`, expressed once here so auth code checks
- * `role.includes(required)` instead of duplicating role sets at each call site. Every role
- * includes itself.
- *
- * Backed by a direct `ordinal` comparison on [Role]'s own declaration order
- * (`ADMIN, EDITOR, VIEWER`, matching the required privilege order) rather than a separate
- * `rolePrivilegeOrder` list searched with `indexOf`: `List.indexOf` returns `-1` for an element
- * not in the list, which would make `includes()` fail *open* (`-1 <= anything` is `true`) for any
- * future `Role` constant added to the enum without also being added to that list -- exactly the
- * kind of "two lists expressing the same thing" duplication this helper exists to avoid. `ordinal`
- * has no such failure mode: every enum constant has one by construction.
- * `SchemaEnumParityTest` pins the enum's declaration order explicitly so a future reordering
- * (which would silently change this method's meaning) fails loudly instead of silently.
- */
+/** Keep [Role] in descending privilege order. The ordinal comparison relies on that ordering. */
 fun Role.includes(other: Role): Boolean = this.ordinal <= other.ordinal

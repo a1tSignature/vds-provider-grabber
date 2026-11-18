@@ -12,25 +12,13 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/**
- * The one guarantee of [HostRateLimiter] that eviction can break: **at most one in-flight request
- * per host**. The delay side is asserted end-to-end in [PageFetcherTest] against the fixture
- * server's recorded arrival times; what is left here is the registry bound, whose eviction used to
- * be able to hand out a second [HostRateLimiter] gate for a host whose first gate was not locked
- * yet.
- */
+/** Force eviction pressure while checking that a host keeps a single in-flight request. */
 class HostRateLimiterTest {
 
     @Test
     @Timeout(20)
     fun `the one-in-flight gate holds for a host even while eviction churns the registry`() = runBlocking {
-        // maxTrackedHosts = 1 with two hosts in flight means every call evicts the other host's
-        // state, so the registry churns on every single call instead of after 256 distinct hosts.
-        // The race itself is a narrow interleaving this test does not claim to reproduce; what it
-        // does pin is the behaviour of the re-check that fixes it, under the churn it reacts to:
-        // every call runs exactly once (no call lost or run twice by the retry), the gate still
-        // serialises each host, and -- the timeout is part of the assertion -- the retry does not
-        // livelock while the two hosts evict each other.
+        // A limit of one forces state eviction between requests to distinct hosts.
         val limiter = HostRateLimiter(defaultDelayMs = 0, maxTrackedHosts = 1)
         val inFlight = ConcurrentHashMap<String, AtomicInteger>()
         val peak = ConcurrentHashMap<String, AtomicInteger>()

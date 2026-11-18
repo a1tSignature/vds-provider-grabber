@@ -8,7 +8,6 @@ import org.a1tsign.vds.config.defaultCrawlerUserAgent
 import java.math.BigDecimal
 import java.net.URI
 
-/** Everything the enrichment process reads from its environment; see [loadEnrichProcessConfig]. */
 data class EnrichProcessConfig(
     /**
      * Carries the API base URL, the credentials and the shared `VDS_CRAWLER_*` fetch identity to
@@ -20,7 +19,6 @@ data class EnrichProcessConfig(
     val sourcesDir: String?,
 )
 
-/** The command line of `EnrichMainKt`. */
 data class EnrichOptions(
     val dryRun: Boolean = false,
     val force: Boolean = false,
@@ -65,10 +63,7 @@ fun parseEnrichOptions(args: Array<String>): EnrichOptions {
     return options
 }
 
-/**
- * Validates every variable first and throws one [ConfigurationException] naming all bad ones. Reads
- * no `VDS_DB_*`/`VDS_JWT_*`: the process reaches the catalog only through its HTTP API.
- */
+/** Validate all environment settings before starting and report violations together. The process needs catalog credentials only. */
 fun loadEnrichProcessConfig(env: Map<String, String> = System.getenv()): EnrichProcessConfig {
     val errors = mutableListOf<String>()
 

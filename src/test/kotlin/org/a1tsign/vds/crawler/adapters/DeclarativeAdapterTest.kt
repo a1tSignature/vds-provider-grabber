@@ -257,6 +257,15 @@ class DeclarativeAdapterTest : AbstractDbTest() {
     }
 
     @Test
+    fun `traffic size skips port speeds before the transfer allowance`() {
+        val json = acmeConfig(tariffsSection(extra = """, "trafficLimitGb": {"selector": "td.traffic", "text": true}"""))
+        mapOf("1Gbps - 2TB Bandwidth" to 2000, "10 Gbit/s · 3 TB Traffic" to 3000, "1 GB/s, 500 GB transfer" to 500).forEach { (cell, expected) ->
+            val row = RICH_PLAN_ROW.replace("<td class=\"traffic\">20000</td>", "<td class=\"traffic\">$cell</td>")
+            assertEquals(expected, snapshot(json, acmePage(planRows = row)).tariffs!!.single().trafficLimitGb, cell)
+        }
+    }
+
+    @Test
     fun `a size with no unit is read in the config's unit, and a fractional result is refused`() {
         fun ram(cell: String, unit: String?): Int {
             val unitKey = unit?.let { ""","unit": "$it"""" } ?: ""
@@ -418,6 +427,19 @@ class DeclarativeAdapterTest : AbstractDbTest() {
                 price(cell, """{"bySymbol": {"$DOLLAR": "USD"}}""")
             }
         }
+    }
+
+    @Test
+    fun `undeclared money separators fail instead of truncating the price`() {
+        val rupees = """{"bySymbol": {"₹": "INR"}}"""
+        listOf("₹3,299.00", "3,299.00 ₹", "₹3 . 99").forEach { cell ->
+            assertFailsWith<AdapterFailureException>(cell) { price(cell, rupees) }
+        }
+        assertFailsWith<AdapterFailureException> {
+            price("3,299.00", """{"fixed": "INR"}""")
+        }
+        assertEquals(BigDecimal("3299.00"), price("₹3,299.00", rupees, grouping = ",").amount)
+        assertEquals(BigDecimal("3.99"), price("₹3 . 99", rupees, grouping = " ").amount)
     }
 
     @Test

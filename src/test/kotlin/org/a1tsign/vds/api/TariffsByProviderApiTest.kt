@@ -208,6 +208,63 @@ class TariffsByProviderApiTest : AbstractDbTest() {
     }
 
     @Test
+    fun `annual prices count and sort by their rounded monthly equivalent`() = runBlocking {
+        testAppDb(clock) {
+            val token = loginForToken("bootstrap-admin", "bootstrap-password-1")
+            SearchFixture(PostgresSupport.database)
+
+            val ascending = byProvider(token, "includeAnnual=true")
+            assertEquals(
+                listOf(
+                    "search-zephyr: Zephyr Prime x6",
+                    "nimbus-cloud: Nimbus Archive x3",
+                    "search-wayfarer: Wayfarer Annual x1",
+                    "polaris-quasar-net: Polaris Standard x1",
+                    "search-vertex: Vertex Core x2",
+                ),
+                ascending.headlines(),
+            )
+            assertEquals(ascending.slugs().reversed(), byProvider(token, "includeAnnual=true&sort=priceUsd,desc").slugs())
+            val nimbus = ascending.content().first { it.slug() == "nimbus-cloud" }
+            val price = nimbus.getValue("cheapestPrice").jsonObject
+            assertEquals("ANNUAL", price.getValue("billingPeriod").jsonPrimitive.content)
+            assertEquals("100.0000", price.getValue("amountUsd").jsonPrimitive.content)
+            assertEquals("8.3333", nimbus.getValue("annualPriceUsdPerMonth").jsonPrimitive.content)
+            assertEquals(
+                listOf("search-zephyr: Zephyr Prime x1", "nimbus-cloud: Nimbus Archive x1"),
+                byProvider(token, "includeAnnual=true&maxPriceUsd=8.3333").headlines(),
+            )
+        }
+    }
+
+    @Test
+    fun `annual comparison shares headline ranking with expansion and returns both billing options`() = runBlocking {
+        testAppDb(clock) {
+            val token = loginForToken("bootstrap-admin", "bootstrap-password-1")
+            val fixture = SearchFixture(PostgresSupport.database)
+            val at = Instant.parse("2024-01-01T00:00:00Z")
+            val catalog = CatalogFixture(PostgresSupport.database)
+            val tariff = catalog.createTariff(fixture.nimbus.id, "Nimbus Dual", at)
+            catalog.createTariffPrice(tariff.id, BigDecimal("20"), "USD", BillingPeriod.MONTHLY, at, amountUsd = BigDecimal("20"))
+            catalog.createTariffPrice(tariff.id, BigDecimal("72"), "USD", BillingPeriod.ANNUAL, at, amountUsd = BigDecimal("72"))
+
+            val query = "providerId=${fixture.nimbus.id}&includeAnnual=true"
+            val headline = byProvider(token, query).content().single()
+            val expansion = getJson(token, "/tariffs?$query&hasPrice=true&sort=priceUsd")
+            val first = expansion.content().first()
+            assertEquals(headline.getValue("matchingTariffCount").jsonPrimitive.long, expansion.total())
+            assertEquals(tariff.id, first.getValue("tariff").jsonObject.getValue("id").jsonPrimitive.long)
+            assertEquals(headline.getValue("cheapestTariff"), first.getValue("tariff"))
+            assertEquals(headline.getValue("cheapestPrice"), first.getValue("currentPrice"))
+            assertEquals("ANNUAL", first.getValue("currentPrice").jsonObject.getValue("billingPeriod").jsonPrimitive.content)
+            assertEquals("6.0000", first.getValue("annualPriceUsdPerMonth").jsonPrimitive.content)
+            assertEquals(headline.getValue("otherPrice"), first.getValue("otherPrice"))
+            assertEquals("MONTHLY", first.getValue("otherPrice").jsonObject.getValue("billingPeriod").jsonPrimitive.content)
+            assertEquals("search-vertex", byProvider(token, "includeAnnual=true&diskType=SSD&sort=priceUsd,desc").slugs().last())
+        }
+    }
+
+    @Test
     fun `hasPrice on the flat search splits tariffs by a current price of the requested period`() = runBlocking {
         testAppDb(clock) {
             val token = loginForToken("bootstrap-admin", "bootstrap-password-1")

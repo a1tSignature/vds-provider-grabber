@@ -1,6 +1,9 @@
 package org.a1tsign.vds.crawler.enrich
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import org.a1tsign.vds.config.EnrichmentConfig
 import org.a1tsign.vds.crawler.config.SourceLoadReport
 import org.a1tsign.vds.crawler.write.CatalogApiClient
@@ -8,6 +11,7 @@ import org.a1tsign.vds.crawler.write.CatalogApiException
 import org.a1tsign.vds.crawler.write.CatalogProviderDetail
 import org.a1tsign.vds.crawler.write.CatalogProviderSummary
 import org.a1tsign.vds.crawler.write.CrawlWriter
+import org.a1tsign.vds.crawler.write.PLANNED_OPERATIONS_LIMIT
 import org.a1tsign.vds.domain.EnrichmentFacet
 import org.a1tsign.vds.domain.EnrichmentOutcome
 import org.a1tsign.vds.domain.SystemStatus
@@ -20,6 +24,8 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 
 /** Providers per batch; the queue is re-read and RSS logged at each batch boundary. */
@@ -59,6 +65,8 @@ class SourceIndex(report: SourceLoadReport) {
     }
 }
 
+data class EnrichWorker(val step: EnrichmentStep, val writer: CrawlWriter)
+
 /**
  * One launch of the enrichment process: batches of [ENRICH_BATCH_SIZE] from a queue re-read per
  * batch, each provider attempted at most once, results submitted per provider as soon as its crawl
@@ -69,8 +77,7 @@ class EnrichLauncher(
     private val options: EnrichOptions,
     private val maxRuntimeMs: Long,
     private val catalog: CatalogApiClient,
-    private val step: EnrichmentStep,
-    private val writer: CrawlWriter,
+    private val workers: List<EnrichWorker>,
     private val sources: SourceIndex,
     private val clock: Clock,
     private val launchId: UUID = UUID.randomUUID(),
@@ -78,10 +85,10 @@ class EnrichLauncher(
     private val startedNanos = System.nanoTime()
 
     /** Recorded before the crawl starts, so a provider that kills the JVM is not retried this launch. */
-    private val attempted = mutableSetOf<Long>()
+    private val attempted = ConcurrentHashMap.newKeySet<Long>()
 
     /** Skipped by the fresh check: not an attempt, but not looked at again this launch either. */
-    private val skipped = mutableSetOf<Long>()
+    private val skipped = ConcurrentHashMap.newKeySet<Long>()
 
     private var batches = 0
 
@@ -89,8 +96,9 @@ class EnrichLauncher(
         val (code, reason) = try {
             loadAttemptedFile()
             logger.info(
-                "{} enrich launch starting: dryRun={} force={} maxBatches={} intervalHours={} alreadyAttempted={}",
-                launchId, options.dryRun, options.force, options.maxBatches ?: "-", config.intervalHours, attempted.size,
+                "{} enrich launch starting: workers={} newCandidates={} dryRun={} force={} maxBatches={} intervalHours={} alreadyAttempted={}",
+                launchId, workers.size, options.newCandidates, options.dryRun, options.force, options.maxBatches ?: "-",
+                config.intervalHours, attempted.size,
             )
             loop()
         } catch (cancellation: CancellationException) {
@@ -110,7 +118,8 @@ class EnrichLauncher(
     }
 
     private fun logFinished(reason: String, code: Int?) {
-        writer.plannedOperations().forEach { logger.info("{} {}", launchId, it) }
+        workers.asSequence().flatMap { it.writer.plannedOperations() }.take(PLANNED_OPERATIONS_LIMIT)
+            .forEach { logger.info("{} {}", launchId, it) }
         logger.info(
             "{} enrich launch finished: batches={} attempted={} skipped={} exitReason={} exitCode={} durationMs={}",
             launchId, batches, attempted.size, skipped.size, reason, code ?: "-", elapsedMs(),
@@ -134,24 +143,30 @@ class EnrichLauncher(
     private suspend fun runBatch(batch: List<CatalogProviderSummary>) {
         batches++
         val batchStarted = System.nanoTime()
-        val outcomes = sortedMapOf<String, Int>()
-        var started = 0
-        for (summary in batch) {
-            if (budgetSpent()) break
-            started++
-            val outcome = enrichOne(summary)
-            outcomes.merge(outcome, 1, Int::plus)
+        val queue = ConcurrentLinkedQueue(batch)
+        val results = coroutineScope {
+            workers.take(batch.size).map { worker ->
+                async {
+                    buildList {
+                        while (!budgetSpent()) {
+                            val summary = queue.poll() ?: break
+                            add(enrichOne(summary, worker))
+                        }
+                    }
+                }
+            }.awaitAll().flatten()
         }
+        val outcomes = results.groupingBy { it }.eachCount().toSortedMap()
         val rss = rssMb()
         logger.info(
             "{} enrich batch {} providers={} outcomes={} durationMs={}{}",
-            launchId, batches, started, outcomes, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - batchStarted),
+            launchId, batches, results.size, outcomes, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - batchStarted),
             if (rss == null) "" else " rssMb=$rss",
         )
     }
 
     /** Returns the label counted in the batch line: an outcome name or `SKIPPED_*`. */
-    private suspend fun enrichOne(summary: CatalogProviderSummary): String {
+    private suspend fun enrichOne(summary: CatalogProviderSummary, worker: EnrichWorker): String {
         val detail: CatalogProviderDetail = try {
             catalog.getProvider(summary.id)
         } catch (unauthorized: CatalogApiException.Unauthorized) {
@@ -165,7 +180,10 @@ class EnrichLauncher(
         if (detail.provider.systemStatus == SystemStatus.REJECTED.name) {
             return skip(summary, "SKIPPED_REJECTED", "rejected since the queue was read")
         }
-        if (!options.force && !isDue(detail.enrichment?.lastAttemptAt)) {
+        if (options.newCandidates && detail.provider.systemStatus != SystemStatus.CANDIDATE.name) {
+            return skip(summary, "SKIPPED_NOT_CANDIDATE", "status changed since the queue was read")
+        }
+        if (!isDue(detail.enrichment?.lastAttemptAt)) {
             return skip(summary, "SKIPPED_NOT_DUE", "no longer due: last attempt ${detail.enrichment?.lastAttemptAt}")
         }
 
@@ -178,7 +196,7 @@ class EnrichLauncher(
             pricingUrl = sources.pricingUrl(detail.provider.slug),
             observedFacets = sources.observedFacets(detail.provider.slug),
         )
-        val report = step.enrich(target, detail, writer)
+        val report = worker.step.enrich(target, detail, worker.writer)
         logProvider(target, report)
         return report.outcome.name
     }
@@ -216,26 +234,30 @@ class EnrichLauncher(
      */
     private suspend fun readQueue(): List<CatalogProviderSummary> {
         val members = mutableListOf<CatalogProviderSummary>()
+        val statuses = if (options.newCandidates) listOf(SystemStatus.CANDIDATE) else QUEUED_STATUSES
         var page = 0
         while (true) {
             if (page >= MAX_QUEUE_PAGES) {
                 logger.warn("{} enrich queue walk stopped after {} pages; using the {} providers read", launchId, page, members.size)
                 break
             }
-            val result = catalog.listProvidersPage(page, QUEUED_STATUSES)
+            val result = catalog.listProvidersPage(page, statuses)
             members += result.content
             page++
             if (page >= result.totalPages) break
         }
         return members
+            .distinctBy { it.id }
             .filter { it.id !in attempted && it.id !in skipped }
-            .filter { options.force || isDue(it.enrichmentLastAttemptAt) }
+            .filter { isDue(it.enrichmentLastAttemptAt) }
             .sortedWith(compareBy<CatalogProviderSummary>({ it.enrichmentLastAttemptAt != null }, { it.enrichmentLastAttemptAt }, { it.id }))
     }
 
     private fun isDue(lastAttemptAt: Instant?): Boolean =
-        lastAttemptAt == null || !lastAttemptAt.plus(Duration.ofHours(config.intervalHours)).isAfter(clock.instant())
+        lastAttemptAt == null || options.force ||
+            (!options.newCandidates && !lastAttemptAt.plus(Duration.ofHours(config.intervalHours)).isAfter(clock.instant()))
 
+    @Synchronized
     private fun recordAttempt(providerId: Long) {
         attempted += providerId
         val file = options.attemptedFile ?: return

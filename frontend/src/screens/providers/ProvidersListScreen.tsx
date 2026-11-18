@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import { OriginBadge } from "../../components/OriginBadge";
 import { SystemStatusBadge } from "../../components/SystemStatusBadge";
+import { ProviderStatusBadge } from "../../components/ProviderStatusBadge";
 import { CountryFlag } from "../../components/CountryFlag";
 import { Pagination } from "../../components/Pagination";
 import { Empty, ErrorView, Loading } from "../../components/StateViews";
@@ -16,36 +17,11 @@ import { formatMoney, websiteHost } from "../../lib/format";
 import { parseUrlState, serializeUrlState, useDebouncedValue } from "../../lib/urlState";
 import {
   buildProviderFiltersSchema,
-  normalizeCountryCode,
   type ProviderFiltersSchema,
   type ProviderSortField,
 } from "./filters";
 
 type ProviderFilters = ReturnType<typeof parseUrlState<ProviderFiltersSchema>>;
-
-/**
- * Local state for a two-letter country code filter: committing only a valid code or an empty
- * string (never a partial one) is what lets the user type the first letter at all -- a value
- * bound straight to the parsed filter would have `countryCodeField.parse` throw away every
- * single-letter input on the very next render, making the field uneditable.
- */
-function useCountryFilterInput(
-  value: string | undefined,
-  onCommit: (next: string | undefined) => void,
-): [string, (raw: string) => void] {
-  const [local, setLocal] = useState(value ?? "");
-  useEffect(() => setLocal(value ?? ""), [value]);
-  function handleChange(raw: string) {
-    const upper = raw.toUpperCase();
-    setLocal(upper);
-    if (upper === "") onCommit(undefined);
-    else {
-      const normalized = normalizeCountryCode(upper);
-      if (normalized !== undefined) onCommit(normalized);
-    }
-  }
-  return [local, handleChange];
-}
 
 export function ProvidersListScreen() {
   const dictionaries = useDictionaries();
@@ -78,10 +54,7 @@ export function ProvidersListScreen() {
     if (debouncedQ !== filters.q) updateFilters({ q: debouncedQ, page: 0 });
   }, [debouncedQ]);
 
-  const [registrationCountryInput, handleRegistrationCountryChange] = useCountryFilterInput(
-    filters.registrationCountry,
-    (value) => updateFilters({ registrationCountry: value, page: 0 }),
-  );
+  const [registrationCountrySearch, setRegistrationCountrySearch] = useState("");
   const [countrySearch, setCountrySearch] = useState("");
 
   const { data, error, loading, refetch } = useProvidersListQuery(canonicalSearch);
@@ -91,6 +64,13 @@ export function ProvidersListScreen() {
       ? filters.locationCountry.filter((country) => country !== code)
       : [...filters.locationCountry, code];
     updateFilters({ locationCountry: next, page: 0 });
+  }
+
+  function toggleRegistrationCountry(code: string) {
+    const next = filters.registrationCountry.includes(code)
+      ? filters.registrationCountry.filter((country) => country !== code)
+      : [...filters.registrationCountry, code];
+    updateFilters({ registrationCountry: next, page: 0 });
   }
 
   function toggleSort(field: ProviderSortField) {
@@ -143,12 +123,41 @@ export function ProvidersListScreen() {
           onChange={(value) => updateFilters({ status: value === "" ? undefined : value, page: 0 })}
           placeholder="Любой статус"
         />
-        <input
-          value={registrationCountryInput}
-          onChange={(event) => handleRegistrationCountryChange(event.target.value)}
-          placeholder="Страна регистрации"
-          maxLength={2}
-        />
+        <details className="country-filter">
+          <summary>
+            Страны регистрации{filters.registrationCountry.length > 0 ? ` · ${filters.registrationCountry.length}` : ""}
+          </summary>
+          <div className="country-filter-menu">
+            <input
+              type="search"
+              value={registrationCountrySearch}
+              onChange={(event) => setRegistrationCountrySearch(event.target.value)}
+              placeholder="Найти страну"
+              aria-label="Найти страну регистрации"
+            />
+            {filters.registrationCountry.length > 0 && (
+              <button type="button" className="btn-link" onClick={() => updateFilters({ registrationCountry: [], page: 0 })}>
+                Сбросить выбор
+              </button>
+            )}
+            <div className="country-filter-options">
+              {COUNTRIES.filter(({ code, name }) =>
+                `${name} ${code}`.toLocaleLowerCase("ru").includes(registrationCountrySearch.trim().toLocaleLowerCase("ru")),
+              ).map(({ code, name }) => (
+                <label key={code} className="country-filter-option">
+                  <input
+                    type="checkbox"
+                    checked={filters.registrationCountry.includes(code)}
+                    onChange={() => toggleRegistrationCountry(code)}
+                  />
+                  <CountryFlag code={code} />
+                  <span>{name}</span>
+                  <span className="muted">{code}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        </details>
         <details className="country-filter">
           <summary>
             Страны размещения{filters.locationCountry.length > 0 ? ` · ${filters.locationCountry.length}` : ""}
@@ -283,9 +292,11 @@ export function ProvidersListScreen() {
                         </div>
                       )}
                     </td>
-                    <td>{provider.status}</td>
+                    <td><ProviderStatusBadge status={provider.status} /></td>
                     <td>
-                      {provider.registrationCountry ?? "—"}{" "}
+                      {provider.registrationCountry
+                        ? <CountryFlag code={provider.registrationCountry} />
+                        : "—"}{" "}
                       <OriginBadge origin={provider.registrationCountryOrigin} compact />
                     </td>
                     <td>

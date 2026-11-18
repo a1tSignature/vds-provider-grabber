@@ -24,6 +24,8 @@ import org.a1tsign.vds.db.toTariffPrice
 import org.a1tsign.vds.domain.BillingPeriod
 import org.a1tsign.vds.domain.Provider
 import org.a1tsign.vds.domain.Tariff
+import org.a1tsign.vds.domain.TariffPrice
+import org.a1tsign.vds.domain.annualUsdPerMonth
 import org.jetbrains.exposed.v1.core.Op
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
@@ -38,6 +40,16 @@ import java.time.Instant
 import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger(CatalogQueryService::class.java)
+
+private class SearchPriceOptions(requested: TariffPrice?, annual: TariffPrice?) {
+    val annualUsdPerMonth = annual?.amountUsd?.annualUsdPerMonth()
+    private val annualIsCheaper = annualUsdPerMonth?.let { annualUsd ->
+        requested?.amountUsd?.let { annualUsd < it } ?: true
+    } ?: false
+
+    val primary = if (annualIsCheaper) annual else requested ?: annual
+    val other = if (annualIsCheaper) requested else annual.takeIf { requested != null }
+}
 
 /**
  * Read-only cross-table queries for the provider catalog -- `GET /api/v1/providers` (filtered,
@@ -232,10 +244,8 @@ class CatalogQueryService(
     }
 
     /**
-     * `GET /api/v1/tariffs` -- cross-provider search. Not N+1: five SQL statements regardless of
-     * page size -- [TariffRepository.searchPage]'s two raw-SQL statements (count, page ids), then
-     * one decoration query each for the matching tariffs, their providers and their current
-     * [billingPeriod] prices, all `inList` the page's ids -- never one query per row.
+     * `GET /api/v1/tariffs` -- cross-provider search. Decorates the paged ids in batches with
+     * tariffs, providers and current prices for the requested periods.
      */
     suspend fun searchTariffs(
         filter: TariffSearchFilter,
@@ -253,15 +263,19 @@ class CatalogQueryService(
             val providerIds = tariffById.values.map { it.providerId }.distinct()
             val providerById = providers.findByIds(providerIds).associateBy { it.id }
             val currentPriceByTariff = currentPrices(ids, billingPeriod)
+            val annualPriceByTariff = if (filter.includeAnnual) currentPrices(ids, BillingPeriod.ANNUAL) else emptyMap()
 
             // ids is already the correctly sorted/paginated order from searchPage -- preserve it.
             val items = ids.mapNotNull { id ->
                 val t = tariffById[id] ?: return@mapNotNull null
                 val p = providerById[t.providerId] ?: return@mapNotNull null
+                val options = SearchPriceOptions(currentPriceByTariff[id], annualPriceByTariff[id])
                 TariffSearchItemDto(
                     tariff = t.toDto(),
                     provider = p.toDto(),
-                    currentPrice = currentPriceByTariff[id]?.toDto(),
+                    currentPrice = options.primary?.toDto(),
+                    otherPrice = options.other?.toDto(),
+                    annualPriceUsdPerMonth = options.annualUsdPerMonth,
                 )
             }
             total to items
@@ -269,9 +283,8 @@ class CatalogQueryService(
     }
 
     /**
-     * `GET /api/v1/tariffs/by-provider`. Five SQL statements regardless of page size:
-     * [TariffRepository.headlinesByProvider]'s two, then one each for the page's providers,
-     * headline tariffs and their current MONTHLY prices.
+     * `GET /api/v1/tariffs/by-provider`. Decorates the page of headlines with their providers,
+     * tariffs and current prices in batches.
      */
     suspend fun cheapestTariffByProvider(
         filter: TariffSearchFilter,
@@ -287,13 +300,17 @@ class CatalogQueryService(
             val providerById = providers.findByIds(headlines.map { it.providerId }).associateBy { it.id }
             val tariffById = tariffs.findByIds(tariffIds).associateBy { it.id }
             val priceByTariff = currentPrices(tariffIds, BillingPeriod.MONTHLY)
+            val annualPriceByTariff = if (filter.includeAnnual) currentPrices(tariffIds, BillingPeriod.ANNUAL) else emptyMap()
 
             val items = headlines.mapNotNull { headline ->
+                val options = SearchPriceOptions(priceByTariff[headline.tariffId], annualPriceByTariff[headline.tariffId])
                 ProviderCheapestTariffDto(
                     provider = providerById[headline.providerId]?.toDto() ?: return@mapNotNull null,
                     cheapestTariff = tariffById[headline.tariffId]?.toDto() ?: return@mapNotNull null,
-                    cheapestPrice = priceByTariff[headline.tariffId]?.toDto() ?: return@mapNotNull null,
+                    cheapestPrice = options.primary?.toDto() ?: return@mapNotNull null,
                     matchingTariffCount = headline.matchingTariffCount,
+                    otherPrice = options.other?.toDto(),
+                    annualPriceUsdPerMonth = options.annualUsdPerMonth,
                 )
             }
             total to items

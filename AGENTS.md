@@ -14,9 +14,12 @@ VDS/VPS provider catalog
 - Provider-specific crawler sources are declarative JSON interpreted by the shared `DeclarativeAdapter`; do not add a compiled adapter for a source that fits this format. Sources are checked by the same adapter and snapshot validator used by the crawler.
 - Discovery and crawling are disabled by default. Do not enable outbound crawling or search integrations as an incidental part of unrelated work.
 
-## Selector generation for users
+## Candidate batches
 
-When the user wants to generate or inspect selectors independently, direct them to `scripts/source-workbench/README.md`. It documents the workflow for candidate selection, page fetching, selector probes, JSON generation, and validation. Keep its scratch files in a temporary work directory; only copy a reviewed and validated source into `catalog-seed/sources/`. Do not start that workflow or fetch provider sites unless the user explicitly asks.
+- Selector batches use [the source workbench](scripts/source-workbench/README.md). It has copy-paste commands for a live PostgreSQL snapshot, candidate selection, robots-aware page fetching, selector probes, JSON generation and validation. Keep scratch files under `mktemp -d`. Copy only reviewed and validated JSON into `catalog-seed/sources/` and update `catalog-seed/README.md`.
+- For first-time general enrichment in the local Docker stack, configure `VDS_ENRICH_USERNAME` and `VDS_ENRICH_PASSWORD` for an active `EDITOR` in `.env`. The app receives that username as `VDS_CRAWLER_USERNAME`; a role alone cannot read the internal catalog. Run `docker compose up -d --build --wait app` to apply the configuration, then `docker compose --profile enrich run -d --no-deps --name vds-enrich-local enrich --new-candidates --workers 4`. Check progress with `docker logs -f vds-enrich-local`. The job runs independently of the agent and writes general data through the catalog API.
+- For tariff writes in local Docker, follow [README §7.1](README.md#71-что-нужно-от-краулера). Set `VDS_CRAWLER_ENABLED=true` in `.env` with an active `EDITOR` and set `VDS_CRAWLER_ADAPTERS` to the batch IDs if a particular batch was requested. Compose mounts `catalog-seed/sources/` read-only. Apply with `docker compose up -d --build --wait app`, then check `docker compose logs -f app` for `crawl run` and `tariffsCreated`.
+- Run outbound workflows only when the user explicitly asks. The tariff scheduler runs inside `app`, and general enrichment runs as a separate one-shot process.
 
 ## Build and checks
 

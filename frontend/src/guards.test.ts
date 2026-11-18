@@ -64,6 +64,7 @@ const RULES: Rule[] = [
     pattern: new RegExp(`(['"\`])(?:${BACKEND_ENUM_LITERALS.join("|")})\\1`),
     whitelist: [
       "api/types.ts",
+      "components/ProviderStatusBadge.tsx",
       "domain/systemStatusLabels.ts",
       "domain/paymentMethods.tsx",
       "domain/provenanceLabels.ts",

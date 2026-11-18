@@ -9,7 +9,7 @@ interface QueryState {
   loading: boolean;
 }
 
-/** The API accepts one locationCountry; for several, fetch the filtered list and apply OR locally. */
+/** The API accepts one country per filter; multiple selections use OR within each filter. */
 export function useProvidersListQuery(search: string) {
   const [state, setState] = useState<QueryState>({ loading: true });
   const [nonce, setNonce] = useState(0);
@@ -19,20 +19,22 @@ export function useProvidersListQuery(search: string) {
     const controller = new AbortController();
     const params = new URLSearchParams(search);
     const selectedCountries = params.getAll("locationCountry");
+    const registrationCountries = params.getAll("registrationCountry");
     setState({ loading: true });
 
     async function load() {
       try {
-        if (selectedCountries.length <= 1) {
+        if (selectedCountries.length <= 1 && registrationCountries.length <= 1) {
           const path = `/api/v1/providers${search ? `?${search}` : ""}`;
           const data = await apiClient.get<PageResponse<ProviderSummaryDto>>(path, { signal: controller.signal });
           setState({ data, loading: false });
           return;
         }
 
-        const page = Number(params.get("page") ?? "0");
-        const size = Number(params.get("size") ?? "20");
-        params.delete("locationCountry");
+        const page = Number.parseInt(params.get("page") ?? "0", 10);
+        const size = Number.parseInt(params.get("size") ?? "20", 10);
+        if (selectedCountries.length > 1) params.delete("locationCountry");
+        if (registrationCountries.length > 1) params.delete("registrationCountry");
         params.set("page", "0");
         params.set("size", "100");
         const requestPage = (pageNumber: number) => {
@@ -48,9 +50,11 @@ export function useProvidersListQuery(search: string) {
           Array.from({ length: Math.max(0, first.totalPages - 1) }, (_, index) => requestPage(index + 1)),
         );
         const selected = new Set(selectedCountries);
+        const registrations = new Set(registrationCountries);
         const matches = [first, ...rest]
           .flatMap((result) => result.content)
-          .filter((provider) => provider.locationCountryCodes.some((code) => selected.has(code)));
+          .filter((provider) => selected.size <= 1 || provider.locationCountryCodes.some((code) => selected.has(code)))
+          .filter((provider) => registrations.size <= 1 || registrations.has(provider.registrationCountry ?? ""));
         const start = page * size;
         setState({
           data: {

@@ -111,6 +111,9 @@ fun Route.tariffRoutes(service: TariffService, queryService: CatalogQueryService
         val billingPeriod = query["billingPeriod"]?.let { v.enumValue("billingPeriod", it, BillingPeriod.entries.toTypedArray()) }
             ?: BillingPeriod.MONTHLY
         val hasPrice = parseOptionalBoolean(v, "hasPrice", query["hasPrice"])
+        if (filter.includeAnnual && billingPeriod != BillingPeriod.MONTHLY) {
+            v.reject("includeAnnual", "requires billingPeriod=MONTHLY")
+        }
         v.throwIfInvalid()
         val (total, items) = queryService.searchTariffs(filter.copy(hasPrice = hasPrice), billingPeriod, page.page, page.size, page.sort)
         call.respond(pageResponse(total, page.page, page.size, items))
@@ -199,6 +202,7 @@ private fun parseTariffFilter(v: Validation, query: Parameters): TariffSearchFil
         unmeteredTraffic = parseOptionalBoolean(v, "unmeteredTraffic", query["unmeteredTraffic"]),
         activeOnly = parseOptionalBoolean(v, "activeOnly", query["activeOnly"]) ?: true,
         inStock = parseOptionalBoolean(v, "inStock", query["inStock"]),
+        includeAnnual = parseOptionalBoolean(v, "includeAnnual", query["includeAnnual"]) ?: false,
     )
 }
 

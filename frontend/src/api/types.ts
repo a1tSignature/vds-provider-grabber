@@ -2,11 +2,9 @@
  * Type mirrors of `src/main/kotlin/org/a1tsign/vds/api/dto/*.kt`. Money, FX rates and
  * coordinates stay decimal strings end to end -- never `number` -- so nothing here can round
  * them through a JS float.
- *
- * One of the two modules allowed a bare enum-literal string (`MONTHLY`): the backend's default
- * billing period, used by read screens that need "the" current price rather than every period.
  */
 export const MONTHLY = "MONTHLY";
+export const ANNUAL = "ANNUAL";
 
 export interface LoginResponse {
   token: string;
@@ -204,6 +202,8 @@ export interface TariffSearchItemDto {
   tariff: TariffDto;
   provider: ProviderDto;
   currentPrice?: PriceDto;
+  otherPrice?: PriceDto;
+  annualPriceUsdPerMonth?: string;
 }
 
 export interface ProviderCheapestTariffDto {
@@ -211,6 +211,8 @@ export interface ProviderCheapestTariffDto {
   cheapestTariff: TariffDto;
   cheapestPrice: PriceDto;
   matchingTariffCount: number;
+  otherPrice?: PriceDto;
+  annualPriceUsdPerMonth?: string;
 }
 
 export interface TariffDetailDto {

@@ -1,4 +1,4 @@
-import { MONTHLY, type TariffSearchItemDto } from "../../api/types";
+import type { TariffSearchItemDto } from "../../api/types";
 import { serializeUrlState } from "../../lib/urlState";
 import type { TariffFilterFieldsSchema, TariffTableFilters } from "./filters";
 
@@ -6,7 +6,7 @@ import type { TariffFilterFieldsSchema, TariffTableFilters } from "./filters";
  * The per-provider expansion request: every active filter the table carries (serialized through
  * the shared field schema, which excludes `page`/`sort`/`size` by construction, so the table's
  * own paging and ordering can never leak into it), plus the fixed parameters that turn it into a
- * request for one provider's other monthly tariffs.
+ * request for one provider's other priced tariffs.
  */
 export function buildExpansionQuery(
   fieldsSchema: TariffFilterFieldsSchema,
@@ -15,7 +15,7 @@ export function buildExpansionQuery(
 ): string {
   const params = new URLSearchParams(serializeUrlState(fieldsSchema, filters));
   params.set("providerId", String(providerId));
-  params.set("billingPeriod", MONTHLY);
+  params.set("includeAnnual", "true");
   params.set("hasPrice", "true");
   params.set("sort", "priceUsd");
   params.set("size", "100");

@@ -15,8 +15,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # API and the bundled SPA on one port. Crawler and discovery stay off: none of their variables
-  # are passed through, whatever the local .env holds.
   app:
     build: .
     image: vds-provider-grabber:local
@@ -33,6 +31,17 @@ services:
       VDS_JWT_SECRET: ${VDS_JWT_SECRET:-local-dev-jwt-secret-not-for-production}
       VDS_BOOTSTRAP_ADMIN_USERNAME: ${VDS_BOOTSTRAP_ADMIN_USERNAME:-admin}
       VDS_BOOTSTRAP_ADMIN_PASSWORD: ${VDS_BOOTSTRAP_ADMIN_PASSWORD:-admin-local-dev}
+      VDS_CRAWLER_ENABLED: ${VDS_CRAWLER_ENABLED:-false}
+      VDS_CRAWLER_USERNAME: ${VDS_ENRICH_USERNAME:-${VDS_CRAWLER_USERNAME:-}}
+      VDS_CRAWLER_PASSWORD: ${VDS_ENRICH_PASSWORD:-${VDS_CRAWLER_PASSWORD:-}}
+      VDS_CRAWLER_ADAPTERS: ${VDS_CRAWLER_ADAPTERS:-}
+      VDS_CRAWLER_INITIAL_DELAY_MINUTES: ${VDS_CRAWLER_INITIAL_DELAY_MINUTES:-10}
+      VDS_CRAWLER_INTERVAL_HOURS: ${VDS_CRAWLER_INTERVAL_HOURS:-24}
+      VDS_CRAWLER_RUN_TIMEOUT_MINUTES: ${VDS_CRAWLER_RUN_TIMEOUT_MINUTES:-30}
+      VDS_DISCOVERY_SOURCES_DIR: /app/sources
+      VDS_DISCOVERY_MAX_SOURCES: ${VDS_DISCOVERY_MAX_SOURCES:-1000}
+    volumes:
+      - ./catalog-seed/sources:/app/sources:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8080/health/ready"]
       interval: 5s
@@ -41,6 +50,21 @@ services:
       start_period: 10s
     # Shutdown drains requests and background passes for up to ~20 s; Docker's default is 10 s.
     stop_grace_period: 30s
+
+  enrich:
+    image: vds-provider-grabber:local
+    profiles: [enrich]
+    entrypoint: ["/app/enrich-launch.sh"]
+    healthcheck:
+      disable: true
+    environment:
+      VDS_ENRICH_API_BASE_URL: http://app:8080
+      VDS_ENRICH_USERNAME: ${VDS_ENRICH_USERNAME:-}
+      VDS_ENRICH_PASSWORD: ${VDS_ENRICH_PASSWORD:-}
+      VDS_ENRICH_MAX_RUNTIME_MINUTES: ${VDS_ENRICH_MAX_RUNTIME_MINUTES:-360}
+      VDS_ENRICH_EXTRA_JVM_FLAGS: ${VDS_ENRICH_EXTRA_JVM_FLAGS:-}
+    volumes:
+      - enrich-lock:/var/lock/vds-enrich
 
   # One-off: `docker compose run --rm seed`. Skips itself when the catalogue already has providers,
   # because dev-seed.sql is not re-runnable.
@@ -117,5 +141,6 @@ services:
       - frontend-node-modules:/frontend/node_modules
 
 volumes:
+  enrich-lock:
   postgres-data:
   frontend-node-modules:

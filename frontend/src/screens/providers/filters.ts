@@ -15,27 +15,9 @@ export type ProviderSortField = (typeof PROVIDER_SORT_FIELDS)[number];
 
 const PAGE_SIZES = [20, 50, 100] as const;
 
-/**
- * Upper-cases and validates a two-letter country code; `undefined` for anything else (including
- * empty), matching the backend's own validation. Shared with the list screen's input handling, so
- * the same rule decides both what the URL accepts and when a keystroke commits.
- */
 export function normalizeCountryCode(raw: string): string | undefined {
   const upper = raw.toUpperCase();
   return /^[A-Z]{2}$/.test(upper) ? upper : undefined;
-}
-
-function countryCodeField(): FieldCodec<string | undefined> {
-  return {
-    defaultValue: undefined,
-    parse: (params, key) => {
-      const raw = params.get(key);
-      return raw === null ? undefined : normalizeCountryCode(raw);
-    },
-    serialize: (value, key, params) => {
-      if (value !== undefined) params.set(key, value);
-    },
-  };
 }
 
 function countryCodesField(): FieldCodec<string[]> {
@@ -82,7 +64,7 @@ export function buildProviderFiltersSchema(dictionaries: DictionariesDto) {
   return {
     q: stringField(),
     status: optionalEnumField(dictionaries.providerStatuses),
-    registrationCountry: countryCodeField(),
+    registrationCountry: countryCodesField(),
     locationCountry: countryCodesField(),
     paymentMethod: repeatableEnumField(dictionaries.paymentMethods),
     hasActiveTariffs: booleanField(),

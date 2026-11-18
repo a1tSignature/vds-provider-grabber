@@ -21,7 +21,7 @@ describe("provider list filter state", () => {
     const state = {
       q: "ovh",
       status: "FOO" as const,
-      registrationCountry: "DE",
+      registrationCountry: ["DE"],
       locationCountry: ["US", "DE"],
       paymentMethod: ["BETA", "GAMMA"],
       hasActiveTariffs: true,
@@ -38,7 +38,7 @@ describe("provider list filter state", () => {
     const search = serializeUrlState(schema, {
       q: "",
       status: undefined,
-      registrationCountry: undefined,
+      registrationCountry: [],
       locationCountry: [],
       paymentMethod: [],
       hasActiveTariffs: undefined,
@@ -60,15 +60,15 @@ describe("provider list filter state", () => {
     expect(parseUrlState(schema, "systemStatus=REJECTED&systemStatus=CANDIDATE").systemStatus).toEqual(["CANDIDATE"]);
   });
 
-  it("normalizes and de-duplicates multiple location countries", () => {
-    const state = parseUrlState(schema, "locationCountry=de&locationCountry=US&locationCountry=DE&locationCountry=usa");
-    expect(state.locationCountry).toEqual(["DE", "US"]);
-    expect(serializeUrlState(schema, state)).toBe("locationCountry=DE&locationCountry=US");
+  it.each(["locationCountry", "registrationCountry"] as const)("normalizes and de-duplicates %s selections", (field) => {
+    const state = parseUrlState(schema, `${field}=de&${field}=US&${field}=DE&${field}=usa`);
+    expect(state[field]).toEqual(["DE", "US"]);
+    expect(serializeUrlState(schema, state)).toBe(`${field}=DE&${field}=US`);
   });
 
   it("falls back to defaults for a country code outside the two-letter shape", () => {
-    expect(parseUrlState(schema, "registrationCountry=deu").registrationCountry).toBeUndefined();
-    expect(parseUrlState(schema, "registrationCountry=de").registrationCountry).toBe("DE");
+    expect(parseUrlState(schema, "registrationCountry=deu").registrationCountry).toEqual([]);
+    expect(parseUrlState(schema, "registrationCountry=de").registrationCountry).toEqual(["DE"]);
   });
 
   it("falls back to the default page size for a value Pagination does not offer", () => {

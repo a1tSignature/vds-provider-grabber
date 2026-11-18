@@ -26,10 +26,12 @@ data class EnrichOptions(
     val force: Boolean = false,
     val maxBatches: Int? = null,
     val attemptedFile: String? = null,
+    val newCandidates: Boolean = false,
+    val workers: Int = 1,
 )
 
 const val ENRICH_USAGE: String =
-    "usage: EnrichMainKt [--dry-run] [--force] [--max-batches N] [--attempted-file PATH]"
+    "usage: EnrichMainKt [--dry-run] [--force | --new-candidates] [--workers N] [--max-batches N] [--attempted-file PATH]"
 
 /** Throws [ConfigurationException] with [ENRICH_USAGE] on an unknown option or a bad value. */
 fun parseEnrichOptions(args: Array<String>): EnrichOptions {
@@ -41,6 +43,12 @@ fun parseEnrichOptions(args: Array<String>): EnrichOptions {
         options = when (val arg = args[i]) {
             "--dry-run" -> options.copy(dryRun = true)
             "--force" -> options.copy(force = true)
+            "--new-candidates" -> options.copy(newCandidates = true)
+            "--workers" -> {
+                val n = value(arg).toIntOrNull()?.takeIf { it in 1..10 }
+                    ?: throw ConfigurationException("--workers must be an integer between 1 and 10; $ENRICH_USAGE")
+                options.copy(workers = n)
+            }
             "--max-batches" -> {
                 val n = value(arg).toIntOrNull()?.takeIf { it > 0 }
                     ?: throw ConfigurationException("--max-batches must be a positive integer; $ENRICH_USAGE")
@@ -50,6 +58,9 @@ fun parseEnrichOptions(args: Array<String>): EnrichOptions {
             else -> throw ConfigurationException("unknown option '$arg'; $ENRICH_USAGE")
         }
         i++
+    }
+    if (options.force && options.newCandidates) {
+        throw ConfigurationException("--force and --new-candidates are mutually exclusive; $ENRICH_USAGE")
     }
     return options
 }

@@ -86,6 +86,21 @@ Open `https://<VDS_SITE_ADDRESS>` and sign in with the bootstrap administrator f
 bootstrap account is created only when the database has no users. The schema is migrated by the
 application before readiness succeeds.
 
+### First-time candidate enrichment
+
+Set `VDS_ENRICH_USERNAME` and `VDS_ENRICH_PASSWORD` in `.env` for an active `EDITOR` account.
+Compose passes the same username to the API as `VDS_CRAWLER_USERNAME` so the worker can read the
+internal catalog. Use an image that supports `--new-candidates` and `--workers`.
+
+```sh
+docker compose up -d --wait app
+docker compose --profile enrich run -d --no-deps --name vds-enrich-candidates enrich --new-candidates --workers 4
+docker logs -f vds-enrich-candidates
+```
+
+The one-off container processes candidates with no prior enrichment attempt. It writes general site
+data through the API. Use a new container name for each run or remove the preceding stopped container.
+
 ## 4. Upgrade and recover
 
 Before an upgrade, take a PostgreSQL backup (see the backup commands in the root README). Change

@@ -10,57 +10,88 @@ Kotlin-часть — `src/test/kotlin/org/a1tsign/vds/crawler/ScratchSourceProb
 ## Процесс
 
 ```bash
-W=/tmp/work            # любой рабочий каталог вне репозитория
+W=$(mktemp -d /tmp/vds-selectors.XXXXXX)
 B=scripts/source-workbench
-RUN='./gradlew test --tests org.a1tsign.vds.crawler.ScratchSourceProbeTest'
+source_probe() {
+  ./gradlew -PskipFrontend test --rerun --tests "org.a1tsign.vds.crawler.ScratchSourceProbeTest.$1"
+}
 
 # 1. Кандидаты с успешным обогащением, у которых ещё нет файла источника
 python3 -I $B/candidates.py catalog-seed/catalog-dump.sql catalog-seed/sources $W
 
-# 2. Страницы так, как их видит краулер (без JS) -> $W/pages, список годных -> $W/auto.txt
-$B/fetch.sh $W
+# 2. Страницы через загрузчик краулера (robots.txt, редиректы, лимиты) -> $W/pages
+PROBE_DIR="$W" source_probe fetch
+awk -F '\t' '$1 == "PAGE" { print $2 }' "$W/fetch.log" > "$W/auto.txt"
 
 # 3. Автопоиск карточек тарифов -> $W/auto.out (селектор группы + HTML первой карточки)
-PROBE_DIR=$W $RUN.auto
+PROBE_DIR="$W" source_probe auto
 
 # 4. Точечные пробы -> $W/probe.out. В $W/probe.txt строки `slug|css-селектор`
 #    или `slug|@текст` (путь предков элементов, чей собственный текст содержит «текст»).
 #    PROBE_N=20 — сколько совпадений печатать (без HTML), PROBE_HTML=1 — вернуть HTML.
-PROBE_DIR=$W $RUN.probe
+PROBE_DIR="$W" source_probe probe
 
 # 5. Спеки -> JSON (формат спека — в шапке gen.py, живой пример — examples/example-spec.py)
 python3 -I $B/gen.py $W/out $W/providers.tsv $W/rest.tsv my-spec.py
 
 # 6. Проверка тремя гейтами краулера -> $W/check.out, затем поиск правдоподобных, но неверных чисел
-PROBE_DIR=$W SRC_SUBDIR=out VALIDATE_OUT=check.out $RUN.validate
+PROBE_DIR="$W" SRC_SUBDIR=out VALIDATE_OUT=check.out source_probe validate
+awk '/^## .*\.json: (INVALID|FAIL|SNAPSHOT-INVALID)/ { print; failed=1 } END { exit failed }' "$W/check.out"
 python3 -I $B/sanity.py $W/check.out
 
-# 7. robots.txt для каждой страницы
-for f in $W/out/*.json; do
-  read id base page < <(python3 -I -c "import json,sys;c=json.load(open(sys.argv[1]));print(c['id'],c['baseUrl'],c['pagePath'])" "$f")
-  curl -sL -m 15 -A vds-provider-grabber/0.1 -o "$W/robots-$id.txt" "$base/robots.txt"
-  python3 -I $B/robots.py "$W/robots-$id.txt" "$page" "$id"
-done
+# 7. Сверить редиректы и цены: в fetch.log видны исходный и конечный URL каждого PAGE
+awk -F '\t' '$1 == "SKIP" || ($1 == "PAGE" && $3 != $4)' "$W/fetch.log"
 ```
 
-Готовые файлы — в `catalog-seed/sources/`, плюс строка в таблицу `catalog-seed/README.md`.
+Чтобы взять кандидатов из текущей локальной базы, замените входной дамп в шаге 1 на `"$W/live.sql"`.
+Эта команда читает только две таблицы каталога.
+
+```bash
+docker compose exec -T postgres sh -c \
+  'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --data-only --no-owner --no-privileges -t public.provider -t public.provider_enrichment' \
+  > "$W/live.sql"
+python3 -I "$B/candidates.py" "$W/live.sql" catalog-seed/sources "$W"
+```
+
+Для партии из 100 источников берите кандидатов из `rest.tsv` и расширяйте выборку через
+`all.tsv`, пока не соберёте 100 проверенных файлов. Шаг `fetch` принимает TSV из двух
+столбцов (`slug` и URL или `slug~номер` и URL для нескольких страниц). Для каждой принятой страницы
+должна быть строка `PAGE`. Проверьте домен после редиректа и сверьте значения всех тарифов с
+сохранённым HTML. Скопируйте прошедшие проверку файлы в `catalog-seed/sources/` и добавьте строки
+в таблицу `catalog-seed/README.md`. Этот процесс готовит файлы селекторов для отдельного запуска
+тарифного краулера.
 
 ### Когда страница из discovery — не страница тарифов
 
-Кандидаты с «прямыми» страницами тарифов быстро заканчиваются. Тогда вместо шагов 2–3:
+Кандидаты с «прямыми» страницами тарифов быстро заканчиваются. Найдите на сохранённой странице
+ссылки этого же провайдера на страницы VPS/VDS. Запишите варианты в `variants-input.tsv`, по одной
+строке `slug~номер<TAB>URL`. Затем вместо шагов 2–3:
 
 ```bash
-python3 -I $B/discover.py $W [каталог с уже скачанными pages]  # до 5 страниц на провайдера: $W/pages/<slug>~<k>.html
-cut -f1 $W/variants.tsv > $W/auto.txt && PROBE_DIR=$W $RUN.auto
+PROBE_DIR="$W" FETCH_INPUT=variants-input.tsv FETCH_OUTPUT=variants-fetch.log source_probe fetch
+awk -F '\t' '$1 == "PAGE" { print $2 "\t" $3 }' "$W/variants-fetch.log" > "$W/variants.tsv"
+cut -f1 "$W/variants.tsv" > "$W/auto.txt" && PROBE_DIR="$W" source_probe auto
 python3 -I $B/best.py $W                     # лучший вариант -> pages/<slug>.html, rest.tsv, auto.txt
-PROBE_DIR=$W $RUN.auto                       # карточки уже только по выбранным страницам
+PROBE_DIR="$W" source_probe auto             # карточки уже только по выбранным страницам
 ```
-
-`discover.py` берёт кандидатов из `all.tsv` (его пишет `candidates.py`, включая провайдеров с блогом
-вместо страницы тарифов) и идёт по ссылкам сайта, похожим на VPS/VDS.
 
 ## Грабли, на которые уже наступали
 
+- `OK` от валидатора подтверждает формат и допустимость чисел, но не их соответствие тарифу.
+  `sanity.py` теперь сравнивает разобранную цену с вероятным числом из исходного `PRICE INPUTS`
+  и сигналит о расхождениях на порядок и более. Например, `₹3,299.00` → `3 INR` и
+  `5 . 74 €` → `74 EUR` будут отмечены. Это эвристика: после неё вручную сверьте исходный текст,
+  валюту, период оплаты и правильность выбранного элемента для каждой карточки, особенно в конце списка.
+- Для `₹3,299.00` нужен `grouping=","`; для разнесённых по тегам `5 . 74 €` — `grouping=" "`.
+  Незаданные разделители приводят к отказу разбора, чтобы цена не превращалась в `3` или `74`.
+- Если валюта страницы меняется по локали или cookie, читайте её через `bySymbol`.
+  `fixed` подходит для явно подписанного атрибута вроде `data-price-usd`, а не для произвольной цены.
+- Проверяйте единицу и контекст цены: пробный период не является `MONTHLY`, а обязательная
+  квартальная оплата должна читаться полной суммой как `QUARTERLY`.
+- Ограниченный трафик нужно задавать в `trafficLimitGb`, иначе пустое значение отображается как
+  безлимитный. В строке `1Gbps - 2TB Bandwidth` объём равен 2000 ГБ, а не скорости порта.
+- Не распространяйте `KVM` и наличие первого тарифа на остальные карточки: один блок может
+  содержать OpenVZ, KVM и распроданные предложения. Читайте виртуализацию и наличие отдельно.
 - `INVALID … grouping must differ from the decimal separator` — при `grouping="."` нужен `decimal=","`.
 - Единицы `ГБ`, `Гб`, `Go` парсер не знает: на `ramMb`/`diskGb` ставьте `unit="GB"`, иначе 2 ГБ
   превратятся в 2 МБ (`sanity.py` это ловит).

@@ -726,6 +726,7 @@ paths:
           schema:
             allOf: [{ $ref: "#/components/schemas/BillingPeriod" }]
             default: MONTHLY
+        - { $ref: "#/components/parameters/IncludeAnnualParam" }
         - name: maxPriceUsd
           in: query
           schema: { type: string, pattern: "^\\d{1,8}(\\.\\d{1,4})?$" }
@@ -747,8 +748,8 @@ paths:
           in: query
           schema: { type: boolean }
           description: >-
-            true keeps only tariffs that have a current price for the requested billingPeriod, false
-            only those that have none; absent means no filter.
+            true keeps tariffs with a current price for the selected periods, false keeps those
+            without one. An absent value applies no filter.
         - { $ref: "#/components/parameters/PageParam" }
         - { $ref: "#/components/parameters/SizeParam" }
         - name: sort
@@ -757,7 +758,7 @@ paths:
           description: "field or field,asc|desc. Allowed fields: id, priceUsd, ramMb, vcpuCount, diskGb, name."
       responses:
         "200":
-          description: A page of search results, each with its provider and current price for the requested billing period.
+          description: A page of search results with providers and current prices for the selected billing periods.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TariffSearchItemPage" }
@@ -766,16 +767,15 @@ paths:
   /api/v1/tariffs/by-provider:
     get:
       tags: [Tariffs]
-      summary: Cheapest matching monthly tariff per provider
+      summary: Cheapest matching tariff per provider
       security: []
       description: >-
         No authentication required. Only CONFIGURED and CANDIDATE providers are included. One element per provider that has at least one tariff matching the
-        filters with a current price. The billing period is fixed to MONTHLY: other periods are
-        never converted or used as a fallback, and billingPeriod/hasPrice are not parameters here.
-        cheapestTariff is the matching tariff with the smallest amountUsd (a price without amountUsd
-        ranks last), ties broken by the smaller tariff id; matchingTariffCount includes it.
+        filters with a current MONTHLY price or, with includeAnnual=true, a current ANNUAL price.
+        cheapestTariff is the matching tariff with the lowest USD price per month, with missing
+        values last and ties broken by the smaller tariff id. matchingTariffCount includes it.
         totalElements counts providers. activeOnly defaults to true. Sortable fields: priceUsd (the
-        cheapest price's amountUsd; absent values last in both directions), name (provider name),
+        cheapest USD price per month; absent values last in both directions), name (provider name),
         id (provider id). An absent sort means priceUsd,asc.
       parameters:
         - name: providerId
@@ -797,6 +797,7 @@ paths:
         - name: diskType
           in: query
           schema: { $ref: "#/components/schemas/DiskType" }
+        - { $ref: "#/components/parameters/IncludeAnnualParam" }
         - name: maxPriceUsd
           in: query
           schema: { type: string, pattern: "^\\d{1,8}(\\.\\d{1,4})?$" }
@@ -822,7 +823,7 @@ paths:
           description: "field or field,asc|desc. Allowed fields: priceUsd, name, id. Default: priceUsd,asc."
       responses:
         "200":
-          description: A page of providers, each with its cheapest matching monthly tariff.
+          description: A page of providers, each with its cheapest matching tariff.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ProviderCheapestTariffPage" }
@@ -1402,6 +1403,14 @@ components:
         POST /api/v1/auth/login, and the public catalog GET operations.
 
   parameters:
+    IncludeAnnualParam:
+      name: includeAnnual
+      in: query
+      schema: { type: boolean, default: false }
+      description: >-
+        Includes current ANNUAL prices alongside MONTHLY prices. priceUsd sorting and maxPriceUsd
+        filtering use the lower of the monthly USD price and the annual USD price divided by 12
+        and rounded half up to four decimal places. Requires MONTHLY when billingPeriod is supplied.
     PageParam:
       name: page
       in: query
@@ -1924,7 +1933,13 @@ components:
         provider: { $ref: "#/components/schemas/ProviderDto" }
         currentPrice:
           allOf: [{ $ref: "#/components/schemas/PriceDto" }]
-          description: Absent when there is no current price for the requested billingPeriod.
+          description: The current price for the selected period, or the cheapest option with includeAnnual.
+        otherPrice:
+          allOf: [{ $ref: "#/components/schemas/PriceDto" }]
+          description: The other billing option, present when includeAnnual is true and both prices exist.
+        annualPriceUsdPerMonth:
+          type: string
+          description: The monthly equivalent of the annual USD price when available with includeAnnual.
 
     ProviderCheapestTariffDto:
       type: object
@@ -1934,11 +1949,17 @@ components:
         cheapestTariff: { $ref: "#/components/schemas/TariffDto" }
         cheapestPrice:
           allOf: [{ $ref: "#/components/schemas/PriceDto" }]
-          description: The current MONTHLY price of cheapestTariff; amountUsd is absent when it was written without an FX rate.
+          description: The cheapest current price of cheapestTariff for the selected periods.
         matchingTariffCount:
           type: integer
           minimum: 1
-          description: How many of the provider's tariffs match the filters and have a current MONTHLY price, cheapestTariff included.
+          description: How many tariffs match the filters and have a current price for a selected period, cheapestTariff included.
+        otherPrice:
+          allOf: [{ $ref: "#/components/schemas/PriceDto" }]
+          description: The other billing option, present when includeAnnual is true and both prices exist.
+        annualPriceUsdPerMonth:
+          type: string
+          description: The monthly equivalent of the annual USD price when available with includeAnnual.
 
     TariffDetailDto:
       type: object

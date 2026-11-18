@@ -6,6 +6,7 @@ import { OriginBadge } from "../../components/OriginBadge";
 import { PriceDates } from "../../components/PriceDates";
 import { ErrorView, Loading } from "../../components/StateViews";
 import { SystemStatusBadge } from "../../components/SystemStatusBadge";
+import { ProviderStatusBadge } from "../../components/ProviderStatusBadge";
 import { LEGAL_FIELD, originMarker } from "../../domain/provenanceLabels";
 import { DestructiveAction } from "../../forms/DestructiveAction";
 import { useCanEdit } from "../../forms/FormParts";
@@ -56,7 +57,7 @@ export function ProviderCardScreen() {
           {provider.websiteUrl}
         </a>
       </p>
-      <p>Статус: {provider.status}</p>
+      <p>Статус: <ProviderStatusBadge status={provider.status} /></p>
       {provider.description !== undefined && <p>{provider.description}</p>}
       <EnrichmentStatusLine enrichment={enrichment} />
       {editor && (

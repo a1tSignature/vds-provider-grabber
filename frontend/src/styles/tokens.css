@@ -20,6 +20,8 @@
   --up: #2dd4bf;
   --dn: #fb923c;
   --upbg: #113230;
+  --status-active-bg: #15803d;
+  --status-active-text: #ffffff;
   --dnbg: #3a2615;
   --focus: 0 0 0 3px rgba(139, 184, 255, 0.5);
   --backdrop: rgba(5, 8, 12, 0.7);

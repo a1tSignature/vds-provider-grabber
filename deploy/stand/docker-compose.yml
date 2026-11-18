@@ -48,6 +48,7 @@ services:
       VDS_FX_REFRESH_HOURS: ${VDS_FX_REFRESH_HOURS:-12}
       VDS_BOOTSTRAP_ADMIN_USERNAME: ${VDS_BOOTSTRAP_ADMIN_USERNAME:?set VDS_BOOTSTRAP_ADMIN_USERNAME in .env}
       VDS_BOOTSTRAP_ADMIN_PASSWORD: ${VDS_BOOTSTRAP_ADMIN_PASSWORD:?set VDS_BOOTSTRAP_ADMIN_PASSWORD in .env}
+      VDS_CRAWLER_USERNAME: ${VDS_ENRICH_USERNAME:-}
       # The app port is reachable only through Caddy, which overwrites X-Forwarded-For.
       VDS_HTTP_TRUST_FORWARDED_FOR: "true"
     read_only: true
@@ -69,6 +70,8 @@ services:
     profiles: [enrich]
     image: ${VDS_IMAGE:?set VDS_IMAGE in .env}
     entrypoint: ["/app/enrich-launch.sh"]
+    healthcheck:
+      disable: true
     restart: "no"
     environment:
       # Optional here so `docker compose up` works without them; the process refuses to start

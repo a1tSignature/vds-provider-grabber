@@ -294,10 +294,15 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
      */
     private fun size(root: Element, spec: IntSpec, target: SizeUnit, key: String): Int? {
         val value = raw(root, spec, key) ?: return null
-        val match = FIRST_NUMBER.find(value)
+        fun hasSizeUnit(match: MatchResult, group: Int): Boolean =
+            SizeUnit.written(match.groupValues[group]) != null &&
+                !value.substring(match.range.last + 1).trimStart().startsWith("/s", ignoreCase = true)
+
+        val match = FIRST_NUMBER.findAll(value).firstOrNull { hasSizeUnit(it, 2) }
+            ?: FIRST_NUMBER.find(value)
             ?: throw AdapterFailureException("$key is not a size this source can read: '${cut(value)}'")
         // "2 x 960 GB": several identical drives or modules, counted as their sum.
-        val multiplied = MULTIPLIED_SIZE.find(value)?.takeIf { it.range.first == match.range.first }
+        val multiplied = MULTIPLIED_SIZE.find(value)?.takeIf { it.range.first <= match.range.first && hasSizeUnit(it, 3) }
         val unitWord = multiplied?.groupValues?.get(3) ?: match.groupValues[2]
         val unit = SizeUnit.written(unitWord)
             ?: spec.unit?.let { name -> SizeUnit.entries.firstOrNull { it.name == name } }
@@ -431,7 +436,7 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
     /** The first unsigned number in [text] under the config's separators; a minus sign before it is refused. */
     private fun firstAmount(text: String, spec: PriceSpec): String? {
         val normalized = separated(text, spec)
-        val match = FIRST_NUMBER_PLAIN.find(normalized) ?: return null
+        val match = FIRST_PRICE_NUMBER.find(normalized) ?: return null
         val sign = normalized.substring(0, match.range.first).trimEnd().lastOrNull()
         return match.value.takeUnless { sign == '-' || sign == '\u2212' }
     }
@@ -494,13 +499,15 @@ class DeclarativeAdapter(private val config: SourceConfig) : ProviderAdapter {
 
         /** The first number in a value (`,` groups thousands) and the word right after it. Code-owned. */
         val FIRST_NUMBER = Regex("([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*([A-Za-z]*)")
-        val FIRST_NUMBER_PLAIN = Regex("[0-9]+(\\.[0-9]+)?")
+        // Retain undeclared separators so malformed prices fail instead of losing digits.
+        const val PRICE_NUMBER = "[0-9]+(?:\\s*[.,]\\s*[0-9]+)*"
+        val FIRST_PRICE_NUMBER = Regex(PRICE_NUMBER)
 
         /** `2 x 960 GB`: a count, then a size with its unit word. */
         val MULTIPLIED_SIZE = Regex("([0-9]+)\\s*[x×]\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*([A-Za-z]*)")
 
-        val ADJACENT_AFTER = Regex("^\\s*([0-9]+(?:\\.[0-9]+)?)")
-        val ADJACENT_BEFORE = Regex("([0-9]+(?:\\.[0-9]+)?)\\s*$")
+        val ADJACENT_AFTER = Regex("^\\s*($PRICE_NUMBER)")
+        val ADJACENT_BEFORE = Regex("($PRICE_NUMBER)\\s*$")
 
         /** Markup that strikes an amount out: a former or regular price shown next to a promotion. */
         const val STRUCK_OUT = "del, s, strike, [class*=line-through], [class*=strike], [class*=old-price], " +

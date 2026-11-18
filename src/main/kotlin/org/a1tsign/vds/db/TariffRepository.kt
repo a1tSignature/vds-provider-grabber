@@ -4,10 +4,12 @@ import org.a1tsign.vds.api.SortField
 import org.a1tsign.vds.config.toUtcOffset
 import org.a1tsign.vds.domain.BillingPeriod
 import org.a1tsign.vds.domain.DiskType
+import org.a1tsign.vds.domain.MONTHS_PER_YEAR
 import org.a1tsign.vds.domain.PaymentMethod
 import org.a1tsign.vds.domain.PUBLIC_CATALOG_SYSTEM_STATUSES
 import org.a1tsign.vds.domain.SystemStatus
 import org.a1tsign.vds.domain.Tariff
+import org.a1tsign.vds.domain.USD_AMOUNT_SCALE
 import org.a1tsign.vds.domain.Virtualization
 import org.jetbrains.exposed.v1.core.BooleanColumnType
 import org.jetbrains.exposed.v1.core.DecimalColumnType
@@ -28,7 +30,7 @@ import java.time.Instant
 
 /**
  * The tariff search filter set -- every field `null`/unset means "no constraint". [hasPrice] refers
- * to a current price row of the period the query joins.
+ * to a current price row of the period the query joins, or either period with [includeAnnual].
  */
 data class TariffSearchFilter(
     val providerId: Long? = null,
@@ -43,6 +45,7 @@ data class TariffSearchFilter(
     val inStock: Boolean? = null,
     val maxPriceUsd: BigDecimal? = null,
     val hasPrice: Boolean? = null,
+    val includeAnnual: Boolean = false,
 )
 
 /** One provider of the grouped search: its cheapest matching tariff and how many of its tariffs match. */
@@ -162,17 +165,6 @@ class TariffRepository {
     fun findByIds(ids: Collection<Long>): List<Tariff> =
         if (ids.isEmpty()) emptyList() else TariffTable.selectAll().where { TariffTable.id inList ids }.map { it.toTariff() }
 
-    /**
-     * Hand-written SQL: resolves `(total, one page of tariff ids)` matching [filter], `LEFT JOIN`ed
-     * to each tariff's *current* price for [billingPeriod] (`effective_to IS NULL`, so at most one
-     * row per tariff by `uq_tariff_price_current` -- the join can never duplicate a row) so [TariffSearchFilter.maxPriceUsd] and a `sort.field ==
-     * "priceUsd"` can be expressed as plain `WHERE`/`ORDER BY` clauses with Postgres's own `NULLS
-     * LAST`, which reads far more naturally as SQL than as nested DSL aggregates. All filter/sort
-     * values are bound as `?` placeholders -- never concatenated -- including the `LIMIT`/`OFFSET`.
-     * `country` and `paymentMethod` are `EXISTS` subqueries, not joins, so a tariff linked to two
-     * locations in the same country (or a provider with several matching payment methods) is never
-     * counted or returned twice.
-     */
     fun searchPage(
         filter: TariffSearchFilter,
         billingPeriod: BillingPeriod,
@@ -180,14 +172,18 @@ class TariffRepository {
         limit: Int,
         offset: Int,
     ): Pair<Long, List<Long>> {
-        val (whereSql, whereArgs) = buildWhere(filter)
+        val prices = SearchPrices(filter.includeAnnual)
+        val (whereSql, whereArgs) = buildWhere(filter, prices)
         val periodArg: Pair<IColumnType<*>, Any?> = VarCharColumnType() to billingPeriod.name
+        val matching = """
+            FROM tariff t
+            ${prices.joins}
+            WHERE $whereSql
+        """.trimIndent()
 
         val countSql = """
             SELECT COUNT(t.id) AS total
-            FROM tariff t
-            LEFT JOIN tariff_price tp ON tp.tariff_id = t.id AND tp.billing_period = ? AND tp.effective_to IS NULL
-            WHERE $whereSql
+            $matching
         """.trimIndent()
         var total = 0L
         TransactionManager.current().exec(countSql, listOf(periodArg) + whereArgs, StatementType.SELECT) { rs ->
@@ -199,7 +195,7 @@ class TariffRepository {
             "ramMb" -> "t.ram_mb"
             "vcpuCount" -> "t.vcpu_count"
             "diskGb" -> "t.disk_gb"
-            "priceUsd" -> "tp.amount_usd"
+            "priceUsd" -> prices.amountUsd
             else -> "t.id"
         }
         val direction = if (sort.descending) "DESC" else "ASC"
@@ -212,9 +208,7 @@ class TariffRepository {
 
         val pageSql = """
             SELECT t.id AS id
-            FROM tariff t
-            LEFT JOIN tariff_price tp ON tp.tariff_id = t.id AND tp.billing_period = ? AND tp.effective_to IS NULL
-            WHERE $whereSql
+            $matching
             ORDER BY $orderBy
             LIMIT ? OFFSET ?
         """.trimIndent()
@@ -229,12 +223,8 @@ class TariffRepository {
 
     /**
      * `(number of providers, one page of them)` for the provider-grouped search: a provider is in
-     * when at least one of its tariffs matches [filter] and has a current price row for
-     * [billingPeriod]; its headline is the first of those tariffs under [searchPage]'s `priceUsd`
-     * order, so the flat search narrowed to that provider lists the headline first.
-     *
-     * [sort] is `priceUsd` (the headline's `amount_usd`, absent values last in both directions),
-     * `name` (provider name) or `id` (provider id).
+     * when at least one of its tariffs matches [filter] and has a current price for a selected
+     * period. Its headline is the first tariff under [searchPage]'s ascending `priceUsd` order.
      */
     fun headlinesByProvider(
         filter: TariffSearchFilter,
@@ -243,11 +233,12 @@ class TariffRepository {
         limit: Int,
         offset: Int,
     ): Pair<Long, List<ProviderHeadline>> {
-        val (whereSql, whereArgs) = buildWhere(filter)
+        val prices = SearchPrices(filter.includeAnnual)
+        val (whereSql, whereArgs) = buildWhere(filter.copy(hasPrice = true), prices)
         val periodArg: Pair<IColumnType<*>, Any?> = VarCharColumnType() to billingPeriod.name
         val matching = """
             FROM tariff t
-            INNER JOIN tariff_price tp ON tp.tariff_id = t.id AND tp.billing_period = ? AND tp.effective_to IS NULL
+            ${prices.joins}
             WHERE $whereSql
         """.trimIndent()
 
@@ -271,8 +262,8 @@ class TariffRepository {
         val pageSql = """
             SELECT r.provider_id, r.tariff_id, r.matching
             FROM (
-                SELECT t.provider_id, t.id AS tariff_id, tp.amount_usd,
-                       ROW_NUMBER() OVER (PARTITION BY t.provider_id ORDER BY tp.amount_usd ASC NULLS LAST, t.id ASC) AS rank,
+                SELECT t.provider_id, t.id AS tariff_id, ${prices.amountUsd} AS amount_usd,
+                       ROW_NUMBER() OVER (PARTITION BY t.provider_id ORDER BY ${prices.amountUsd} ASC NULLS LAST, t.id ASC) AS rank,
                        COUNT(*) OVER (PARTITION BY t.provider_id) AS matching
                 $matching
             ) r
@@ -292,11 +283,24 @@ class TariffRepository {
         return total to headlines
     }
 
-    /**
-     * `WHERE` builder shared by [searchPage] and [headlinesByProvider]; `tp` is the current price
-     * row of the period the caller joins.
-     */
-    private fun buildWhere(filter: TariffSearchFilter): Pair<String, List<Pair<IColumnType<*>, Any?>>> {
+    private class SearchPrices(includeAnnual: Boolean) {
+        val joins = """
+            LEFT JOIN tariff_price tp ON tp.tariff_id = t.id AND tp.billing_period = ? AND tp.effective_to IS NULL
+            ${if (includeAnnual) """
+                LEFT JOIN tariff_price annual ON annual.tariff_id = t.id
+                    AND annual.billing_period = 'ANNUAL' AND annual.effective_to IS NULL
+            """.trimIndent() else ""}
+        """.trimIndent()
+
+        val id = if (includeAnnual) "COALESCE(tp.id, annual.id)" else "tp.id"
+        val amountUsd = if (includeAnnual) {
+            "LEAST(tp.amount_usd, ROUND(annual.amount_usd / $MONTHS_PER_YEAR, $USD_AMOUNT_SCALE))"
+        } else {
+            "tp.amount_usd"
+        }
+    }
+
+    private fun buildWhere(filter: TariffSearchFilter, prices: SearchPrices): Pair<String, List<Pair<IColumnType<*>, Any?>>> {
         val clauses = mutableListOf<String>()
         val args = mutableListOf<Pair<IColumnType<*>, Any?>>()
 
@@ -327,10 +331,10 @@ class TariffRepository {
             args += VarCharColumnType() to it.name
         }
         filter.maxPriceUsd?.let {
-            clauses += "tp.amount_usd IS NOT NULL AND tp.amount_usd <= ?"
+            clauses += "${prices.amountUsd} <= ?"
             args += DecimalColumnType(12, 4) to it
         }
-        filter.hasPrice?.let { clauses += if (it) "tp.id IS NOT NULL" else "tp.id IS NULL" }
+        filter.hasPrice?.let { clauses += if (it) "${prices.id} IS NOT NULL" else "${prices.id} IS NULL" }
 
         val where = if (clauses.isEmpty()) "TRUE" else clauses.joinToString(" AND ")
         return where to args

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import { useApiQuery } from "../../api/hooks";
-import type { PageResponse, ProviderCheapestTariffDto, TariffSearchItemDto } from "../../api/types";
+import { ANNUAL, type PageResponse, type PriceDto, type ProviderCheapestTariffDto, type TariffSearchItemDto } from "../../api/types";
 import { Pagination } from "../../components/Pagination";
 import { Empty, ErrorView, Loading } from "../../components/StateViews";
 import { useDictionaries } from "../../dictionaries/DictionariesContext";
@@ -142,7 +142,9 @@ export function TariffsListScreen() {
     setExpandedState({ search: canonicalSearch, ids: next });
   }
 
-  const query = canonicalSearch ? `/api/v1/tariffs/by-provider?${canonicalSearch}` : "/api/v1/tariffs/by-provider";
+  const queryParams = new URLSearchParams(canonicalSearch);
+  queryParams.set("includeAnnual", "true");
+  const query = `/api/v1/tariffs/by-provider?${queryParams}`;
   const { data, error, loading, refetch } = useApiQuery<PageResponse<ProviderCheapestTariffDto>>(query);
 
   function toggleSort(field: TariffSortField) {
@@ -300,8 +302,37 @@ interface TariffGroupRowsProps {
   filters: TariffTableFilters;
 }
 
+function TariffPriceAmounts({
+  prices,
+  annualPriceUsdPerMonth,
+}: {
+  prices: PriceDto[];
+  annualPriceUsdPerMonth: string | undefined;
+}) {
+  return prices.map((price) => {
+    const annual = price.billingPeriod === ANNUAL;
+    const usd = annual ? annualPriceUsdPerMonth : price.amountUsd;
+    return (
+      <div key={price.id}>
+        {usd !== undefined ? `$${formatMoney(usd)}/мес${annual ? " при оплате за год" : ""}` : "—"}
+        <div className="muted">{formatMoney(price.amount)} {price.currency}/{annual ? "год" : "мес"}</div>
+      </div>
+    );
+  });
+}
+
+function TariffPriceDates({ prices }: { prices: PriceDto[] }) {
+  return prices.map((price) => (
+    <div key={price.id}>
+      {prices.length > 1 && <span className="muted">{price.billingPeriod === ANNUAL ? "За год" : "За месяц"} </span>}
+      <PriceDates effectiveFrom={price.effectiveFrom} lastConfirmedAt={price.lastConfirmedAt} />
+    </div>
+  ));
+}
+
 function TariffGroupRows({ row, remaining, isExpanded, onToggle, fieldsSchema, filters }: TariffGroupRowsProps) {
-  const { provider, cheapestTariff, cheapestPrice } = row;
+  const { provider, cheapestTariff, cheapestPrice, otherPrice, annualPriceUsdPerMonth } = row;
+  const prices = otherPrice === undefined ? [cheapestPrice] : [cheapestPrice, otherPrice];
   return (
     <>
       <tr
@@ -323,10 +354,7 @@ function TariffGroupRows({ row, remaining, isExpanded, onToggle, fieldsSchema, f
           </a>
         </td>
         <td className="num">
-          {cheapestPrice.amountUsd !== undefined ? `от $${formatMoney(cheapestPrice.amountUsd)}/мес` : "$ —"}
-          <div className="muted">
-            {formatMoney(cheapestPrice.amount)} {cheapestPrice.currency}
-          </div>
+          <TariffPriceAmounts prices={prices} annualPriceUsdPerMonth={annualPriceUsdPerMonth} />
         </td>
         <td>
           {cheapestTariff.vcpuCount} vCPU, {cheapestTariff.ramMb} MB RAM, {cheapestTariff.diskGb} GB{" "}
@@ -348,7 +376,7 @@ function TariffGroupRows({ row, remaining, isExpanded, onToggle, fieldsSchema, f
           )}
         </td>
         <td>
-          <PriceDates effectiveFrom={cheapestPrice.effectiveFrom} lastConfirmedAt={cheapestPrice.lastConfirmedAt} />
+          <TariffPriceDates prices={prices} />
         </td>
       </tr>
       {isExpanded && (
@@ -390,37 +418,25 @@ function TariffExpansionPanel({ providerId, headlineTariffId, fieldsSchema, filt
     <div className="tariff-expansion">
       {showsOnlyFirstPage(data.totalElements) && <p className="muted">Показаны первые 100 тарифов</p>}
       <ul className="tariff-list">
-        {items.map((item) => (
-          <li key={item.tariff.id}>
-            <Link to={`/tariffs/${item.tariff.id}`}>{item.tariff.name}</Link>
-            {" — "}
-            {item.currentPrice?.amountUsd !== undefined ? `$${formatMoney(item.currentPrice.amountUsd)}/мес` : "$ —"}
-            {item.currentPrice !== undefined && (
-              <span className="muted">
-                {" "}
-                ({formatMoney(item.currentPrice.amount)} {item.currentPrice.currency})
-              </span>
-            )}
-            <div className="muted">
-              {item.tariff.vcpuCount} vCPU, {item.tariff.ramMb} MB RAM, {item.tariff.diskGb} GB {item.tariff.diskType},{" "}
-              {item.tariff.inStock ? "в наличии" : "нет в наличии"}
-            </div>
-            {item.currentPrice !== undefined && (
-              <PriceDates
-                effectiveFrom={item.currentPrice.effectiveFrom}
-                lastConfirmedAt={item.currentPrice.lastConfirmedAt}
-              />
-            )}
-            {item.tariff.url !== undefined && (
-              <>
-                {" "}
+        {items.map((item) => {
+          const prices = [item.currentPrice, item.otherPrice].filter((price) => price !== undefined);
+          return (
+            <li key={item.tariff.id}>
+              <Link to={`/tariffs/${item.tariff.id}`}>{item.tariff.name}</Link>
+              <TariffPriceAmounts prices={prices} annualPriceUsdPerMonth={item.annualPriceUsdPerMonth} />
+              <div className="muted">
+                {item.tariff.vcpuCount} vCPU, {item.tariff.ramMb} MB RAM, {item.tariff.diskGb} GB {item.tariff.diskType},{" "}
+                {item.tariff.inStock ? "в наличии" : "нет в наличии"}
+              </div>
+              <TariffPriceDates prices={prices} />
+              {item.tariff.url !== undefined && (
                 <a href={item.tariff.url} target="_blank" rel="noopener noreferrer">
                   на сайте
                 </a>
-              </>
-            )}
-          </li>
-        ))}
+              )}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

@@ -8,6 +8,7 @@ import org.a1tsign.vds.config.ConfigurationException
 import org.a1tsign.vds.crawler.AdapterRegistry
 import org.a1tsign.vds.crawler.config.SourceConfigLoader
 import org.a1tsign.vds.crawler.config.SourceLoadReport
+import org.a1tsign.vds.crawler.fetch.HostRateLimiter
 import org.a1tsign.vds.crawler.fetch.KtorPageFetcher
 import org.a1tsign.vds.crawler.fetch.crawlerHttpClient
 import org.a1tsign.vds.crawler.write.ApiCrawlWriter
@@ -45,15 +46,21 @@ private fun runLaunch(options: EnrichOptions, config: EnrichProcessConfig): Int 
     val clock = Clock.systemUTC()
     val sources = SourceIndex(loadSources(config.sourcesDir, clock))
     val fetchClient = crawlerHttpClient()
-    val fetcher = KtorPageFetcher(config.crawler, clock, fetchClient)
+    val rateLimiter = HostRateLimiter(config.crawler.hostDelayMs)
     val catalog = CatalogApiClient(config.crawler, clock)
+    val workers = List(options.workers) {
+        val fetcher = KtorPageFetcher(config.crawler, clock, fetchClient, rateLimiter = rateLimiter)
+        EnrichWorker(
+            step = EnrichmentStep(config.enrichment, fetcher, pagesFetched = { fetcher.pagesFetched }),
+            writer = if (options.dryRun) DryRunWriter() else ApiCrawlWriter(catalog),
+        )
+    }
     val launcher = EnrichLauncher(
         config = config.enrichment,
         options = options,
         maxRuntimeMs = TimeUnit.MINUTES.toMillis(config.maxRuntimeMinutes),
         catalog = catalog,
-        step = EnrichmentStep(config.enrichment, fetcher, pagesFetched = { fetcher.pagesFetched }),
-        writer = if (options.dryRun) DryRunWriter() else ApiCrawlWriter(catalog),
+        workers = workers,
         sources = sources,
         clock = clock,
     )

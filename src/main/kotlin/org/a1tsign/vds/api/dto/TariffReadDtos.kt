@@ -8,19 +8,22 @@ import java.time.Instant
 
 /**
  * One row of `GET /api/v1/tariffs`: the tariff, its provider and the current price for the requested
- * `billingPeriod`. [currentPrice] is omitted when there is none.
+ * `billingPeriod`. With `includeAnnual`, [currentPrice] is the price with the lowest USD cost per
+ * month, and [otherPrice] carries the second price when both periods are present.
  */
 @Serializable
 data class TariffSearchItemDto(
     val tariff: TariffDto,
     val provider: ProviderDto,
     val currentPrice: PriceDto? = null,
+    val otherPrice: PriceDto? = null,
+    @Contextual val annualPriceUsdPerMonth: BigDecimal? = null,
 )
 
 /**
  * One row of `GET /api/v1/tariffs/by-provider`: a provider with at least one matching tariff that
- * has a current MONTHLY price. [cheapestTariff] is the first of them by `amountUsd` (absent last),
- * then by id; [matchingTariffCount] includes it.
+ * has a current monthly price (or annual with `includeAnnual`). [cheapestTariff] is ranked by the
+ * lowest USD price per month. Its price fields follow the same rules as [TariffSearchItemDto].
  */
 @Serializable
 data class ProviderCheapestTariffDto(
@@ -28,6 +31,8 @@ data class ProviderCheapestTariffDto(
     val cheapestTariff: TariffDto,
     val cheapestPrice: PriceDto,
     val matchingTariffCount: Int,
+    val otherPrice: PriceDto? = null,
+    @Contextual val annualPriceUsdPerMonth: BigDecimal? = null,
 )
 
 /**

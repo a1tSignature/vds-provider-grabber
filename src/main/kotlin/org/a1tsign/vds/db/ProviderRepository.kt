@@ -29,7 +29,6 @@ import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.TransactionManager
 import org.jetbrains.exposed.v1.jdbc.update
 import java.math.BigDecimal
-import java.math.RoundingMode
 import java.time.Instant
 
 /** The `GET /api/v1/providers` filter set -- every field `null`/empty means "no constraint". */
@@ -40,11 +39,6 @@ import java.time.Instant
 data class MinPricesUsd(val monthly: BigDecimal?, val annualPerMonth: BigDecimal?) {
     val lowest: BigDecimal? get() = listOfNotNull(monthly, annualPerMonth).minOrNull()
 }
-
-private val MONTHS_PER_YEAR = BigDecimal(12)
-
-/** `NUMERIC(12, 4)`, the scale every stored USD amount has. */
-private const val MONEY_SCALE = 4
 
 data class ProviderListFilter(
     val q: String? = null,
@@ -264,7 +258,7 @@ class ProviderRepository {
                 val annual: BigDecimal? = rs.getBigDecimal("min_annual")
                 result[rs.getLong("provider_id")] = MinPricesUsd(
                     monthly = rs.getBigDecimal("min_monthly"),
-                    annualPerMonth = annual?.divide(MONTHS_PER_YEAR, MONEY_SCALE, RoundingMode.HALF_UP),
+                    annualPerMonth = annual?.annualUsdPerMonth(),
                 )
             }
         }

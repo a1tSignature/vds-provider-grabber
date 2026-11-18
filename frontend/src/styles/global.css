@@ -495,6 +495,17 @@ tbody tr:last-child td { border-bottom: 0; }
   font-size: var(--fs-1);
 }
 
+.provider-status-badge {
+  display: inline-block;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-1);
+  background: var(--status-active-bg);
+  color: var(--status-active-text);
+  font-size: var(--fs-2);
+  font-weight: 600;
+  vertical-align: middle;
+}
+
 .system-status-badge {
   display: inline-block;
   font-size: var(--fs-1);

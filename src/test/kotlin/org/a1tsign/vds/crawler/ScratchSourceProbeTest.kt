@@ -1,9 +1,19 @@
 package org.a1tsign.vds.crawler
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import org.a1tsign.vds.crawler.adapters.DeclarativeAdapter
 import org.a1tsign.vds.crawler.config.SourceConfigFormat
 import org.a1tsign.vds.crawler.config.SourceConfigParse
+import org.a1tsign.vds.crawler.enrich.loadEnrichProcessConfig
+import org.a1tsign.vds.crawler.fetch.FetchKind
+import org.a1tsign.vds.crawler.fetch.HostRateLimiter
+import org.a1tsign.vds.crawler.fetch.KtorPageFetcher
+import org.a1tsign.vds.crawler.fetch.crawlerHttpClient
 import org.a1tsign.vds.crawler.support.StubPageFetcher
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
@@ -26,6 +36,50 @@ class ScratchSourceProbeTest {
     private val dir = File(System.getenv("PROBE_DIR") ?: ".")
 
     private fun page(slug: String): Element = Jsoup.parse(File(dir, "pages/$slug.html").readText(), "https://$slug/")
+
+    @Test
+    fun fetch() {
+        val input = File(dir, System.getenv("FETCH_INPUT") ?: "rest.tsv")
+        val output = File(dir, System.getenv("FETCH_OUTPUT") ?: "fetch.log")
+        val targets = input.readLines().filter { it.isNotBlank() }.map { line ->
+            val fields = line.split('\t')
+            require(fields.size == 2 && fields[0].matches(Regex("[a-z0-9-]+(?:~[a-z0-9-]+)?"))) {
+                "Expected a page key and URL separated by a tab in ${input.name}"
+            }
+            fields[0] to fields[1]
+        }
+        require(targets.distinctBy { it.first }.size == targets.size) { "Duplicate page keys in ${input.name}" }
+        val pages = File(dir, "pages").apply { mkdirs() }
+        val env = System.getenv() + mapOf(
+            "VDS_ENRICH_USERNAME" to "source-workbench",
+            "VDS_ENRICH_PASSWORD" to "source-workbench",
+        )
+        val config = loadEnrichProcessConfig(env).crawler
+        crawlerHttpClient().use { client ->
+            val fetcher = KtorPageFetcher(config, Clock.systemUTC(), client, rateLimiter = HostRateLimiter(config.hostDelayMs, 4096))
+            val limit = Semaphore(12)
+            output.printWriter().use { log ->
+                runBlocking {
+                    targets.map { (key, url) ->
+                        async {
+                            limit.withPermit {
+                                try {
+                                    val page = fetcher.fetch(url, FetchKind.PAGE)
+                                    File(pages, "$key.html").writeText(page.body)
+                                    log.println("PAGE\t$key\t$url\t${page.finalUrl}")
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (failure: Exception) {
+                                    log.println("SKIP\t$key\t$url\t${failure.message}")
+                                }
+                                log.flush()
+                            }
+                        }
+                    }.awaitAll()
+                }
+            }
+        }
+    }
 
     private fun clean(el: Element): String =
         el.outerHtml()
@@ -140,13 +194,23 @@ class ScratchSourceProbeTest {
                 if (problems.isNotEmpty()) out.appendLine("## ${file.name}: SNAPSHOT-INVALID $problems")
                 val tariffs = snap.tariffs.orEmpty()
                 out.appendLine("## ${file.name}: OK ${tariffs.size} tariffs ${parsed.warnings}")
-                tariffs.forEach { t ->
+                val priceInputs = config.tariffs?.let { section ->
+                    Jsoup.parse(html).selectFirst(section.rootSelector)!!.select(section.rowSelector).map { row ->
+                        section.prices.joinToString(" | ") { spec ->
+                            val element = row.selectFirst(spec.selector)
+                            val raw = spec.value ?: element?.let { spec.attr?.let(it::attr) ?: it.text() }
+                            "${spec.billingPeriod} '${spec.selector}' = '$raw'"
+                        }
+                    }
+                }.orEmpty()
+                tariffs.forEachIndexed { index, t ->
                     out.appendLine(
                         "  ${t.externalId?.take(40)} | ${t.name} | cpu=${t.vcpuCount} ram=${t.ramMb} disk=${t.diskGb} ${t.diskType} " +
                             "bw=${t.bandwidthMbps} tr=${t.trafficLimitGb} ip4=${t.ipv4Count} ip6=${t.ipv6Supported} " +
                             "${t.virtualization} stock=${t.inStock} " +
                             t.prices.joinToString { "${it.billingPeriod}:${it.amount.toPlainString()} ${it.currency}" },
                     )
+                    out.appendLine("  PRICE INPUTS | ${priceInputs.getOrNull(index).orEmpty()}")
                 }
             }
         }

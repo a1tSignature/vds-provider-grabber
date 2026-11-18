@@ -58,13 +58,12 @@ docker compose run --rm catalog       # необязательно: катало
 | `app` | по умолчанию | приложение на `localhost:${VDS_APP_PORT:-8080}`; healthcheck — `/health/ready` |
 | `seed` | `docker compose run --rm seed` | применяет `dev-seed.sql` после миграций; если провайдеры уже есть — ничего не делает |
 | `catalog` | `docker compose run --rm catalog` | загружает `catalog-seed/catalog-dump.sql` (не коммитится) после миграций; если провайдеры уже есть — ничего не делает |
+| `enrich` | отдельный запуск, [раздел 7.9](#79-обогащение-профиля-провайдера-с-его-сайта) | обогащает общие данные провайдеров через API |
 | `frontend` | `docker compose --profile dev up -d` | Vite dev server с hot reload на <http://localhost:5173>, проксирует API в `app` |
 
-Compose читает `.env` только для подстановки переменных из таблицы выше и
-`VDS_DB_NAME`/`VDS_DB_USER`/`VDS_DB_PASSWORD`/`VDS_JWT_SECRET`/`VDS_BOOTSTRAP_ADMIN_*`. В
-контейнер `app` не передаётся ни одна переменная краулера и discovery, поэтому оба выключены,
-что бы ни стояло в `.env`; `VDS_DB_URL` из `.env` тоже игнорируется — контейнер ходит в
-`postgres` по имени сервиса.
+Compose читает `.env` для подстановки переменных из таблицы выше, параметров базы, JWT и учёток.
+`app` получает имя сервисной учётки для доступа к внутреннему каталогу. Планировщики краулера и
+discovery выключены. `app` обращается к базе по имени сервиса `postgres`.
 
 Пересобрать после изменений в коде — `docker compose up -d --build --wait`; начать с пустой
 базы — `docker compose down -v`.
@@ -275,6 +274,31 @@ Discovery работает поверх краулера. При `VDS_DISCOVERY_
 Остальные переменные `VDS_CRAWLER_*` (таймауты, лимит размера страницы, свой `User-Agent`, порог
 «нет в наличии») имеют рабочие значения по умолчанию; они перечислены в `config/AppConfig.kt`.
 Эндпоинты `/api/v1/admin/crawl/**` описаны в `openapi.yaml`.
+
+**Сбор тарифов в локальном Docker.** Compose монтирует `catalog-seed/sources/` в контейнер
+только для чтения, по умолчанию принимает до 1000 файлов и загружает конфиги при старте приложения.
+В `.env` укажите `VDS_CRAWLER_ENABLED=true` и данные активного `EDITOR` в
+`VDS_CRAWLER_USERNAME` и `VDS_CRAWLER_PASSWORD`. Если заданы обе переменные `VDS_ENRICH_USERNAME`
+и `VDS_ENRICH_PASSWORD`, Compose передаёт приложению эту пару. Для конкретной пачки укажите её ID
+через запятую в `VDS_CRAWLER_ADAPTERS`. Для 100 источников от 2026-11-18 готовый список можно
+получить так:
+
+```bash
+awk -F '[|]' '/^## Селекторы для кандидатов от 2026-11-18$/ { batch=1; next }
+  /^## / { batch=0 } batch && /^\| [a-z0-9-]+ \| https?:/ { gsub(/ /, "", $2); print $2 }' catalog-seed/README.md | paste -sd ',' -
+```
+
+`VDS_CRAWLER_INITIAL_DELAY_MINUTES=1` запускает первый проход через минуту после старта,
+`VDS_CRAWLER_INTERVAL_HOURS=24` задаёт суточный интервал. Для большой пачки можно задать
+`VDS_CRAWLER_RUN_TIMEOUT_MINUTES=60`. Проход выполняется внутри `app` и пишет через API.
+
+```bash
+docker compose up -d --build --wait app
+docker compose logs -f app | rg --line-buffered 'crawl run|source config'
+```
+
+После правки JSON перезапустите `app`, чтобы он перечитал каталог. После правки `.env` повторите
+`docker compose up -d --wait app`, чтобы Compose применил новое окружение.
 
 ### 7.2. Переменные discovery
 
@@ -623,6 +647,9 @@ curl -s http://localhost:8080/api/v1/admin/discovery/passes -H "Authorization: B
 Параметры командной строки: `--dry-run` — читает и обходит, но ничего не пишет, а в конце
 печатает до 200 строк `ENRICH …` с планируемыми изменениями (их число приблизительное);
 `--force` — считает «к сроку» всех из очереди, порядок и правило «раз за запуск» сохраняются;
+`--new-candidates` — берёт только `CANDIDATE` без записи о предыдущей попытке, несовместим с
+`--force`; `--workers N` — до N сайтов одновременно (1–10, по умолчанию 1), с общим ограничением
+частоты запросов на хост;
 `--max-batches N` — остановиться после N пачек; `--attempted-file PATH` — файл с id уже
 опробованных провайдеров (его ведёт обёртка).
 
@@ -639,18 +666,44 @@ curl -s http://localhost:8080/api/v1/admin/discovery/passes -H "Authorization: B
   `/proc/self/status`; на macOS его нет);
 - итог: `enrich launch finished: batches=… attempted=… skipped=… exitReason=… exitCode=…`.
 
-**Локальный запуск.** Сервис запущен на `:8080`, в нём заведён пользователь `EDITOR`:
+**Первичное обогащение кандидатов в Docker.** В корневом `.env` задайте
+`VDS_ENRICH_USERNAME` и `VDS_ENRICH_PASSWORD` для активного пользователя `EDITOR` в локальном API.
+Если учётки ещё нет, создайте её через `POST /api/v1/admin/users` от имени администратора
+(пример в разделе о стенде). При запуске Compose передаёт имя в `app` как `VDS_CRAWLER_USERNAME`.
+Это имя требуется для чтения внутреннего каталога. Встроенные планировщики остаются выключенными.
 
 ```bash
-./gradlew shadowJar
-export VDS_ENRICH_USERNAME=enricher VDS_ENRICH_PASSWORD='…'
-export VDS_DISCOVERY_SOURCES_DIR=$PWD/sources
-java -cp build/libs/vds-provider-grabber-1.0-SNAPSHOT-all.jar \
-  org.a1tsign.vds.crawler.enrich.EnrichMainKt --dry-run
-# или через обёртку, с теми же флагами JVM, что на стенде:
-VDS_ENRICH_JAR=build/libs/vds-provider-grabber-1.0-SNAPSHOT-all.jar \
-  VDS_ENRICH_LOCK_FILE=/tmp/vds-enrich.lock scripts/enrich-launch.sh
+docker compose up -d --build --wait app
+docker compose --profile enrich run -d --no-deps --name vds-enrich-local enrich --new-candidates --workers 4
+docker logs -f vds-enrich-local
 ```
+
+Контейнер работает в фоне. `Ctrl+C` завершает только просмотр журнала. Для повторного запуска
+выберите новое имя контейнера или удалите завершённый контейнер командой
+`docker rm vds-enrich-local`. `exitReason=queue drained` означает, что очередь закончилась.
+Незавершённую очередь можно продолжить той же командой. Для тестового прохода добавьте
+`--dry-run --max-batches 1`.
+
+**Локальный запуск из JAR.** Запустите API на `:8080` с `VDS_CRAWLER_USERNAME`, совпадающим
+с именем активной учётки `EDITOR` в `VDS_ENRICH_USERNAME`:
+
+```bash
+./gradlew -PskipFrontend shadowJar
+ENRICH_RUN=$(mktemp -d /tmp/vds-enrich.XXXXXX)
+cp build/libs/vds-provider-grabber-1.0-SNAPSHOT-all.jar "$ENRICH_RUN/app.jar"
+export VDS_ENRICH_USERNAME=enricher VDS_ENRICH_PASSWORD='…'
+java -cp "$ENRICH_RUN/app.jar" \
+  org.a1tsign.vds.crawler.enrich.EnrichMainKt --new-candidates --workers 4 --dry-run --max-batches 1
+# или через обёртку, с теми же флагами JVM, что на стенде:
+VDS_ENRICH_JAR="$ENRICH_RUN/app.jar" \
+  VDS_ENRICH_LOCK_FILE=/tmp/vds-enrich.lock scripts/enrich-launch.sh --new-candidates --workers 4
+```
+
+Копия JAR позволяет пересобирать проект, пока обогащение работает.
+
+Генерацию селекторов и прогон по сохранённым страницам можно выполнять одновременно. Команды
+снимка локальной базы, загрузки страниц и проверки источников собраны в
+[`scripts/source-workbench/README.md`](scripts/source-workbench/README.md).
 
 **Обёртка** `scripts/enrich-launch.sh` — единственный поддерживаемый способ запуска на стенде и в
 замере памяти. Она берёт неблокирующий `flock` на `VDS_ENRICH_LOCK_FILE` (по умолчанию
@@ -728,13 +781,14 @@ docker compose up -d --wait
 - **Обогащение** — сервис `enrich` в профиле `enrich`; `docker compose up` его не запускает. Это
   одноразовый контейнер с тем же образом и точкой входа `/app/enrich-launch.sh` (раздел 7.9). Он
   ходит в `http://app:8080`, а lock лежит в именованном volume `enrich-lock`, общем для всех
-  запусков. Один раз заведите для него аккаунт `EDITOR` с паролем `VDS_ENRICH_PASSWORD` из `.env`:
+  запусков. Compose передаёт `VDS_ENRICH_USERNAME` в `app` как `VDS_CRAWLER_USERNAME`. Один раз
+  заведите для него аккаунт `EDITOR` с именем и паролем из `.env`:
 
   ```bash
   curl -s -X POST https://$VDS_SITE_ADDRESS/api/v1/admin/users \
     -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
     -d '{"username":"enricher","password":"<VDS_ENRICH_PASSWORD>","roles":["EDITOR"]}'
-  docker compose --profile enrich run --rm --no-deps enrich --dry-run   # проверка
+  docker compose --profile enrich run --rm --no-deps enrich --new-candidates --workers 4 --dry-run --max-batches 1
   ```
 
   Расписание — systemd: скопируйте `vds-enrich.service` и `vds-enrich.timer` в

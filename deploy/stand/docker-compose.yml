@@ -48,8 +48,26 @@ services:
       VDS_BOOTSTRAP_ADMIN_USERNAME: ${VDS_BOOTSTRAP_ADMIN_USERNAME:?set VDS_BOOTSTRAP_ADMIN_USERNAME in .env}
       VDS_BOOTSTRAP_ADMIN_PASSWORD: ${VDS_BOOTSTRAP_ADMIN_PASSWORD:?set VDS_BOOTSTRAP_ADMIN_PASSWORD in .env}
       VDS_CRAWLER_USERNAME: ${VDS_ENRICH_USERNAME:-}
+      VDS_CRAWLER_ENABLED: ${VDS_DISCOVERY_ENABLED:-false}
+      VDS_CRAWLER_SCHEDULER_ENABLED: "false"
+      VDS_CRAWLER_PASSWORD: ${VDS_ENRICH_PASSWORD:-}
+      VDS_DISCOVERY_RETRY_RATE_LIMIT: "false"
+      VDS_DISCOVERY_ENABLED: ${VDS_DISCOVERY_ENABLED:-false}
+      VDS_DISCOVERY_SEARCH_PROVIDER: tavily
+      VDS_DISCOVERY_SEARCH_API_KEY: ${VDS_DISCOVERY_SEARCH_API_KEY:-}
+      VDS_DISCOVERY_INTERVAL_HOURS: 168
+      VDS_DISCOVERY_MIN_PASS_INTERVAL_HOURS: 168
+      VDS_DISCOVERY_MAX_QUERIES_PER_PASS: 10
+      VDS_DISCOVERY_MAX_CREDITS_PER_MONTH: ${VDS_DISCOVERY_MAX_CREDITS_PER_MONTH:-50}
+      VDS_DISCOVERY_STATE_FILE: /var/lib/vds-discovery/state.json
+      VDS_DISCOVERY_MAX_SOURCES: ${VDS_DISCOVERY_MAX_SOURCES:-500}
+      VDS_DISCOVERY_SOURCES_DIR: /catalog-sources
+      VDS_CRAWLER_CONTACT_URL: ${VDS_CRAWLER_CONTACT_URL:-}
       # The app port is reachable only through Caddy, which overwrites X-Forwarded-For.
       VDS_HTTP_TRUST_FORWARDED_FOR: "true"
+    volumes:
+      - discovery-state:/var/lib/vds-discovery
+      - ./sources:/catalog-sources:ro
     read_only: true
     tmpfs:
       # Ktor unpacks the jansi native library here at startup; a noexec tmpfs fails to load it.
@@ -83,8 +101,8 @@ services:
       VDS_ENRICH_MAX_PAGES_PER_SECTION: ${VDS_ENRICH_MAX_PAGES_PER_SECTION:-4}
       VDS_ENRICH_MAX_SITEMAPS: ${VDS_ENRICH_MAX_SITEMAPS:-4}
       VDS_ENRICH_MAX_RUNTIME_MINUTES: ${VDS_ENRICH_MAX_RUNTIME_MINUTES:-360}
-      # Mount the sources directory read-only when setting this path. Without sources, enrichment starts at / for every site.
-      VDS_DISCOVERY_SOURCES_DIR: ${VDS_ENRICH_SOURCES_DIR:-}
+      VDS_DISCOVERY_SOURCES_DIR: ${VDS_ENRICH_SOURCES_DIR:-/catalog-sources}
+      VDS_DISCOVERY_MAX_SOURCES: ${VDS_DISCOVERY_MAX_SOURCES:-500}
       VDS_CRAWLER_HOST_DELAY_MS: ${VDS_CRAWLER_HOST_DELAY_MS:-2000}
       VDS_CRAWLER_MAX_BODY_BYTES: ${VDS_CRAWLER_MAX_BODY_BYTES:-2097152}
       VDS_CRAWLER_USER_AGENT: ${VDS_CRAWLER_USER_AGENT:-}
@@ -92,6 +110,7 @@ services:
     volumes:
       # Shared by every `docker compose run`, so the launcher's flock spans them.
       - enrich-lock:/var/lock/vds-enrich
+      - ./sources:/catalog-sources:ro
     read_only: true
     tmpfs:
       - /tmp:exec,mode=1777
@@ -122,6 +141,7 @@ services:
     logging: *logging
 
 volumes:
+  discovery-state:
   enrich-lock:
   postgres-data:
   caddy-data:

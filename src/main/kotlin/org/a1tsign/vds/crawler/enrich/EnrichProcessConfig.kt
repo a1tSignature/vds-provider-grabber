@@ -17,6 +17,7 @@ data class EnrichProcessConfig(
     val enrichment: EnrichmentConfig,
     val maxRuntimeMinutes: Long,
     val sourcesDir: String?,
+    val maxSources: Int = 200,
 )
 
 data class EnrichOptions(
@@ -26,10 +27,11 @@ data class EnrichOptions(
     val attemptedFile: String? = null,
     val newCandidates: Boolean = false,
     val workers: Int = 1,
+    val maxProviders: Int? = null,
 )
 
 const val ENRICH_USAGE: String =
-    "usage: EnrichMainKt [--dry-run] [--force | --new-candidates] [--workers N] [--max-batches N] [--attempted-file PATH]"
+    "usage: EnrichMainKt [--dry-run] [--force | --new-candidates] [--workers N] [--max-batches N] [--max-providers N] [--attempted-file PATH]"
 
 /** Throws [ConfigurationException] with [ENRICH_USAGE] on an unknown option or a bad value. */
 fun parseEnrichOptions(args: Array<String>): EnrichOptions {
@@ -51,6 +53,11 @@ fun parseEnrichOptions(args: Array<String>): EnrichOptions {
                 val n = value(arg).toIntOrNull()?.takeIf { it > 0 }
                     ?: throw ConfigurationException("--max-batches must be a positive integer; $ENRICH_USAGE")
                 options.copy(maxBatches = n)
+            }
+            "--max-providers" -> {
+                val n = value(arg).toIntOrNull()?.takeIf { it > 0 }
+                    ?: throw ConfigurationException("--max-providers must be a positive integer; $ENRICH_USAGE")
+                options.copy(maxProviders = n)
             }
             "--attempted-file" -> options.copy(attemptedFile = value(arg))
             else -> throw ConfigurationException("unknown option '$arg'; $ENRICH_USAGE")
@@ -106,6 +113,8 @@ fun loadEnrichProcessConfig(env: Map<String, String> = System.getenv()): EnrichP
     val userAgent = optionalNonBlank("VDS_CRAWLER_USER_AGENT") ?: defaultCrawlerUserAgent(contactUrl)
     val maxBodyBytes = positiveLong("VDS_CRAWLER_MAX_BODY_BYTES", 2_097_152L)
 
+    val maxSources = boundedInt("VDS_DISCOVERY_MAX_SOURCES", 200, 1, Int.MAX_VALUE)
+
     if (errors.isNotEmpty()) {
         throw ConfigurationException("Invalid configuration: ${errors.joinToString("; ")}")
     }
@@ -132,6 +141,7 @@ fun loadEnrichProcessConfig(env: Map<String, String> = System.getenv()): EnrichP
         enrichment = enrichment,
         maxRuntimeMinutes = maxRuntimeMinutes,
         sourcesDir = optionalNonBlank("VDS_DISCOVERY_SOURCES_DIR"),
+        maxSources = maxSources,
     )
 }
 

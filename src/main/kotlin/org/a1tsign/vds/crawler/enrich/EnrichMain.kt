@@ -21,8 +21,6 @@ import kotlin.system.exitProcess
 
 private val logger = LoggerFactory.getLogger("org.a1tsign.vds.crawler.enrich.EnrichMain")
 
-private const val MAX_SOURCES = 200
-
 /** How long a `SIGTERM` waits for the launch to unwind before the JVM halts anyway. */
 private const val SHUTDOWN_GRACE_MS = 5_000L
 
@@ -39,7 +37,7 @@ fun main(args: Array<String>) {
 
 private fun runLaunch(options: EnrichOptions, config: EnrichProcessConfig): Int {
     val clock = Clock.systemUTC()
-    val sources = SourceIndex(loadSources(config.sourcesDir, clock))
+    val sources = SourceIndex(loadSources(config.sourcesDir, config.maxSources, clock))
     val fetchClient = crawlerHttpClient()
     val rateLimiter = HostRateLimiter(config.crawler.hostDelayMs)
     val catalog = CatalogApiClient(config.crawler, clock)
@@ -85,7 +83,7 @@ private fun cancelOnShutdown(launch: Job): Thread {
     return hook
 }
 
-private fun loadSources(dir: String?, clock: Clock): SourceLoadReport {
+private fun loadSources(dir: String?, maxSources: Int, clock: Clock): SourceLoadReport {
     if (dir == null) {
         logger.warn("VDS_DISCOVERY_SOURCES_DIR is not set; every provider is crawled from its site's / with no observed facets")
         return SourceLoadReport.NOT_LOADED
@@ -93,7 +91,7 @@ private fun loadSources(dir: String?, clock: Clock): SourceLoadReport {
     val compiled = AdapterRegistry.compiledEntries()
     val report = SourceConfigLoader(clock).load(
         directory = dir,
-        maxSources = MAX_SOURCES,
+        maxSources = maxSources,
         reservedIds = compiled.map { it.adapter.id }.toSet(),
         reservedSlugs = compiled.map { it.adapter.providerSlug }.toSet(),
     )

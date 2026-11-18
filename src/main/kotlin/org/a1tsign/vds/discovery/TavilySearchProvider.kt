@@ -108,6 +108,7 @@ class TavilySearchProvider(
     /** Canonical domains; only the first [TAVILY_MAX_EXCLUDED_DOMAINS] are sent, the rest is filtered locally. */
     excludeDomains: List<String> = emptyList(),
     private val sleep: suspend (Long) -> Unit = { millis -> delay(millis) },
+    private val retryRateLimit: Boolean = true,
 ) : SearchProvider {
 
     private val searchUrl = endpoint.trimEnd('/') + "/search"
@@ -229,6 +230,9 @@ class TavilySearchProvider(
             return Outcome.Hits(hits)
         }
         if (status == 429) {
+            if (!retryRateLimit) {
+                return Outcome.Failed(failure(SearchFailureKind.SEARCH_RATE_LIMIT, status, "rate limited; the pass ends"))
+            }
             val waitMs = retryAfterMs(response)
             if (waitMs != null && waitMs <= MAX_RETRY_AFTER_MS) {
                 logger.warn(

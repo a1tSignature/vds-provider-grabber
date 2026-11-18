@@ -134,6 +134,7 @@ class CrawlScheduler private constructor(
                 logger.info("crawl scheduler not started: VDS_CRAWLER_ENABLED is false")
                 return null
             }
+            if (!config.schedulerEnabled) return null
             logger.info(
                 "crawl scheduler armed: first tick in {} ms, then every {} ms + up to {}% jitter, dryRun={}",
                 initialDelayMs,

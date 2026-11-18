@@ -2,12 +2,12 @@
 
 ARG NODE_VERSION=22.22.0
 
-FROM node:${NODE_VERSION}-bookworm-slim AS node
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS node
 
-FROM eclipse-temurin:21-jdk AS jdk21
+FROM --platform=$BUILDPLATFORM eclipse-temurin:21-jdk AS jdk21
 
 # Gradle runs on JDK 17 and compiles against JDK 21. Providing both locally avoids a toolchain download.
-FROM eclipse-temurin:17-jdk AS build
+FROM --platform=$BUILDPLATFORM eclipse-temurin:17-jdk AS build
 COPY --from=jdk21 /opt/java/openjdk /opt/jdk21
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
@@ -31,8 +31,8 @@ FROM eclipse-temurin:21-jre
 LABEL org.opencontainers.image.title="VDS Provider Grabber" \
       org.opencontainers.image.source="https://github.com/a1tSignature/vds-provider-grabber"
 RUN useradd --system --uid 10001 --home-dir /app vds \
- && mkdir -p /var/lock/vds-enrich \
- && chown vds /var/lock/vds-enrich
+ && mkdir -p /var/lock/vds-enrich /var/lib/vds-discovery \
+ && chown vds /var/lock/vds-enrich /var/lib/vds-discovery
 WORKDIR /app
 COPY --from=build /src/build/libs/vds-provider-grabber-1.0-SNAPSHOT-all.jar app.jar
 COPY --chmod=0755 scripts/enrich-launch.sh /app/enrich-launch.sh

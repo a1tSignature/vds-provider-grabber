@@ -338,6 +338,7 @@ fun buildComponents(
                     requestTimeoutMs = TimeUnit.SECONDS.toMillis(discovery.searchTimeoutSeconds),
                     maxResponseBytes = discovery.maxResponseBytes,
                     excludeDomains = canonicalDomains(discovery.domainDenylist),
+                    retryRateLimit = discovery.retryRateLimit,
                 )
                 discoverySearchProvider = tavily
                 discoverySearchHttpClient = tavily.client

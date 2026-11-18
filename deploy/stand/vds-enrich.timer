@@ -1,11 +1,9 @@
-# The launcher exits successfully if the preceding run still holds the lock.
 [Unit]
-Description=Daily vds-provider-grabber site enrichment
+Description=VDS candidate enrichment every 72 hours
 
 [Timer]
-OnCalendar=*-*-* 04:30:00 UTC
-RandomizedDelaySec=30m
-Persistent=true
+OnActiveSec=72h
+OnUnitActiveSec=72h
 
 [Install]
 WantedBy=timers.target

@@ -7,4 +7,4 @@ After=docker.service
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/vds-stand
-ExecStart=/usr/bin/docker compose --profile enrich run --rm --no-deps enrich
+ExecStart=/usr/bin/docker compose --profile enrich run --rm --no-deps enrich --new-candidates --workers 4 --max-providers 20

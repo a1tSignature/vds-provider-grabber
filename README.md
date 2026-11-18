@@ -777,7 +777,7 @@ docker compose up -d --wait
   памяти (`VDS_APP_MEM_LIMIT`, `VDS_DB_MEM_LIMIT`; heap JVM — 75% лимита), ротация логов Docker
   (5 × 10 МБ), корневая ФС приложения только для чтения, без Linux capabilities, заголовки
   `X-Content-Type-Options`/`X-Frame-Options`/`Referrer-Policy`, сжатие ответов.
-- **Краулер и discovery выключены** — их переменные в контейнер не передаются.
+- **Discovery** включается на стенде через `VDS_DISCOVERY_ENABLED` после настройки аккаунта и ключа Tavily. Автоматический обход тарифов выключен.
 - **Обогащение** — сервис `enrich` в профиле `enrich`; `docker compose up` его не запускает. Это
   одноразовый контейнер с тем же образом и точкой входа `/app/enrich-launch.sh` (раздел 7.9). Он
   ходит в `http://app:8080`, а lock лежит в именованном volume `enrich-lock`, общем для всех
@@ -791,20 +791,16 @@ docker compose up -d --wait
   docker compose --profile enrich run --rm --no-deps enrich --new-candidates --workers 4 --dry-run --max-batches 1
   ```
 
-  Расписание — systemd: скопируйте `vds-enrich.service` и `vds-enrich.timer` в
-  `/etc/systemd/system/`, поставьте в `WorkingDirectory` путь к этому каталогу и выполните
-  `systemctl daemon-reload && systemctl enable --now vds-enrich.timer` (ежедневно около 04:30 UTC,
-  со случайной задержкой до 30 минут); лог — `journalctl -u vds-enrich`, неудачный запуск виден в
-  `systemctl --failed`. Вместо таймера подойдёт cron; вывод перенаправьте в файл, потому что
-  контейнер с `--rm` уносит свой лог Docker с собой:
-  `30 4 * * * cd /opt/vds-stand && docker compose --profile enrich run --rm --no-deps enrich >> /var/log/vds-enrich.log 2>&1`.
+  Расписание через systemd запускает обогащение каждые 72 часа, до 20 новых кандидатов
+  за запуск. Установка описана в [инструкции стенда](deploy/stand/README.md).
+  Логи доступны через `journalctl -u vds-enrich`.
+
   Пересечение запусков (таймер, cron, ручной) исключает `flock`. `VDS_ENRICH_BATCHES_PER_JVM` в
   `.env`: `0` — одна JVM на запуск (по умолчанию, по замеру 2026-11-15), `1` — одна пачка на JVM;
   значение выбирает замер памяти (раздел 6). `VDS_ENRICH_MEM_LIMIT` — лимит памяти контейнера (по умолчанию `512m`).
   Остальные `VDS_ENRICH_*` и `VDS_CRAWLER_*` из таблицы раздела 7.9 тоже берутся из `.env`. Чтобы
-  процесс знал страницы тарифов, смонтируйте каталог источников в сервис `enrich` (только чтение,
-  через `docker-compose.override.yml`) и задайте путь внутри контейнера в `VDS_ENRICH_SOURCES_DIR`;
-  без этого каждый сайт обходится с `/`.
+  процесс использовал селекторы, распакуйте набор источников в `sources/` рядом с Compose-файлом
+  стенда. Compose подключает этот каталог только для чтения.
 - **`.env` не теряйте:** пароль БД из него уже записан в volume; `init-env.sh` не перезапишет
   существующий файл.
 

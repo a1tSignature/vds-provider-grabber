@@ -34,6 +34,7 @@ class TavilySearchProviderTest {
         requestTimeoutMs: Long = 5_000,
         waits: MutableList<Long>? = null,
         excludeDomains: List<String> = emptyList(),
+        retryRateLimit: Boolean = true,
         block: (TavilySearchProvider) -> T,
     ): T {
         val provider = TavilySearchProvider(
@@ -43,6 +44,7 @@ class TavilySearchProviderTest {
             maxResponseBytes = maxResponseBytes,
             sleep = { millis -> waits?.add(millis) },
             excludeDomains = excludeDomains,
+            retryRateLimit = retryRateLimit,
         )
         return try {
             block(provider)
@@ -166,6 +168,21 @@ class TavilySearchProviderTest {
         }
 
         assertFalse(logs.leaksKey(), "no failure log line may carry the API key")
+    }
+
+    @Test
+    fun `rate limiting consumes only one request when retry is disabled`() {
+        TavilyFixtureServer().use { server ->
+            server.onSearch(TavilyReply(status = 429, headers = mapOf("Retry-After" to "5")))
+
+            withProvider(server.url(), retryRateLimit = false) { provider ->
+                val failure = assertFailsWith<SearchException> { runBlocking { provider.search("q", 5) } }
+
+                assertEquals(SearchFailureKind.SEARCH_RATE_LIMIT, failure.kind)
+                assertEquals(1, server.requests().size)
+                assertEquals(1, provider.creditsSpent)
+            }
+        }
     }
 
     @Test

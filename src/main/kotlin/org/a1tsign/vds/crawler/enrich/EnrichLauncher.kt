@@ -121,6 +121,8 @@ class EnrichLauncher(
 
     private suspend fun loop(): Pair<Int, String> {
         while (true) {
+            val remaining = options.maxProviders?.minus(attempted.size) ?: Int.MAX_VALUE
+            if (remaining <= 0) return EnrichExit.DRAINED to "--max-providers ${options.maxProviders} reached"
             val queue = readQueue()
             if (queue.isEmpty()) {
                 return EnrichExit.DRAINED to if (batches == 0) "nothing due" else "queue drained"
@@ -129,7 +131,7 @@ class EnrichLauncher(
             if (options.maxBatches != null && batches >= options.maxBatches) {
                 return EnrichExit.STOPPED_EARLY to "--max-batches ${options.maxBatches} reached"
             }
-            runBatch(queue.take(ENRICH_BATCH_SIZE))
+            runBatch(queue.take(minOf(ENRICH_BATCH_SIZE, remaining)))
         }
     }
 

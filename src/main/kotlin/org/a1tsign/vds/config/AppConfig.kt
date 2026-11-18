@@ -96,6 +96,7 @@ data class CrawlerConfig(
     val dryRunDefault: Boolean,
     /** The composition root selects each adapter's settings from this captured environment slice. */
     val adapterEnv: AdapterEnv = AdapterEnv(emptyMap()),
+    val schedulerEnabled: Boolean = true,
 )
 
 /**
@@ -159,6 +160,7 @@ data class DiscoveryConfig(
     val passTimeoutMinutes: Long,
     /** The credit ledger's JSON state file; required while [enabled], its directory must be writable. */
     val stateFile: String?,
+    val retryRateLimit: Boolean = true,
 )
 
 data class AppConfig(
@@ -396,6 +398,7 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
     }
 
     val crawlerEnabled = booleanFlag("VDS_CRAWLER_ENABLED", false)
+    val crawlerSchedulerEnabled = booleanFlag("VDS_CRAWLER_SCHEDULER_ENABLED", true)
     val crawlerApiBaseUrl = env["VDS_CRAWLER_API_BASE_URL"] ?: DEFAULT_CRAWLER_API_BASE_URL
     if (!isAbsoluteHttpUrl(crawlerApiBaseUrl)) {
         errors += "VDS_CRAWLER_API_BASE_URL must be an absolute http or https URL"
@@ -447,6 +450,7 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
             DiscoverySearchProvider.TAVILY
         }
     }
+    val discoveryRetryRateLimit = booleanFlag("VDS_DISCOVERY_RETRY_RATE_LIMIT", true, discoveryErrors)
     val discoverySearchApiKey = optionalNonBlank("VDS_DISCOVERY_SEARCH_API_KEY")
     if (discoverySearchProvider != DiscoverySearchProvider.NONE && discoverySearchApiKey == null) {
         discoveryErrors += "VDS_DISCOVERY_SEARCH_API_KEY is required when VDS_DISCOVERY_ENABLED is true " +
@@ -562,6 +566,7 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
             username = crawlerUsername,
             password = crawlerPasswordRaw?.let { Secret(it) },
             intervalHours = crawlerIntervalHours,
+            schedulerEnabled = crawlerSchedulerEnabled,
             initialDelayMinutes = crawlerInitialDelayMinutes,
             adapters = crawlerAdapters,
             maxConcurrentAdapters = crawlerMaxConcurrentAdapters,
@@ -600,6 +605,7 @@ fun loadConfig(env: Map<String, String> = System.getenv()): AppConfig {
             minPassIntervalHours = discoveryMinPassIntervalHours,
             passTimeoutMinutes = discoveryPassTimeoutMinutes,
             stateFile = discoveryStateFile,
+            retryRateLimit = discoveryRetryRateLimit,
         ),
     )
 }

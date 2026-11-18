@@ -122,7 +122,7 @@ VDS_DB_PASSWORD=vds \
 VDS_JWT_SECRET="replace-with-a-real-secret-at-least-32-characters-long" \
 VDS_BOOTSTRAP_ADMIN_USERNAME=admin \
 VDS_BOOTSTRAP_ADMIN_PASSWORD="change-me-after-first-login" \
-java -jar build/libs/vds-provider-grabber-1.0-SNAPSHOT-all.jar
+java -jar build/libs/vds-provider-grabber-1.0.0-all.jar
 ```
 
 ## 4. Bootstrap-администратор / первый вход
@@ -690,7 +690,7 @@ docker logs -f vds-enrich-local
 ```bash
 ./gradlew -PskipFrontend shadowJar
 ENRICH_RUN=$(mktemp -d /tmp/vds-enrich.XXXXXX)
-cp build/libs/vds-provider-grabber-1.0-SNAPSHOT-all.jar "$ENRICH_RUN/app.jar"
+cp build/libs/vds-provider-grabber-1.0.0-all.jar "$ENRICH_RUN/app.jar"
 export VDS_ENRICH_USERNAME=enricher VDS_ENRICH_PASSWORD='…'
 java -cp "$ENRICH_RUN/app.jar" \
   org.a1tsign.vds.crawler.enrich.EnrichMainKt --new-candidates --workers 4 --dry-run --max-batches 1
@@ -805,7 +805,7 @@ docker compose up -d --wait
   существующий файл.
 
 Новая версия публикуется командой `git tag v1.2.3 && git push origin v1.2.3`: workflow сначала
-собирает и тестирует проект, затем отправляет multi-arch образ `ghcr.io/a1tsign/vds-provider-grabber`
+собирает и тестирует проект, затем отправляет multi-arch образ `ghcr.io/a1tsignature/vds-provider-grabber`
 в registry. Для обновления поменяйте закреплённый version tag в `VDS_IMAGE`, создайте backup и
 выполните `docker compose pull && docker compose up -d --wait`; миграции Flyway применятся при
 старте. Теги выпуска и обновления образа подробнее описаны в `deploy/stand/README.md`.
@@ -837,3 +837,7 @@ docker compose start app
   администратора, открытый порт PostgreSQL); для сервера — `deploy/stand/` (раздел 9). CI
   публикует образы по version tags, но автоматический деплой, плановые бэкапы и тюнинг PostgreSQL
   остаются задачами владельца сервера.
+
+## Лицензия
+
+Исходный код проекта распространяется по лицензии [MIT](LICENSE).

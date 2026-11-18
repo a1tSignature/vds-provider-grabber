@@ -51,7 +51,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/a1tsign/vds-provider-grabber
+          images: ghcr.io/a1tsignature/vds-provider-grabber
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

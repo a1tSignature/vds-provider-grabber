@@ -34,7 +34,8 @@ RUN useradd --system --uid 10001 --home-dir /app vds \
  && mkdir -p /var/lock/vds-enrich /var/lib/vds-discovery \
  && chown vds /var/lock/vds-enrich /var/lib/vds-discovery
 WORKDIR /app
-COPY --from=build /src/build/libs/vds-provider-grabber-1.0-SNAPSHOT-all.jar app.jar
+COPY --from=build /src/build/libs/vds-provider-grabber-1.0.0-all.jar app.jar
+COPY LICENSE /app/LICENSE
 COPY --chmod=0755 scripts/enrich-launch.sh /app/enrich-launch.sh
 
 # Heap follows the container memory limit; an OOM kills the process so the restart policy can act

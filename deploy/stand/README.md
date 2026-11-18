@@ -16,7 +16,7 @@ git push origin v1.2.3
 
 The workflow builds and tests the project, then publishes:
 
-- `ghcr.io/a1tsign/vds-provider-grabber:1.2.3`
+- `ghcr.io/a1tsignature/vds-provider-grabber:1.2.3`
 - minor and major aliases (`:1.2`, `:1`)
 - `:latest` for stable semantic versions
 - a commit tag (`:sha-…`)
@@ -30,10 +30,13 @@ pulls; for a private package, authenticate the server to `ghcr.io` with a GitHub
 Install Docker Engine with the Compose v2 plugin. Configure DNS for the domain to point to the
 server, and allow inbound TCP ports 80 and 443. Caddy uses them to obtain and renew a Let's Encrypt
 certificate. UDP 443 may also be opened for HTTP/3. Keep port 8080 and PostgreSQL port 5432 closed
-to the public internet; neither is published by this Compose project. Reserve at least 4 GiB RAM
-for the host; the application, database, Caddy, and optional enrichment process have container
-limits totalling about 1.9 GiB, before Docker and operating-system overhead. Database storage grows
-with the catalogue, so monitor free disk space.
+to the public internet; neither is published by this Compose project.
+
+The enrichment footprint check budgets 700 MB for the combined peaks of the application,
+enrichment process, and PostgreSQL. The check uses dedicated JVM flags and excludes Caddy.
+Validate the deployment's combined peak with its actual JVM settings and crawler schedules.
+Allow separate headroom for Docker, the operating system, and any other services on the host.
+Database storage grows with the catalogue, so monitor free disk space.
 
 The server only needs these deployment files; it does not need the source tree or a local build:
 
@@ -59,8 +62,10 @@ chmod 600 .env
 Edit `.env` and set:
 
 - `VDS_SITE_ADDRESS` to the public DNS name;
+- `VDS_CORS_ALLOWED_ORIGINS` to the exact browser origin when TLS terminates upstream,
+  including any non-default port, for example `https://vds.example.com:8443`;
 - `VDS_IMAGE` to the release you published, for example
-  `ghcr.io/a1tsign/vds-provider-grabber:1.2.3`;
+  `ghcr.io/a1tsignature/vds-provider-grabber:1.2.3`;
 - database, JWT, bootstrap-admin, and enrichment secrets as needed.
 
 `init-env.sh` generates secrets and refuses to overwrite an existing `.env`. Keep the file and the
